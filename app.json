@@ -8,7 +8,12 @@
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.juan23.freedocscanner"
+      "bundleIdentifier": "com.juan23.freedocscanner",
+      "buildNumber": "1",
+      "config": {
+        "usesNonExemptEncryption": false
+      },
+      "appleTeamId": "U4H56WSC88"
     },
     "android": {
       "adaptiveIcon": {
@@ -25,7 +30,8 @@
         "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
         "android.permission.SYSTEM_ALERT_WINDOW"
       ],
-      "allowBackup": false
+      "allowBackup": false,
+      "versionCode": 1
     },
     "plugins": [
       [
@@ -44,7 +50,8 @@
           "isAccessMediaLocationEnabled": false,
           "granularPermissions": []
         }
-      ]
+      ],
+      "./plugins/withReleaseSigning"
     ]
   }
 }
