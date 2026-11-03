@@ -6,22 +6,23 @@ A lightweight, free document scanner for iOS and Android. Scan a document and sa
 
 - Uses your phone's built-in scanner, so edges are detected and the page is cropped and straightened automatically.
 - Filters, multi-page capture and retakes.
+- History: every scan stays in the app, so you can add pages to it later or save it again.
 - No accounts, no sign-up, no ads.
-- No cloud backup, no network use, no in-app history.
+- No cloud sync and no network use.
 
 ## Privacy
 
-Scanning and saving happen on your phone. The app makes no network requests. On iPhone it asks only for permission to add photos, never to read them. On Android 13 and later it asks for nothing; older Android versions show the system storage prompt the first time you save JPEGs. Temporary scan files are deleted when you start a new scan or reopen the app.
+Scanning and saving happen on your phone. The app makes no network requests. On iPhone it asks only for permission to add photos, never to read them. On Android 13 and later it asks for nothing; older Android versions show the system storage prompt the first time you save JPEGs. Scans are kept inside the app until you delete them; deleting a scan leaves files you already saved untouched. On Android the app's scans are left out of Google's device backup. On iPhone, the phone's own iCloud Backup, if you have it turned on, includes the app's scans like any other app's data.
 
 ## How saving works
 
-- **Save PDF** opens the system folder picker and writes `Scan YYYY-MM-DD HH.MM.pdf` to the folder you pick, for example Files on iPhone.
+- **Save PDF** builds one PDF from all the scan's pages, opens the system folder picker and writes `Scan YYYY-MM-DD HH.MM.pdf` to the folder you pick, for example Files on iPhone.
 - **Save JPEG** saves each page (`… p1.jpg`, `… p2.jpg`) to Photos on iPhone or Gallery on Android.
 
 ## Requirements
 
 - Android phones need Google Play services. Phones without it (for example, Huawei) show a message instead of the Scan button. The first scan on a phone needs an internet connection once, because Play services downloads Google's scanner then.
-- The scanners don't run in the iOS Simulator or the Android emulator. Test on real phones.
+- The iOS Simulator has no camera, so scanning on iOS needs a real iPhone. An Android emulator image with Google Play can scan using its virtual camera.
 
 ## Build and run
 

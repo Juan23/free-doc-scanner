@@ -1,3 +1,4 @@
+import { PDFDocument } from 'pdf-lib';
 import { Directory, File, Paths } from 'expo-file-system';
 import { Album, Asset, requestPermissionsAsync } from 'expo-media-library';
 import { Platform } from 'react-native';
@@ -11,8 +12,21 @@ export function scanName(date: Date = new Date()): string {
   return `Scan ${day} ${pad(date.getHours())}.${pad(date.getMinutes())}`;
 }
 
-/** Asks the user for a folder and writes `<name>.pdf` there, never overwriting. */
-export async function savePdf(pdfUri: string, name: string): Promise<'saved' | 'cancelled'> {
+/** One PDF page per page JPEG, in order, at A4 width with the image's aspect ratio. */
+export async function buildPdf(pages: string[]): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  // shortcut: holds every page in memory (~3x the scan size at peak), fine for typical scans; stream pages if 50+ page scans crash
+  for (const uri of pages) {
+    const image = await doc.embedJpg(await new File(uri).bytes());
+    const width = 595.28;
+    const height = (width * image.height) / image.width;
+    doc.addPage([width, height]).drawImage(image, { x: 0, y: 0, width, height });
+  }
+  return doc.save();
+}
+
+/** Asks the user for a folder and writes the pages there as `<name>.pdf`, never overwriting. */
+export async function savePdf(pages: string[], name: string): Promise<'saved' | 'cancelled'> {
   let dir: Directory;
   try {
     dir = await Directory.pickDirectoryAsync();
@@ -31,7 +45,7 @@ export async function savePdf(pdfUri: string, name: string): Promise<'saved' | '
   const out = dir.createFile(fileName, 'application/pdf');
   try {
     // SAF content:// files can't be opened read-write, so write the bytes in one go.
-    await out.write(await new File(pdfUri).bytes());
+    await out.write(await buildPdf(pages));
   } catch (e) {
     try {
       out.delete();
@@ -63,19 +77,13 @@ export async function saveJpegs(pages: string[], name: string): Promise<'saved' 
       for (const uri of uris) await Asset.create(uri);
     }
   } finally {
-    discardScan(temps.map((t) => t.uri));
+    for (const tmp of temps) {
+      try {
+        if (tmp.exists) tmp.delete();
+      } catch {}
+    }
   }
   return 'saved';
-}
-
-/** Deletes the scanner's temporary files. Never throws. */
-export function discardScan(uris: string[]): void {
-  for (const uri of uris) {
-    try {
-      const file = new File(uri);
-      if (file.exists) file.delete();
-    } catch {}
-  }
 }
 
 /** Deletes the scanner's cache folder (pages and PDFs left by an interrupted scan). Never throws. */

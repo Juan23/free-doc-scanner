@@ -3,7 +3,7 @@ import { Directory } from 'expo-file-system';
 import { Album, Asset, requestPermissionsAsync } from 'expo-media-library';
 import { Platform } from 'react-native';
 
-import { clearScannerCache, discardScan, saveJpegs, savePdf, scanName } from './save';
+import { clearScannerCache, saveJpegs, savePdf, scanName } from './save';
 
 // In-memory file system. Writes and copies finish on a later tick, like the native module.
 const mockFs = {
@@ -86,6 +86,16 @@ jest.mock('expo-file-system', () => {
   }
   return { File, Directory, Paths: { cache: { uri: 'file:///cache' } } };
 });
+// buildPdf is covered with real pdf-lib in buildPdf.test.ts; here it only has to yield bytes.
+jest.mock('pdf-lib', () => ({
+  PDFDocument: {
+    create: async () => ({
+      embedJpg: async () => ({ width: 1, height: 1 }),
+      addPage: () => ({ drawImage: () => {} }),
+      save: async () => new Uint8Array([1, 2]),
+    }),
+  },
+}));
 jest.mock('expo-media-library', () => ({
   Asset: { create: jest.fn() },
   Album: { create: jest.fn() },
@@ -107,7 +117,7 @@ it('formats the scan name in local time', () => {
 
 it('writes <name>.pdf into the picked folder and resolves only after the bytes land', async () => {
   pickFolder();
-  expect(await savePdf('file:///cache/a.pdf', 'Scan X')).toBe('saved');
+  expect(await savePdf(['file:///cache/a.jpg'], 'Scan X')).toBe('saved');
   expect(mockFs.created).toEqual([
     expect.objectContaining({ name: 'Scan X.pdf', mime: 'application/pdf' }),
   ]);
@@ -118,7 +128,7 @@ it('writes <name>.pdf into the picked folder and resolves only after the bytes l
 it('deletes the half-written PDF and rejects when the write fails', async () => {
   pickFolder();
   mockFs.failWrite = true;
-  await expect(savePdf('file:///cache/a.pdf', 'Scan X')).rejects.toThrow('disk full');
+  await expect(savePdf(['file:///cache/a.jpg'], 'Scan X')).rejects.toThrow('disk full');
   expect(mockFs.deleted).toEqual(['file:///picked/Scan X.pdf']);
 });
 
@@ -126,20 +136,20 @@ it('rethrows a picker error that is not a cancel', async () => {
   (Directory.pickDirectoryAsync as jest.Mock).mockRejectedValue(
     Object.assign(new Error('picker broke'), { code: 'ERR_SOMETHING' })
   );
-  await expect(savePdf('file:///cache/a.pdf', 'Scan X')).rejects.toThrow('picker broke');
+  await expect(savePdf(['file:///cache/a.jpg'], 'Scan X')).rejects.toThrow('picker broke');
 });
 
 it('rejects with the write error when the cleanup delete also throws', async () => {
   pickFolder();
   mockFs.failWrite = true;
   mockFs.failDelete = true;
-  await expect(savePdf('file:///cache/a.pdf', 'Scan X')).rejects.toThrow('disk full');
+  await expect(savePdf(['file:///cache/a.jpg'], 'Scan X')).rejects.toThrow('disk full');
 });
 
 it('on iOS picks "(2)" when <name>.pdf is taken', async () => {
   pickFolder();
   mockFs.existing.add('file:///picked/Scan X.pdf');
-  await savePdf('file:///cache/a.pdf', 'Scan X');
+  await savePdf(['file:///cache/a.jpg'], 'Scan X');
   expect(mockFs.created[0]).toEqual(expect.objectContaining({ name: 'Scan X (2).pdf' }));
 });
 
@@ -147,7 +157,7 @@ it('on Android does not probe for a taken name', async () => {
   Platform.OS = 'android';
   pickFolder();
   mockFs.existing.add('file:///picked/Scan X.pdf');
-  await savePdf('file:///cache/a.pdf', 'Scan X');
+  await savePdf(['file:///cache/a.jpg'], 'Scan X');
   expect(mockFs.created[0]).toEqual(expect.objectContaining({ name: 'Scan X.pdf' }));
 });
 
@@ -155,7 +165,7 @@ it('returns cancelled when the picker is cancelled', async () => {
   (Directory.pickDirectoryAsync as jest.Mock).mockRejectedValue(
     Object.assign(new Error('cancelled'), { code: 'ERR_PICKER_CANCELLED' })
   );
-  expect(await savePdf('file:///cache/a.pdf', 'Scan X')).toBe('cancelled');
+  expect(await savePdf(['file:///cache/a.jpg'], 'Scan X')).toBe('cancelled');
 });
 
 it('returns cancelled when only the message says so (minified Android release)', async () => {
@@ -164,7 +174,7 @@ it('returns cancelled when only the message says so (minified Android release)',
       code: 'ERR_A',
     })
   );
-  expect(await savePdf('file:///cache/a.pdf', 'Scan X')).toBe('cancelled');
+  expect(await savePdf(['file:///cache/a.jpg'], 'Scan X')).toBe('cancelled');
 });
 
 it('on iOS saves pages in order as p1..pN, each after its copy finished', async () => {
@@ -215,17 +225,6 @@ it('returns denied without permission', async () => {
   (requestPermissionsAsync as jest.Mock).mockResolvedValue({ granted: false });
   expect(await saveJpegs(['file:///a.jpg'], 'Scan X')).toBe('denied');
   expect(Asset.create).not.toHaveBeenCalled();
-});
-
-it('discardScan ignores a missing file', () => {
-  expect(() => discardScan(['file:///nope.jpg'])).not.toThrow();
-});
-
-it('discardScan swallows a delete that throws', () => {
-  mockFs.existing.add('file:///x.jpg');
-  mockFs.failDelete = true;
-  expect(() => discardScan(['file:///x.jpg'])).not.toThrow();
-  expect(mockFs.deleted).toEqual(['file:///x.jpg']);
 });
 
 it('clearScannerCache deletes the DocumentScanner folder and never throws', () => {

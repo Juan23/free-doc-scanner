@@ -34,12 +34,13 @@ export ANDROID_HOME="$HOME/Library/Android/sdk"
 npx expo run:android --device
 ```
 
-Real phones are required because the system scanners don't run in simulators or emulators.
+The iOS Simulator has no camera, so scanning on iOS needs a real iPhone. An Android emulator image with Google Play can scan using its virtual camera.
 
 ## This app
 
-- Single screen in `App.tsx`. There is no router.
-- Save logic is in `save.ts`, with tests in `save.test.ts`.
+- Two screens in `App.tsx` (Scans history and a scan's detail), switched with state. There is no router.
+- Scans are kept in the app's document folder (`scans.ts`): one folder per scan, named by its creation time in ms, holding its pages as `p1.jpg`, `p2.jpg`… There is no index file: the name comes from the folder name and the page order from the numbers.
+- Saving is in `save.ts`: PDFs are built from the page JPEGs with `pdf-lib`; JPEGs go to Photos/Gallery. Tests sit next to each file.
 - Scanning is `CameraView.scanDocumentAsync` from `expo-camera`.
 - No accounts, network, cloud or analytics. Don't add any.
 
