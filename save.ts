@@ -12,6 +12,10 @@ export function scanName(date: Date = new Date()): string {
   return `Scan ${day} ${pad(date.getHours())}.${pad(date.getMinutes())}`;
 }
 
+/** The picked pages, in page order, or every page when none are picked. */
+export const pagesToSave = (pages: string[], picked: string[]) =>
+  picked.length ? pages.filter((p) => picked.includes(p)) : pages;
+
 /** One PDF page per page JPEG, in order, at A4 width with the image's aspect ratio. */
 export async function buildPdf(pages: string[]): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
