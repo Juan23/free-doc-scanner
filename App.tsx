@@ -25,6 +25,7 @@ import { cleanPages, cleanUpOn, setCleanUp } from './clean';
 import { cropPage, findPage, isConvex, type FoundPage, type Point, type Quad } from './crop';
 import { clearScannerCache, pagesToSave, saveJpegs, savePdf } from './save';
 import { addPages, createScan, deleteScan, listScans, type Scan } from './scans';
+import { rotatePage, uprightPages } from './upright';
 
 const C = {
   text: '#15171C',
@@ -65,6 +66,8 @@ function Root() {
   const [onCapturedPages, setOnCapturedPages] = useState<((pages: string[]) => Promise<void>) | null>(null);
   // Pages picked in Select mode, or null outside it.
   const [picked, setPicked] = useState<string[] | null>(null);
+  // Hand turns per page, added to its URI: Image keeps showing a page it already loaded from the same URI.
+  const [turns, setTurns] = useState<Record<string, number>>({});
   // State updates are async, so a second tap in the same frame would still see busy=false.
   const inFlight = useRef(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -162,25 +165,35 @@ function Root() {
     }
   }
 
-  // Runs once the pages are stored, so a crash mid-clean can't lose them. New pages are the scan's last.
-  async function cleanNewest(scan: Scan, count: number) {
-    if (cleanUp) await cleanPages(scan.pages.slice(-count));
+  // Runs once the pages are stored, so a crash mid-way can't lose them. New pages are the scan's last.
+  async function finishNewest(scan: Scan, count: number) {
+    const pages = scan.pages.slice(-count);
+    await uprightPages(pages);
+    if (cleanUp) await cleanPages(pages);
   }
 
   const scanNew = () =>
     scanPages(async (pages) => {
       setMessage('');
       const scan = await createScan(pages);
-      await cleanNewest(scan, pages.length);
-      // Opened only after cleaning: Image would keep showing a page it already loaded from the same URI.
+      await finishNewest(scan, pages.length);
+      // Opened only after turning and cleaning: Image would keep showing a page it already loaded from the same URI.
       setOpen(scan);
     });
 
   const addToOpen = () =>
     open &&
     scanPages(async (pages) => {
-      await cleanNewest(await addPages(open, pages), pages.length);
+      await finishNewest(await addPages(open, pages), pages.length);
     });
+
+  const rotate = (page: string) =>
+    guarded(async () => {
+      await rotatePage(page, 1);
+      setTurns((t) => ({ ...t, [page]: (t[page] ?? 0) + 1 }));
+    }, 'Could not rotate');
+
+  const shown = (page: string) => (turns[page] ? `${page}?turned=${turns[page]}` : page);
 
   function save(kind: 'pdf' | 'jpeg') {
     if (!open) return;
@@ -230,15 +243,18 @@ function Root() {
           message={message}
           picked={picked}
           onPick={setPicked}
+          shown={shown}
           onBack={() => setOpen(null)}
           onDelete={confirmDelete}
           onAdd={addToOpen}
+          onRotate={rotate}
           onSave={save}
         />
       ) : (
         <Home
           scans={scans}
           busy={busy}
+          shown={shown}
           cleanUp={cleanUp}
           onCleanUp={(on) => {
             setCleanUpState(on);
@@ -256,6 +272,7 @@ function Root() {
 function Home(props: {
   scans: Scan[];
   busy: boolean;
+  shown: (page: string) => string;
   cleanUp: boolean;
   onCleanUp: (on: boolean) => void;
   onScan: () => void;
@@ -295,7 +312,7 @@ function Home(props: {
             disabled={props.busy}
             onPress={() => props.onOpen(item)}
             style={[styles.row, props.busy && styles.disabled]}>
-            <Image source={{ uri: item.pages[0] }} style={styles.rowThumb} resizeMode="cover" />
+            <Image source={{ uri: props.shown(item.pages[0]) }} style={styles.rowThumb} resizeMode="cover" />
             <View style={styles.rowText}>
               <Text style={styles.rowName}>{item.name}</Text>
               <Text style={styles.rowSub}>{pagesLabel(item.pages.length)}</Text>
@@ -367,9 +384,11 @@ function Detail(props: {
   /** Pages picked in Select mode, or null outside it. */
   picked: string[] | null;
   onPick: (pages: string[] | null) => void;
+  shown: (page: string) => string;
   onBack: () => void;
   onDelete: () => void;
   onAdd: () => void;
+  onRotate: (page: string) => void;
   onSave: (kind: 'pdf' | 'jpeg') => void;
 }) {
   const { width } = useWindowDimensions();
@@ -444,7 +463,7 @@ function Detail(props: {
             const on = !!picked?.includes(uri);
             const image = (
               <Image
-                source={{ uri }}
+                source={{ uri: props.shown(uri) }}
                 accessible={!picked}
                 accessibilityLabel={`Page ${item.n}`}
                 style={[styles.page, { width: cell, height: (cell * 4) / 3 }, on && styles.pagePicked]}
@@ -468,9 +487,20 @@ function Detail(props: {
                 ) : (
                   image
                 )}
-                <Text style={styles.pageNum} importantForAccessibility="no" accessible={false}>
-                  {item.n}
-                </Text>
+                <View style={styles.pageBar}>
+                  <Text style={styles.pageNum} importantForAccessibility="no" accessible={false}>
+                    {item.n}
+                  </Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Rotate page ${item.n}`}
+                    accessibilityState={{ disabled: busy }}
+                    disabled={busy}
+                    onPress={() => props.onRotate(uri)}
+                    style={[styles.rotate, disabled]}>
+                    <Text style={styles.rotateText} maxFontSizeMultiplier={1.5}>Rotate</Text>
+                  </Pressable>
+                </View>
               </View>
             );
           }
@@ -934,7 +964,8 @@ const styles = StyleSheet.create({
   detailTitle: { fontSize: 24, lineHeight: 30, fontWeight: '700', letterSpacing: -0.24, color: C.text },
   gridContent: { paddingHorizontal: 20 },
   gridRow: { gap: 14, marginBottom: 14 },
-  cell: { alignItems: 'center', gap: 6 },
+  cell: { alignItems: 'center' },
+  pageBar: { alignSelf: 'stretch', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   page: { borderWidth: 1, borderColor: C.hairline, borderRadius: 8, backgroundColor: '#fff' },
   pagePicked: { borderWidth: 2, borderColor: C.accent },
   // Top-left, like Google Photos, leaving the other corners free.
@@ -952,7 +983,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   pickMarkOn: { borderColor: C.accent, backgroundColor: C.accent },
-  pageNum: { fontSize: 13, lineHeight: 18, color: C.muted },
+  pageNum: { fontSize: 13, lineHeight: 18, color: C.muted, paddingLeft: 4 },
+  rotate: { minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 },
+  rotateText: { fontSize: 14, fontWeight: '600', color: C.accent },
   addTile: {
     borderWidth: 1.5,
     borderStyle: 'dashed',
