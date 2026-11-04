@@ -86,10 +86,15 @@ export async function saveJpegs(pages: string[], name: string): Promise<'saved' 
   return 'saved';
 }
 
-/** Deletes the scanner's cache folder (pages and PDFs left by an interrupted scan). Never throws. */
+/**
+ * Deletes the scanner's cache folders: pages and PDFs left by an interrupted scan, and photos
+ * the Android camera screen left (expo-camera saves them in Camera). Never throws.
+ */
 export function clearScannerCache(): void {
-  try {
-    const dir = new Directory(Paths.cache, 'DocumentScanner');
-    if (dir.exists) dir.delete();
-  } catch {}
+  for (const name of ['DocumentScanner', 'Camera']) {
+    try {
+      const dir = new Directory(Paths.cache, name);
+      if (dir.exists) dir.delete();
+    } catch {}
+  }
 }

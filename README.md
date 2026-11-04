@@ -4,8 +4,8 @@ A lightweight, free document scanner for iOS and Android. Scan a document and sa
 
 ## Features
 
-- Uses your phone's built-in scanner, so edges are detected and the page is cropped and straightened automatically.
-- Filters, multi-page capture and retakes.
+- Edges are detected and the page is cropped and straightened automatically. On iPhone this is the phone's built-in scanner, with its filters. On Android the app has its own camera screen: tap the shutter, check or drag the corners, done.
+- Multi-page capture and retakes.
 - Clean up pages (on by default): whitens the paper and removes shadows, tint, specks and faint creases from each new scan, keeping the writing. Turn it off on the Scans screen for photos.
 - History: every scan stays in the app, so you can add pages to it later or save it again.
 - No accounts, no sign-up, no ads.
@@ -13,7 +13,7 @@ A lightweight, free document scanner for iOS and Android. Scan a document and sa
 
 ## Privacy
 
-Scanning and saving happen on your phone. The app makes no network requests. On iPhone it asks only for permission to add photos, never to read them. On Android 13 and later it asks for nothing; older Android versions show the system storage prompt the first time you save JPEGs. Scans are kept inside the app until you delete them; deleting a scan leaves files you already saved untouched. On Android the app's scans are left out of Google's device backup. On iPhone, the phone's own iCloud Backup, if you have it turned on, includes the app's scans like any other app's data.
+Scanning and saving happen on your phone. The app makes no network requests. It asks for the camera when you scan. On iPhone it also asks for permission to add photos, never to read them. On Android 13 and later it asks for nothing else; older Android versions show the system storage prompt the first time you save JPEGs. Scans are kept inside the app until you delete them; deleting a scan leaves files you already saved untouched. On Android the app's scans are left out of Google's device backup. On iPhone, the phone's own iCloud Backup, if you have it turned on, includes the app's scans like any other app's data.
 
 ## How saving works
 
@@ -22,8 +22,7 @@ Scanning and saving happen on your phone. The app makes no network requests. On 
 
 ## Requirements
 
-- Android phones need Google Play services. Phones without it (for example, Huawei) show a message instead of the Scan button. The first scan on a phone needs an internet connection once, because Play services downloads Google's scanner then.
-- The iOS Simulator has no camera, so scanning on iOS needs a real iPhone. An Android emulator image with Google Play can scan using its virtual camera.
+- The iOS Simulator has no camera, so scanning on iOS needs a real iPhone. An Android emulator can run the camera screen, but its camera saves black photos.
 
 ## Build and run
 

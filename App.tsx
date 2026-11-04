@@ -1,13 +1,17 @@
+import { Canvas, Circle, Path } from '@shopify/react-native-skia';
 import { Camera, CameraView } from 'expo-camera';
+import { Directory, File, Paths } from 'expo-file-system';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AccessibilityInfo,
+  ActivityIndicator,
   Alert,
   BackHandler,
   FlatList,
   Image,
   Linking,
+  type GestureResponderEvent,
   Platform,
   Pressable,
   StyleSheet,
@@ -18,6 +22,7 @@ import {
 } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { cleanPages, cleanUpOn, setCleanUp } from './clean';
+import { cropPage, findPage, type Point, type Quad } from './crop';
 import { clearScannerCache, saveJpegs, savePdf } from './save';
 import { addPages, createScan, deleteScan, listScans, type Scan } from './scans';
 
@@ -36,8 +41,12 @@ const bottomPad = (inset: number) => Math.max(inset + 12, 16);
 
 const pagesLabel = (n: number) => `${n} ${n === 1 ? 'page' : 'pages'}`;
 
-const unavailableText =
-  'This phone can’t run the built-in document scanner. On Android it needs Google Play services.';
+const unavailableText = 'This iPhone can’t run the built-in document scanner.';
+
+// Android has its own camera screen in this app: Google's scanner can't open in manual capture.
+const scannerAvailable = () => Platform.OS === 'android' || CameraView.isDocumentScannerAvailable;
+
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export default function App() {
   return (
@@ -53,6 +62,8 @@ function Root() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [cleanUp, setCleanUpState] = useState(cleanUpOn);
+  // Set while the Android camera screen is open: what to do with the pages it returns.
+  const [capture, setCapture] = useState<((pages: string[]) => Promise<void>) | null>(null);
   // State updates are async, so a second tap in the same frame would still see busy=false.
   const inFlight = useRef(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -89,7 +100,7 @@ function Root() {
     try {
       await task();
     } catch (e) {
-      Alert.alert(errorTitle, e instanceof Error ? e.message : String(e));
+      Alert.alert(errorTitle, errorText(e));
     } finally {
       inFlight.current = false;
       setBusy(false);
@@ -104,14 +115,20 @@ function Root() {
   }
 
   function scanPages(onPages: (pages: string[]) => Promise<void>) {
+    if (Platform.OS === 'android') {
+      return guarded(async () => {
+        const { granted, canAskAgain } = await Camera.requestCameraPermissionsAsync();
+        if (granted) setCapture(() => onPages);
+        else if (!canAskAgain) askForSettings('Camera access needed', 'Allow camera access in Settings to scan.');
+      }, 'Scan failed');
+    }
     return guarded(async () => {
       let result;
       try {
         result = await CameraView.scanDocumentAsync({ quality: 0.8 });
       } catch (e) {
-        // VisionKit fails instead of asking again once camera access was denied. Android's
-        // scanner runs in Play services, so the app never holds the camera permission there.
-        if (Platform.OS === 'ios' && !(await Camera.getCameraPermissionsAsync()).granted) {
+        // VisionKit fails instead of asking again once camera access was denied.
+        if (!(await Camera.getCameraPermissionsAsync()).granted) {
           askForSettings('Camera access needed', 'Allow camera access in Settings to scan.');
           return;
         }
@@ -125,6 +142,20 @@ function Root() {
         }
       }
     }, 'Scan failed');
+  }
+
+  function endCapture(pages: string[]) {
+    const onPages = capture;
+    setCapture(null);
+    if (onPages && pages.length) {
+      guarded(async () => {
+        try {
+          await onPages(pages);
+        } finally {
+          refresh();
+        }
+      }, 'Scan failed');
+    }
   }
 
   // Runs once the pages are stored, so a crash mid-clean can't lose them. New pages are the scan's last.
@@ -185,7 +216,9 @@ function Root() {
 
   return (
     <View style={styles.screen}>
-      {open ? (
+      {capture ? (
+        <Capture onEnd={endCapture} />
+      ) : open ? (
         <Detail
           scan={open}
           busy={busy}
@@ -208,7 +241,7 @@ function Root() {
           onOpen={(s) => { setMessage(''); setOpen(s); }}
         />
       )}
-      <StatusBar style="dark" />
+      <StatusBar style={capture ? 'light' : 'dark'} />
     </View>
   );
 }
@@ -221,7 +254,7 @@ function Home(props: {
   onScan: () => void;
   onOpen: (s: Scan) => void;
 }) {
-  const available = CameraView.isDocumentScannerAvailable;
+  const available = scannerAvailable();
   const insets = useSafeAreaInsets();
   const header = (
     <View style={styles.homeHeader}>
@@ -333,7 +366,7 @@ function Detail(props: {
   const insets = useSafeAreaInsets();
   const cell = (width - 40 - 28) / 3;
   const { scan, busy } = props;
-  const available = CameraView.isDocumentScannerAvailable;
+  const available = scannerAvailable();
   const data: Cell[] = [
     ...scan.pages.map((uri, i) => ({ key: uri, uri, n: i + 1 })),
     ...(available ? [{ key: 'add' }] : []),
@@ -436,6 +469,217 @@ function Detail(props: {
           </Pressable>
         </View>
       </View>
+    </View>
+  );
+}
+
+type Photo = { uri: string; width: number; height: number; corners: Quad };
+
+const deleteQuietly = (uri: string) => {
+  try {
+    new File(uri).delete();
+  } catch {}
+};
+
+// Android's scanner: a photo, then its page corners, found automatically and draggable, then the
+// straightened page. Photos and pages wait in cache folders that are cleared at launch.
+function Capture(props: { onEnd: (pages: string[]) => void }) {
+  const insets = useSafeAreaInsets();
+  const camera = useRef<CameraView>(null);
+  const [pages, setPages] = useState<string[]>([]);
+  const [photo, setPhoto] = useState<Photo | null>(null);
+  const [working, setWorking] = useState(false);
+  // State updates are async, so a second tap in the same frame would still see working=false.
+  const inFlight = useRef(false);
+
+  async function step(task: () => Promise<void>, errorTitle: string) {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setWorking(true);
+    try {
+      await task();
+    } catch (e) {
+      Alert.alert(errorTitle, errorText(e));
+    } finally {
+      inFlight.current = false;
+      setWorking(false);
+    }
+  }
+
+  const shoot = () =>
+    step(async () => {
+      const picture = await camera.current?.takePictureAsync({ quality: 0.9, shutterSound: false });
+      if (!picture) return;
+      try {
+        setPhoto({ uri: picture.uri, ...(await findPage(picture.uri)) });
+      } catch (e) {
+        deleteQuietly(picture.uri);
+        throw e;
+      }
+    }, 'Could not take photo');
+
+  const retake = () => {
+    if (inFlight.current || !photo) return;
+    deleteQuietly(photo.uri);
+    setPhoto(null);
+  };
+
+  const keep = (finish: boolean) =>
+    step(async () => {
+      if (!photo) return;
+      const dir = new Directory(Paths.cache, 'DocumentScanner');
+      dir.create({ idempotent: true });
+      const page = new File(dir, `${Date.now()}.jpg`).uri;
+      await cropPage(photo.uri, photo.corners, page);
+      deleteQuietly(photo.uri);
+      setPhoto(null);
+      setPages([...pages, page]);
+      if (finish) props.onEnd([...pages, page]);
+    }, 'Could not keep page');
+
+  function cancel() {
+    if (inFlight.current) return;
+    const discard = () => {
+      if (photo) deleteQuietly(photo.uri);
+      pages.forEach(deleteQuietly);
+      props.onEnd([]);
+    };
+    if (!pages.length) return discard();
+    Alert.alert(`Discard ${pagesLabel(pages.length)}?`, 'They haven’t been added yet.', [
+      { text: 'Keep scanning', style: 'cancel' },
+      { text: 'Discard', style: 'destructive', onPress: discard },
+    ]);
+  }
+
+  // Back undoes one step: the photo first, then the whole scan. Re-added each render to see the latest state.
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      (photo ? retake : cancel)();
+      return true;
+    });
+    return () => sub.remove();
+  });
+
+  const pad = { paddingTop: insets.top, paddingBottom: bottomPad(insets.bottom) };
+  if (photo) {
+    return (
+      <View style={[styles.capture, pad]}>
+        <Text style={styles.captureHint}>Drag the corners to the page’s edges</Text>
+        <PageEditor photo={photo} onChange={(corners) => setPhoto({ ...photo, corners })} />
+        <View style={styles.captureBar}>
+          <CaptureButton label="Retake" disabled={working} onPress={retake} />
+          <CaptureButton label="Next page" disabled={working} onPress={() => keep(false)} />
+          <CaptureButton label="Done" primary disabled={working} onPress={() => keep(true)} />
+        </View>
+      </View>
+    );
+  }
+  return (
+    <View style={[styles.capture, pad]}>
+      <CameraView ref={camera} style={styles.flex} facing="back" animateShutter />
+      <View style={styles.captureBar}>
+        <CaptureButton label="Cancel" disabled={working} onPress={cancel} />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Take photo"
+          accessibilityState={{ disabled: working }}
+          disabled={working}
+          onPress={shoot}
+          style={styles.shutter}>
+          {working ? <ActivityIndicator color={C.text} /> : <View style={styles.shutterInner} />}
+        </Pressable>
+        <CaptureButton
+          label={pages.length ? `Done (${pages.length})` : 'Done'}
+          hidden={!pages.length}
+          disabled={working}
+          onPress={() => props.onEnd(pages)}
+        />
+      </View>
+    </View>
+  );
+}
+
+function CaptureButton(props: { label: string; onPress: () => void; disabled: boolean; primary?: boolean; hidden?: boolean }) {
+  if (props.hidden) return <View style={styles.captureButton} />;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ disabled: props.disabled }}
+      disabled={props.disabled}
+      onPress={props.onPress}
+      style={[styles.captureButton, props.primary && styles.captureButtonPrimary, props.disabled && styles.disabled]}>
+      <Text style={styles.captureButtonText} maxFontSizeMultiplier={1.5}>{props.label}</Text>
+    </Pressable>
+  );
+}
+
+// The photo, fitted to the space, with the page outline and a handle on each corner. A drag that
+// starts on a handle moves that corner.
+function PageEditor(props: { photo: Photo; onChange: (corners: Quad) => void }) {
+  // The editor's size, and where it sits on screen: touches are placed by their screen position,
+  // since their position within a view depends on which view the finger lands on.
+  const view = useRef<React.ComponentRef<typeof View>>(null);
+  const [box, setBox] = useState({ width: 0, height: 0, pageX: 0, pageY: 0 });
+  const { photo } = props;
+  // Handles on the photo's edge stay whole on screen and, at the sides, clear of Android's
+  // swipe-back zone, which would take the drag.
+  const side = 48;
+  const end = 20;
+  const scale = Math.max(0, Math.min((box.width - 2 * side) / photo.width, (box.height - 2 * end) / photo.height));
+  const left = (box.width - photo.width * scale) / 2;
+  const top = (box.height - photo.height * scale) / 2;
+  const onScreen = photo.corners.map((p) => ({ x: left + p.x * scale, y: top + p.y * scale }));
+
+  // Where the drag started, on screen and in the photo.
+  const drag = useRef<{ corner: number; touch: Point; from: Point } | null>(null);
+  const onGrant = (e: GestureResponderEvent) => {
+    const { pageX, pageY } = e.nativeEvent;
+    const distances = onScreen.map((p) => Math.hypot(p.x - (pageX - box.pageX), p.y - (pageY - box.pageY)));
+    const corner = distances.indexOf(Math.min(...distances));
+    drag.current = distances[corner] < 60 ? { corner, touch: { x: pageX, y: pageY }, from: photo.corners[corner] } : null;
+  };
+  const onMove = (e: GestureResponderEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    const clamp = (v: number, max: number) => Math.min(max, Math.max(0, v));
+    const corners = [...photo.corners] as Quad;
+    corners[d.corner] = {
+      x: clamp(d.from.x + (e.nativeEvent.pageX - d.touch.x) / scale, photo.width),
+      y: clamp(d.from.y + (e.nativeEvent.pageY - d.touch.y) / scale, photo.height),
+    };
+    props.onChange(corners);
+  };
+
+  const outline = `M ${onScreen.map((p) => `${p.x} ${p.y}`).join(' L ')} Z`;
+  return (
+    <View
+      style={styles.flex}
+      ref={view}
+      onLayout={() => view.current?.measure((_x, _y, width, height, pageX, pageY) => setBox({ width, height, pageX, pageY }))}
+      accessible
+      accessibilityLabel="Photo with the page outlined"
+      onStartShouldSetResponder={() => true}
+      onResponderTerminationRequest={() => false}
+      onResponderGrant={onGrant}
+      onResponderMove={onMove}
+      onResponderRelease={() => (drag.current = null)}>
+      {scale > 0 && (
+        <>
+          <Image
+            source={{ uri: photo.uri }}
+            style={{ position: 'absolute', left, top, width: photo.width * scale, height: photo.height * scale }}
+          />
+          <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">
+            <Path path={outline} style="stroke" strokeWidth={2} color={C.accent} />
+            {onScreen.map((p, i) => (
+              <Circle key={i} cx={p.x} cy={p.y} r={14} color="rgba(36,87,230,0.35)">
+                <Circle cx={p.x} cy={p.y} r={14} style="stroke" strokeWidth={3} color="#fff" />
+              </Circle>
+            ))}
+          </Canvas>
+        </>
+      )}
+
     </View>
   );
 }
@@ -675,4 +919,27 @@ const styles = StyleSheet.create({
   secondary: { backgroundColor: C.accentSoft },
   primaryText: { fontSize: 17, fontWeight: '600', color: '#fff', textAlign: 'center' },
   secondaryText: { fontSize: 17, fontWeight: '600', color: C.accent, textAlign: 'center' },
+  capture: { flex: 1, backgroundColor: '#000' },
+  captureHint: { paddingVertical: 12, paddingHorizontal: 20, fontSize: 15, lineHeight: 20, color: '#fff', textAlign: 'center' },
+  captureBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+  },
+  captureButton: { flex: 1, minHeight: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 },
+  captureButtonPrimary: { backgroundColor: C.accent },
+  captureButtonText: { fontSize: 17, fontWeight: '600', color: '#fff', textAlign: 'center' },
+  shutter: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    borderWidth: 4,
+    borderColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shutterInner: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#fff' },
 });

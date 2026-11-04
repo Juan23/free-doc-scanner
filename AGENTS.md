@@ -34,14 +34,14 @@ export ANDROID_HOME="$HOME/Library/Android/sdk"
 npx expo run:android --device
 ```
 
-The iOS Simulator has no camera, so scanning on iOS needs a real iPhone. An Android emulator image with Google Play can scan using its virtual camera.
+The iOS Simulator has no camera, so scanning on iOS needs a real iPhone. An Android emulator can run the camera screen, but its camera saves black photos.
 
 ## This app
 
-- Two screens in `App.tsx` (Scans history and a scan's detail), switched with state. There is no router.
+- Screens in `App.tsx` (Scans history, a scan's detail, and Android's camera screen), switched with state. There is no router.
 - Scans are kept in the app's document folder (`scans.ts`): one folder per scan, named by its creation time in ms, holding its pages as `p1.jpg`, `p2.jpg`… There is no index file: the name comes from the folder name and the page order from the numbers.
 - Saving is in `save.ts`: PDFs are built from the page JPEGs with `pdf-lib`; JPEGs go to Photos/Gallery. Tests sit next to each file.
-- Scanning is `CameraView.scanDocumentAsync` from `expo-camera`. Neither system scanner lets the app set its auto/manual capture mode or its filters.
+- Scanning on iOS is `CameraView.scanDocumentAsync` from `expo-camera` (VisionKit). Android has the app's own camera screen instead, because Google's ML Kit scanner always opens in auto capture: it ignores its capture-mode extra, and also its initial-images extra, so it can't be fed our photos either (both checked on Play services 26.41, 2026-11-04). `crop.ts` finds the page's corners in each photo (the largest bright region on a small copy, its corners along the diagonals; the whole photo when none stands out) and straightens the page inside the corners with a Skia perspective matrix. Its tests run on real pixels like `clean.ts`'s.
 - Clean-up is in `clean.ts`: Skia whitens each new page right after it is stored, replacing the page file. It is on unless a `clean-up-off` file sits in the document folder. Its tests run on real pixels through Skia's CanvasKit Jest environment.
 - No accounts, network, cloud or analytics. Don't add any.
 
