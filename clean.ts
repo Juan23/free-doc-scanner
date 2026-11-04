@@ -124,6 +124,8 @@ function pastEdges(page: Uint8Array, fine: Uint8Array, w: number, h: number): Ui
     seen[start] = 1;
     const region = [start];
     let depth = 0;
+    let rim = 0;
+    let written = 0;
     for (let i = 0; i < region.length; i++) {
       const p = region[i];
       const x = p % w;
@@ -134,13 +136,27 @@ function pastEdges(page: Uint8Array, fine: Uint8Array, w: number, h: number): Ui
         const dy = STEP_Y[d];
         if (x + dx < 0 || y + dy < 0 || x + dx >= w || y + dy >= h) continue;
         const q = p + dy * w + dx;
-        if (other[q] && !seen[q]) {
-          seen[q] = 1;
-          region.push(q);
+        if (other[q]) {
+          if (!seen[q]) {
+            seen[q] = 1;
+            region.push(q);
+          }
+          continue;
+        }
+        rim++;
+        for (let k = 1; k <= 4; k++) {
+          const u = x + k * dx;
+          const v = y + k * dy;
+          if (u < 0 || v < 0 || u >= w || v >= h || other[v * w + u]) break;
+          if (ink[v * w + u]) {
+            written++;
+            break;
+          }
         }
       }
     }
-    if (depth > deepest) continue;
+    // Writing right beside it, as on a heading band, means it is printed on the page.
+    if (depth > deepest || written > 0.1 * rim) continue;
     for (const p of region) if (other[p] === 2 || !nearInk(p)) out[p] = 255;
   }
   return out;

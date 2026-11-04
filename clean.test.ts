@@ -167,27 +167,32 @@ it('turns table showing past the bent edges of a page white and keeps text near 
   expect(luma(page, 200, 796)).toBeGreaterThan(240); // darkened paper
 }, 30000);
 
-// A page with a dark picture printed off its right edge, light details in it.
-function pageWithPictureOffEdge(): Uint8Array {
+// A page printed off its edges: a dark heading band along the top with white letters in it, and
+// a dark picture with light details off the right edge.
+function pageWithPrintOffEdges(): Uint8Array {
   const surface = Skia.Surface.Make(W, H)!;
   const canvas = surface.getCanvas();
   canvas.drawColor(Skia.Color('rgb(235,228,210)'));
   const dark = Skia.Paint();
   dark.setColor(Skia.Color('rgb(40,60,40)'));
+  canvas.drawRect(Skia.XYWHRect(0, 0, W, 45), dark);
   canvas.drawRect(Skia.XYWHRect(380, 250, 220, 300), dark);
   const light = Skia.Paint();
   light.setColor(Skia.Color('rgb(235,235,235)'));
+  for (let x = 40; x < 400; x += 18) canvas.drawRect(Skia.XYWHRect(x, 10, 10, 25), light);
   for (let y = 270; y < 550; y += 25) canvas.drawRect(Skia.XYWHRect(380, y, 220, 3), light);
   return surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 95);
 }
 
-it('keeps a dark picture that runs off the edge of the page', async () => {
-  mockFiles.set('file:///doc/scans/1/p1.jpg', pageWithPictureOffEdge());
+it('keeps print that runs off the edges of the page', async () => {
+  mockFiles.set('file:///doc/scans/1/p1.jpg', pageWithPrintOffEdges());
 
   await cleanPages(['file:///doc/scans/1/p1.jpg']);
 
   const page = mockFiles.get('file:///doc/scans/1/p1.jpg')!;
-  for (const x of [596, 590, 560]) expect(luma(page, x, 377)).toBeLessThan(100);
+  for (const x of [54, 126, 198]) expect(luma(page, x, 22)).toBeLessThan(100); // between letters
+  expect(luma(page, 130, 4)).toBeLessThan(100); // above them
+  for (const x of [596, 590, 560]) expect(luma(page, x, 377)).toBeLessThan(100); // picture
 }, 30000);
 
 it('leaves a page it cannot read as it is, and cleans the rest', async () => {
