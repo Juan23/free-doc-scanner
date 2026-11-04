@@ -227,12 +227,13 @@ it('returns denied without permission', async () => {
   expect(Asset.create).not.toHaveBeenCalled();
 });
 
-it('clearScannerCache deletes the DocumentScanner folder and never throws', () => {
+it('clearScannerCache deletes the DocumentScanner and Camera folders and never throws', () => {
   clearScannerCache();
   expect(mockFs.deleted).toEqual([]);
   mockFs.existing.add('file:///cache/DocumentScanner');
+  mockFs.existing.add('file:///cache/Camera');
   clearScannerCache();
-  expect(mockFs.deleted).toEqual(['file:///cache/DocumentScanner']);
+  expect(mockFs.deleted).toEqual(['file:///cache/DocumentScanner', 'file:///cache/Camera']);
   mockFs.existing.add('file:///cache/DocumentScanner');
   mockFs.failDelete = true;
   expect(() => clearScannerCache()).not.toThrow();
