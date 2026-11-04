@@ -124,8 +124,11 @@ it('turns paper under hard-edged shadows and thin shadow strands white, up to th
 }, 30000);
 
 // A straightened photo of a bent page. A corner curled up, so a triangle of table shows at the top
-// right; the left edge was not straight, so a wavy strip of table runs along it, with text close
-// by. The bottom edge curls away from the light, so the paper darkens there, text included.
+// right; the left edge was not straight, so a wavy strip of table runs along it, with text a few
+// pixels away; a wedge of speckled grey desk shows along the right edge. The bottom edge curls
+// away from the light, so the paper darkens there, text included.
+const bentEdge = (y: number) => 16 + 8 * Math.sin(y / 70);
+
 function bentPage(): Uint8Array {
   const surface = Skia.Surface.Make(W, H)!;
   const canvas = surface.getCanvas();
@@ -137,15 +140,21 @@ function bentPage(): Uint8Array {
   }
   const ink = Skia.Paint();
   ink.setColor(Skia.Color('rgb(35,35,40)'));
-  for (let y = 60; y < 760; y += 30) canvas.drawRect(Skia.XYWHRect(36, y, 420, 6), ink);
+  // The text bends with the page, so it keeps 4 px from the edge.
+  for (let y = 60; y < 760; y += 14) canvas.drawRect(Skia.XYWHRect(bentEdge(y) + 4, y, 420, 7), ink);
   canvas.drawRect(Skia.XYWHRect(60, 784, 420, 6), ink);
   const table = Skia.Paint();
   table.setColor(Skia.Color('rgb(80,58,42)'));
   const strip = [{ x: 0, y: 0 }];
-  for (let y = 0; y <= H; y += 10) strip.push({ x: 16 + 8 * Math.sin(y / 70), y });
+  for (let y = 0; y <= H; y += 10) strip.push({ x: bentEdge(y), y });
   strip.push({ x: 0, y: H });
   canvas.drawPath(Skia.Path.Polygon(strip, true), table);
   canvas.drawPath(Skia.Path.Polygon([{ x: 500, y: 0 }, { x: W, y: 0 }, { x: W, y: 100 }], true), table);
+  const desk = Skia.Paint();
+  desk.setColor(Skia.Color('rgb(50,48,50)'));
+  canvas.drawPath(Skia.Path.Polygon([{ x: W, y: 260 }, { x: W - 28, y: 450 }, { x: W, y: 640 }], true), desk);
+  desk.setColor(Skia.Color('rgb(120,117,112)'));
+  for (let y = 380; y < 520; y += 30) canvas.drawRect(Skia.XYWHRect(W - 10, y, 6, 8), desk);
   return surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 95);
 }
 
@@ -159,10 +168,11 @@ it('turns table showing past the bent edges of a page white and keeps text near 
     for (const x of [500 + y + 3, 500 + y + 8]) expect(luma(page, x, y)).toBeGreaterThan(240); // curled corner
   }
   for (const y of [100, 250, 400, 640]) {
-    const edge = 16 + 8 * Math.sin(y / 70);
+    const edge = bentEdge(y);
     for (const x of [2, edge / 2, edge - 2]) expect(luma(page, Math.round(x), y)).toBeGreaterThan(240); // strip
   }
-  for (const y of [63, 243, 423, 603]) expect(luma(page, 40, y)).toBeLessThan(80); // text by the strip
+  for (const [x, y] of [[W - 7, 414], [W - 2, 450], [W - 20, 450]]) expect(luma(page, x, y)).toBeGreaterThan(240); // speckled desk
+  for (const y of [63, 245, 427, 609]) expect(luma(page, Math.round(bentEdge(y) + 7), y)).toBeLessThan(80); // text by the strip
   expect(luma(page, 200, 787)).toBeLessThan(80); // text in the darkened bottom
   expect(luma(page, 200, 796)).toBeGreaterThan(240); // darkened paper
 }, 30000);
@@ -193,6 +203,44 @@ it('keeps print that runs off the edges of the page', async () => {
   for (const x of [54, 126, 198]) expect(luma(page, x, 22)).toBeLessThan(100); // between letters
   expect(luma(page, 130, 4)).toBeLessThan(100); // above them
   for (const x of [596, 590, 560]) expect(luma(page, x, 377)).toBeLessThan(100); // picture
+}, 30000);
+
+// Print a tight crop cuts into: a bold title against the top edge, a frame line down the whole
+// right edge, a coloured footer band with white text and a logo in it, and a dark box by the top
+// left corner, just below the top edge.
+function pageWithPrintAtEdges(): Uint8Array {
+  const surface = Skia.Surface.Make(W, H)!;
+  const canvas = surface.getCanvas();
+  canvas.drawColor(Skia.Color('rgb(235,228,210)'));
+  const paint = (colour: string) => {
+    const p = Skia.Paint();
+    p.setColor(Skia.Color(colour));
+    return p;
+  };
+  const ink = paint('rgb(30,30,35)');
+  for (let x = 150; x < 450; x += 80) {
+    canvas.drawRect(Skia.XYWHRect(x, 0, 60, 18), ink);
+    canvas.drawRect(Skia.XYWHRect(x + 21, 0, 18, 54), ink);
+  }
+  canvas.drawRect(Skia.XYWHRect(W - 18, 0, 18, H), paint('rgb(20,40,120)'));
+  canvas.drawRect(Skia.XYWHRect(0, H - 24, W - 60, 24), paint('rgb(120,20,60)'));
+  const white = paint('rgb(245,245,245)');
+  for (let x = 30; x < 200; x += 14) canvas.drawRect(Skia.XYWHRect(x, H - 18, 8, 12), white);
+  canvas.drawRect(Skia.XYWHRect(420, H - 20, 50, 16), white);
+  canvas.drawRect(Skia.XYWHRect(0, 8, 60, 20), paint('rgb(60,60,65)'));
+  return surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 95);
+}
+
+it('keeps bold letters, frame lines, bands and boxes that a tight crop cuts into', async () => {
+  mockFiles.set('file:///doc/scans/1/p1.jpg', pageWithPrintAtEdges());
+
+  await cleanPages(['file:///doc/scans/1/p1.jpg']);
+
+  const page = mockFiles.get('file:///doc/scans/1/p1.jpg')!;
+  for (const [x, y] of [[180, 10], [180, 45], [340, 10]]) expect(luma(page, x, y)).toBeLessThan(80); // title
+  for (const y of [20, 400, 780]) expect(luma(page, W - 9, y)).toBeLessThan(100); // frame line
+  for (const x of [10, 300, 500]) expect(luma(page, x, H - 12)).toBeLessThan(160); // footer band
+  expect(luma(page, 30, 18)).toBeLessThan(80); // box
 }, 30000);
 
 it('leaves a page it cannot read as it is, and cleans the rest', async () => {
