@@ -169,6 +169,25 @@ it.each([0, 1, 2, 3])('leaves a list in capitals as it is, however it is turned 
   expect(untouched(page)).toBe(true);
 }, 30000);
 
+// Upright Russian has more descenders (р у д ц щ ф) than ascenders, so it leans the way upside-down
+// Latin does. CanvasKit's default typeface has Cyrillic.
+const RUSSIAN = Array.from({ length: 38 }, (_, i) => [
+  'Мы получили ваше письмо и благодарим за интерес к нашей работе. К сожалению, в',
+  'этом году мы не сможем принять участие в выставке, потому что наша группа',
+  'занята подготовкой нового проекта. Однако мы будем рады встретиться с вами в',
+  'другое время и обсудить возможное сотрудничество. Пожалуйста, сообщите, какие',
+  'дни вам удобны, и мы постараемся найти подходящее время для встречи в нашем',
+][i % 5]).join('\n');
+
+it.each([0, 1, 2, 3])('never turns a page of Russian text the wrong way (%i)', async (turns) => {
+  const page = letter(turns, RUSSIAN);
+  mockFiles.set(PAGE, page);
+
+  await uprightPages([PAGE]);
+
+  expect(untouched(page) || difference(mockFiles.get(PAGE)!, letter(0, RUSSIAN)) < 3).toBe(true);
+}, 30000);
+
 it.each([0, 1, 2, 3])('leaves a photo with no writing untouched, however it is turned (%i)', async (turns) => {
   mockFiles.set(PAGE, landscape());
   await rotatePage(PAGE, turns);

@@ -83,6 +83,13 @@ const STICK_OUT = 0.3;
 // In a line of text, most columns start at the x-line and end at the baseline, within this share
 // of the x-height. Not so for pictures, or for the ragged line ends of a text column seen sideways.
 const ALIGNED = 0.2;
+// A gap this many x-heights wide ends a line: wider than a word space, narrower than most column gaps.
+const LINE_GAP = 4;
+// A line ends short, or starts late, when a line within NEIGHBOURS x-heights above or below it
+// reaches SHORT x-heights further: more than a paragraph's indent (1.25 cm is about 7 x-heights of
+// 10 pt type).
+const NEIGHBOURS = 6;
+const SHORT = 10;
 
 function median(values: number[]): number {
   const sorted = values.sort((a, b) => a - b);
@@ -106,12 +113,19 @@ function edge(columns: number[], at: Int32Array): (x: number) => number {
  * Counts the strokes that stick up above lines of text running across `ink`, those that hang down
  * below them, and the lines (one strip wide) read. Latin text is upright when far more stick up:
  * ascenders, capitals and digits (b d f h k l t, A-Z, 0-9) outnumber descenders (g j p q y). Lines
- * running the other way, pictures and other scripts give about as many of each; capitals only, few.
+ * running the other way and pictures give about as many of each; capitals only, few. Other scripts
+ * vary: upright Cyrillic has more descenders, so it leans like upside-down Latin.
+ *
+ * Also counts the whole lines that end short of the lines around them and those that start late.
+ * Text starting at the left, in any left-to-right script, ends short far more often: ragged right
+ * edges and paragraphs' last lines.
  */
-function strokes(ink: Uint8Array, w: number, h: number): { up: number; down: number; lines: number } {
+function strokes(ink: Uint8Array, w: number, h: number): { up: number; down: number; lines: number; short: number; late: number } {
   let up = 0;
   let down = 0;
   let lines = 0;
+  // Whole lines, each once: first and last inked column, middle row, x-height.
+  const found: [number, number, number, number][] = [];
   const rows = new Float32Array(h);
   const smooth = new Float32Array(h);
   const lowercase = new Uint8Array(h);
@@ -163,6 +177,24 @@ function strokes(ink: Uint8Array, w: number, h: number): { up: number; down: num
       if (Math.min(onXLine, onBaseline) < 0.4 * columns.length) return;
       lines++;
 
+      // The first strip with ink of a line not yet followed follows it out both ways along its
+      // lowercase rows, until a gap no word space is as wide as.
+      const inked = (x: number) => {
+        for (let y = top; y < bottom; y++) if (ink[y * w + x]) return true;
+        return false;
+      };
+      let first = left;
+      while (first < left + STRIP && !inked(first)) first++;
+      const middle = (top + bottom) / 2;
+      if (first < left + STRIP && !found.some(([s, e, y]) => s <= first && first <= e && Math.abs(y - middle) < xHeight)) {
+        const gap = Math.max(6, LINE_GAP * xHeight);
+        let start = first;
+        let end = first;
+        for (let x = first - 1; x >= 0 && start - x <= gap; x--) if (inked(x)) start = x;
+        for (let x = first + 1; x < w && x - end <= gap; x++) if (inked(x)) end = x;
+        found.push([start, end, middle, xHeight]);
+      }
+
       const reach = Math.max(1.5, STICK_OUT * xHeight);
       // A run of sticking-out columns is one stroke.
       let wasUp = false;
@@ -177,11 +209,20 @@ function strokes(ink: Uint8Array, w: number, h: number): { up: number; down: num
       }
     });
   }
-  return { up, down, lines };
+  let short = 0;
+  let late = 0;
+  for (const [start, end, y, xHeight] of found) {
+    // Lines just above and below, side by side with this one (not those of the next column).
+    const near = found.filter(([s, e, y2]) => Math.abs(y2 - y) <= NEIGHBOURS * xHeight && s <= end && e >= start);
+    if (near.length < 2) continue;
+    if (end < Math.max(...near.map(([, e]) => e)) - SHORT * xHeight) short++;
+    if (start > Math.min(...near.map(([s]) => s)) + SHORT * xHeight) late++;
+  }
+  return { up, down, lines, short, late };
 }
 
 // Upright Latin text leans about 0.5 to the up side (sticking up minus hanging down, over both).
-// Lines running the other way, pictures and other scripts lean less than about 0.25 either way.
+// Lines running the other way and pictures lean less than about 0.25 either way.
 const SURE_LEAN = 0.3;
 // The lean must also hold over enough strokes that chance can't explain it: it is this many
 // standard deviations from even, (up - down) / √(up + down).
@@ -189,12 +230,17 @@ const SURE_DEVIATIONS = 6;
 // Lowercase text has an ascender or capital in nearly every word: more than one per line in a strip.
 // Text in capitals sticks out only at stray marks (commas, Q), which don't show reliably which way is up.
 const SURE_PER_LINE = 0.8;
+// Strokes alone can't tell upright Cyrillic (or another script heavy in descenders) from
+// upside-down Latin, so the line ends must agree: short ones must outnumber late ones on the side
+// the strokes say is up by this many standard deviations, (short - late) / √(short + late).
+const SURE_MARGINS = 1.5;
 
-function lean({ up, down, lines }: { up: number; down: number; lines: number }) {
+function lean({ up, down, lines, short, late }: ReturnType<typeof strokes>) {
   return {
     lean: (up - down) / (up + down || 1),
     deviations: (up - down) / Math.sqrt(up + down || 1),
     perLine: Math.max(up, down) / (lines || 1),
+    margins: (short - late) / Math.sqrt(short + late || 1),
   };
 }
 
@@ -211,6 +257,7 @@ export function quarterTurnsToUpright(image: SkImage): 0 | 1 | 2 | 3 {
     Math.abs(a.lean) >= SURE_LEAN &&
     Math.abs(a.deviations) >= SURE_DEVIATIONS &&
     a.perLine >= SURE_PER_LINE &&
+    a.margins * Math.sign(a.lean) >= SURE_MARGINS &&
     Math.abs(b.deviations) <= Math.abs(a.deviations) / 2;
   if (clear(asIs, turned)) return asIs.lean > 0 ? 0 : 2;
   if (clear(turned, asIs)) return turned.lean > 0 ? 1 : 3;
