@@ -3,7 +3,7 @@ import { Directory } from 'expo-file-system';
 import { Album, Asset, requestPermissionsAsync } from 'expo-media-library';
 import { Platform } from 'react-native';
 
-import { clearScannerCache, saveJpegs, savePdf, scanName } from './save';
+import { clearScannerCache, pagesToSave, saveJpegs, savePdf, scanName } from './save';
 
 // In-memory file system. Writes and copies finish on a later tick, like the native module.
 const mockFs = {
@@ -237,4 +237,17 @@ it('clearScannerCache deletes the DocumentScanner and Camera folders and never t
   mockFs.existing.add('file:///cache/DocumentScanner');
   mockFs.failDelete = true;
   expect(() => clearScannerCache()).not.toThrow();
+});
+
+it('saves only the picked pages, in page order whatever order they were tapped in', () => {
+  const pages = ['file:///p1.jpg', 'file:///p2.jpg', 'file:///p3.jpg', 'file:///p4.jpg'];
+  expect(pagesToSave(pages, ['file:///p4.jpg', 'file:///p1.jpg', 'file:///p2.jpg'])).toEqual([
+    'file:///p1.jpg',
+    'file:///p2.jpg',
+    'file:///p4.jpg',
+  ]);
+});
+
+it('saves every page when none are picked', () => {
+  expect(pagesToSave(['file:///p1.jpg', 'file:///p2.jpg'], [])).toEqual(['file:///p1.jpg', 'file:///p2.jpg']);
 });
