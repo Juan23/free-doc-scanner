@@ -11,11 +11,13 @@ import {
   Platform,
   Pressable,
   StyleSheet,
+  Switch,
   Text,
   useWindowDimensions,
   View,
 } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { cleanPages, cleanUpOn, setCleanUp } from './clean';
 import { clearScannerCache, saveJpegs, savePdf } from './save';
 import { addPages, createScan, deleteScan, listScans, type Scan } from './scans';
 
@@ -50,6 +52,7 @@ function Root() {
   const [open, setOpen] = useState<Scan | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const [cleanUp, setCleanUpState] = useState(cleanUpOn);
   // State updates are async, so a second tap in the same frame would still see busy=false.
   const inFlight = useRef(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -124,16 +127,24 @@ function Root() {
     }, 'Scan failed');
   }
 
+  // Runs once the pages are stored, so a crash mid-clean can't lose them. New pages are the scan's last.
+  async function cleanNewest(scan: Scan, count: number) {
+    if (cleanUp) await cleanPages(scan.pages.slice(-count));
+  }
+
   const scanNew = () =>
     scanPages(async (pages) => {
       setMessage('');
-      setOpen(await createScan(pages));
+      const scan = await createScan(pages);
+      await cleanNewest(scan, pages.length);
+      // Opened only after cleaning: Image would keep showing a page it already loaded from the same URI.
+      setOpen(scan);
     });
 
   const addToOpen = () =>
     open &&
     scanPages(async (pages) => {
-      await addPages(open, pages);
+      await cleanNewest(await addPages(open, pages), pages.length);
     });
 
   function save(kind: 'pdf' | 'jpeg') {
@@ -185,14 +196,31 @@ function Root() {
           onSave={save}
         />
       ) : (
-        <Home scans={scans} busy={busy} onScan={scanNew} onOpen={(s) => { setMessage(''); setOpen(s); }} />
+        <Home
+          scans={scans}
+          busy={busy}
+          cleanUp={cleanUp}
+          onCleanUp={(on) => {
+            setCleanUpState(on);
+            setCleanUp(on);
+          }}
+          onScan={scanNew}
+          onOpen={(s) => { setMessage(''); setOpen(s); }}
+        />
       )}
       <StatusBar style="dark" />
     </View>
   );
 }
 
-function Home(props: { scans: Scan[]; busy: boolean; onScan: () => void; onOpen: (s: Scan) => void }) {
+function Home(props: {
+  scans: Scan[];
+  busy: boolean;
+  cleanUp: boolean;
+  onCleanUp: (on: boolean) => void;
+  onScan: () => void;
+  onOpen: (s: Scan) => void;
+}) {
   const available = CameraView.isDocumentScannerAvailable;
   const insets = useSafeAreaInsets();
   const header = (
@@ -246,6 +274,28 @@ function Home(props: { scans: Scan[]; busy: boolean; onScan: () => void; onOpen:
       {body}
       {available && (
         <View style={styles.scanBar}>
+          <Pressable
+            accessibilityRole="switch"
+            accessibilityLabel="Clean up pages"
+            accessibilityHint="Whitens paper and removes shadows and dirt from new scans. Turn off for photos."
+            accessibilityState={{ checked: props.cleanUp, disabled: props.busy }}
+            disabled={props.busy}
+            onPress={() => props.onCleanUp(!props.cleanUp)}
+            style={[styles.cleanRow, props.busy && styles.disabled]}>
+            <View style={styles.rowText}>
+              <Text style={styles.rowName}>Clean up pages</Text>
+              <Text style={styles.rowSub}>Whitens paper, removes shadows and dirt. Turn off for photos.</Text>
+            </View>
+            <Switch
+              accessible={false}
+              importantForAccessibility="no"
+              disabled={props.busy}
+              value={props.cleanUp}
+              onValueChange={props.onCleanUp}
+              trackColor={{ true: C.accent }}
+              thumbColor="#fff"
+            />
+          </Pressable>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Scan"
@@ -524,6 +574,7 @@ const styles = StyleSheet.create({
   rowSub: { fontSize: 14, lineHeight: 20, color: C.muted },
   chevronBox: { width: 20, alignItems: 'center' },
   scanBar: { paddingHorizontal: 20, paddingTop: 12 },
+  cleanRow: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 44, marginBottom: 12 },
   scanButton: {
     minHeight: 56,
     paddingVertical: 8,

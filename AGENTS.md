@@ -41,7 +41,8 @@ The iOS Simulator has no camera, so scanning on iOS needs a real iPhone. An Andr
 - Two screens in `App.tsx` (Scans history and a scan's detail), switched with state. There is no router.
 - Scans are kept in the app's document folder (`scans.ts`): one folder per scan, named by its creation time in ms, holding its pages as `p1.jpg`, `p2.jpg`… There is no index file: the name comes from the folder name and the page order from the numbers.
 - Saving is in `save.ts`: PDFs are built from the page JPEGs with `pdf-lib`; JPEGs go to Photos/Gallery. Tests sit next to each file.
-- Scanning is `CameraView.scanDocumentAsync` from `expo-camera`.
+- Scanning is `CameraView.scanDocumentAsync` from `expo-camera`. Neither system scanner lets the app set its auto/manual capture mode or its filters.
+- Clean-up is in `clean.ts`: Skia whitens each new page right after it is stored, replacing the page file. It is on unless a `clean-up-off` file sits in the document folder. Its tests run on real pixels through Skia's CanvasKit Jest environment.
 - No accounts, network, cloud or analytics. Don't add any.
 
 ## Rules

@@ -6,6 +6,7 @@ A lightweight, free document scanner for iOS and Android. Scan a document and sa
 
 - Uses your phone's built-in scanner, so edges are detected and the page is cropped and straightened automatically.
 - Filters, multi-page capture and retakes.
+- Clean up pages (on by default): whitens the paper and removes shadows, tint, specks and faint creases from each new scan, keeping the writing. Turn it off on the Scans screen for photos.
 - History: every scan stays in the app, so you can add pages to it later or save it again.
 - No accounts, no sign-up, no ads.
 - No cloud sync and no network use.
