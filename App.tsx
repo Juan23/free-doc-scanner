@@ -66,7 +66,8 @@ function Root() {
   const [onCapturedPages, setOnCapturedPages] = useState<((pages: string[]) => Promise<void>) | null>(null);
   // Pages picked in Select mode, or null outside it.
   const [picked, setPicked] = useState<string[] | null>(null);
-  // Hand turns per page, added to its URI: Image keeps showing a page it already loaded from the same URI.
+  // Hand turns per page, added to its URI as a query: Image keeps showing a page it already loaded from the same URI,
+  // and both platforms read a file:// image by its path, ignoring the query.
   const [turns, setTurns] = useState<Record<string, number>>({});
   // State updates are async, so a second tap in the same frame would still see busy=false.
   const inFlight = useRef(false);
