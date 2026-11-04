@@ -4,7 +4,7 @@
 /// <reference types="jest" />
 import { ImageFormat, Skia, type SkCanvas, type SkPaint } from '@shopify/react-native-skia';
 
-import { cropPage, findPage, type Quad } from './crop';
+import { cropPage, findPage, isConvex, type Quad } from './crop';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
 const mockFiles = new Map<string, Uint8Array>();
@@ -209,4 +209,10 @@ it('rejects a photo it cannot read', async () => {
   mockFiles.set('file:///cache/photo.jpg', new Uint8Array([1, 2, 3]));
 
   await expect(findPage('file:///cache/photo.jpg')).rejects.toThrow();
+});
+
+it('tells a page outline from corners dragged past each other', () => {
+  expect(isConvex(tilted)).toBe(true);
+  expect(isConvex([tilted[1], tilted[0], tilted[2], tilted[3]])).toBe(false);
+  expect(isConvex([tilted[0], tilted[1], { x: 300, y: 300 }, tilted[3]])).toBe(false);
 });

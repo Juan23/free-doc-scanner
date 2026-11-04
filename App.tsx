@@ -22,7 +22,7 @@ import {
 } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { cleanPages, cleanUpOn, setCleanUp } from './clean';
-import { cropPage, findPage, type Point, type Quad } from './crop';
+import { cropPage, findPage, isConvex, type FoundPage, type Point, type Quad } from './crop';
 import { clearScannerCache, saveJpegs, savePdf } from './save';
 import { addPages, createScan, deleteScan, listScans, type Scan } from './scans';
 
@@ -473,7 +473,7 @@ function Detail(props: {
   );
 }
 
-type Photo = { uri: string; width: number; height: number; corners: Quad };
+type Photo = FoundPage & { uri: string };
 
 const deleteQuietly = (uri: string) => {
   try {
@@ -623,9 +623,12 @@ function PageEditor(props: { photo: Photo; onChange: (corners: Quad) => void }) 
   const { photo } = props;
   // Handles on the photo's edge stay whole on screen and, at the sides, clear of Android's
   // swipe-back zone, which would take the drag.
-  const side = 48;
-  const end = 20;
-  const scale = Math.max(0, Math.min((box.width - 2 * side) / photo.width, (box.height - 2 * end) / photo.height));
+  const sideMargin = 48;
+  const endMargin = 20;
+  const scale = Math.max(
+    0,
+    Math.min((box.width - 2 * sideMargin) / photo.width, (box.height - 2 * endMargin) / photo.height),
+  );
   const left = (box.width - photo.width * scale) / 2;
   const top = (box.height - photo.height * scale) / 2;
   const onScreen = photo.corners.map((p) => ({ x: left + p.x * scale, y: top + p.y * scale }));
@@ -647,7 +650,8 @@ function PageEditor(props: { photo: Photo; onChange: (corners: Quad) => void }) 
       x: clamp(d.from.x + (e.nativeEvent.pageX - d.touch.x) / scale, photo.width),
       y: clamp(d.from.y + (e.nativeEvent.pageY - d.touch.y) / scale, photo.height),
     };
-    props.onChange(corners);
+    // A corner dragged past another would cut out a mirrored or twisted page.
+    if (isConvex(corners)) props.onChange(corners);
   };
 
   const outline = `M ${onScreen.map((p) => `${p.x} ${p.y}`).join(' L ')} Z`;
@@ -679,7 +683,6 @@ function PageEditor(props: { photo: Photo; onChange: (corners: Quad) => void }) 
           </Canvas>
         </>
       )}
-
     </View>
   );
 }

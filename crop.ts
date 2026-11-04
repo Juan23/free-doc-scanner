@@ -4,6 +4,25 @@ import { File } from 'expo-file-system';
 export type Point = { x: number; y: number };
 /** Page corners in photo pixels: top-left, top-right, bottom-right, bottom-left. */
 export type Quad = [Point, Point, Point, Point];
+/** A photo's size and the corners of the page in it. */
+export type FoundPage = { width: number; height: number; corners: Quad };
+
+const whole = (w: number, h: number): Quad => [
+  { x: 0, y: 0 },
+  { x: w, y: 0 },
+  { x: w, y: h },
+  { x: 0, y: h },
+];
+
+/** True when the corners go round the outline in order without crossing or folding in. */
+export function isConvex(q: Quad): boolean {
+  const turns = q.map((p, i) => {
+    const a = q[(i + 1) % 4];
+    const b = q[(i + 2) % 4];
+    return (a.x - p.x) * (b.y - a.y) - (a.y - p.y) * (b.x - a.x);
+  });
+  return turns.every((t) => t > 0) || turns.every((t) => t < 0);
+}
 
 // The page is looked for on a copy whose long side is this many pixels.
 const SMALL_SIDE = 300;
@@ -126,7 +145,7 @@ function brightPage(luma: Uint8Array, level: number, w: number, h: number): Quad
 }
 
 /** Finds the page in a photo. When none stands out, the corners are the whole photo's. */
-export async function findPage(uri: string): Promise<{ width: number; height: number; corners: Quad }> {
+export async function findPage(uri: string): Promise<FoundPage> {
   const image = await decode(uri);
   const width = image.width();
   const height = image.height();
@@ -143,19 +162,12 @@ export async function findPage(uri: string): Promise<{ width: number; height: nu
   if (!rgba) throw new Error('unreadable photo');
 
   const found = pageCorners(rgba, sw, sh);
-  const corners: Quad = found
-    ? (found.map((p) => ({ x: (p.x * width) / sw, y: (p.y * height) / sh })) as Quad)
-    : [
-        { x: 0, y: 0 },
-        { x: width, y: 0 },
-        { x: width, y: height },
-        { x: 0, y: height },
-      ];
+  const corners = found ? (found.map((p) => ({ x: (p.x * width) / sw, y: (p.y * height) / sh })) as Quad) : whole(width, height);
   return { width, height, corners };
 }
 
 /** The 3x3 matrix, row by row, that moves each `from` point onto the matching `to` point. */
-export function perspective(from: Quad, to: Quad): number[] {
+function perspective(from: Quad, to: Quad): number[] {
   // Eight equations in the matrix's eight unknowns (the ninth is 1), solved by elimination.
   const rows: number[][] = [];
   from.forEach(({ x, y }, i) => {
@@ -183,14 +195,7 @@ export async function cropPage(uri: string, corners: Quad, dest: string): Promis
   const w = Math.max(1, Math.round(Math.max(length(tl, tr), length(bl, br))));
   const h = Math.max(1, Math.round(Math.max(length(tl, bl), length(tr, br))));
   const image = await decode(uri);
-  const matrix = Skia.Matrix(
-    perspective(corners, [
-      { x: 0, y: 0 },
-      { x: w, y: 0 },
-      { x: w, y: h },
-      { x: 0, y: h },
-    ]),
-  );
+  const matrix = Skia.Matrix(perspective(corners, whole(w, h)));
   const shader = image.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, MipmapMode.None, matrix);
   const paint = Skia.Paint();
   paint.setShader(shader);
