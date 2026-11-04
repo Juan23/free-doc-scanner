@@ -2,7 +2,7 @@
  * @jest-environment @shopify/react-native-skia/jestEnv.js
  */
 /// <reference types="jest" />
-import { ImageFormat, Skia } from '@shopify/react-native-skia';
+import { BlurStyle, ImageFormat, Skia } from '@shopify/react-native-skia';
 
 import { cleanPages } from './clean';
 
@@ -89,6 +89,38 @@ it('turns shadowed, tinted paper, specks and creases white and keeps ink dark, i
   expect(luma(page, 520, 208)).toBeLessThan(50); // ink in the shadow
   expect(luma(page, 303, 453)).toBeLessThan(80); // full stop
   expect(luma(page, 300, 223)).toBeLessThan(215); // faint stroke next to writing
+}, 30000);
+
+// A page of text lines, half of it under a hard-edged shadow (a phone under a ceiling lamp) and
+// crossed lower down by a thin shadow strand (blinds, a plant).
+function sharplyShadowedPage(): Uint8Array {
+  const surface = Skia.Surface.Make(1200, 1600)!;
+  const canvas = surface.getCanvas();
+  canvas.drawColor(Skia.Color('rgb(235,228,210)'));
+  const ink = Skia.Paint();
+  ink.setColor(Skia.Color('rgb(35,35,40)'));
+  for (let y = 100; y < 1600; y += 60) {
+    for (let x = 40; x < 1160; x += 70) canvas.drawRect(Skia.XYWHRect(x, y, 50, 8), ink);
+  }
+  const shade = Skia.Paint();
+  shade.setColor(Skia.Color('rgba(20,15,10,0.5)'));
+  shade.setMaskFilter(Skia.MaskFilter.MakeBlur(BlurStyle.Normal, 1.5, true));
+  canvas.drawRect(Skia.XYWHRect(700, -50, 600, 850), shade);
+  canvas.drawRect(Skia.XYWHRect(300, 900, 30, 800), shade);
+  return surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 95);
+}
+
+it('turns paper under hard-edged shadows and thin shadow strands white, up to the edge', async () => {
+  mockFiles.set('file:///doc/scans/1/p1.jpg', sharplyShadowedPage());
+
+  await cleanPages(['file:///doc/scans/1/p1.jpg']);
+
+  const page = mockFiles.get('file:///doc/scans/1/p1.jpg')!;
+  for (const x of [690, 704, 712, 724, 740, 800]) expect(luma(page, x, 430)).toBeGreaterThan(240); // across the hard edge
+  expect(luma(page, 315, 1030)).toBeGreaterThan(240); // inside the strand
+  expect(luma(page, 325, 1004)).toBeLessThan(60); // ink inside the strand
+  expect(luma(page, 710, 404)).toBeLessThan(60); // ink just inside the hard edge
+  expect(luma(page, 900, 404)).toBeLessThan(60); // ink deep in the shadow
 }, 30000);
 
 it('leaves a page it cannot read as it is, and cleans the rest', async () => {

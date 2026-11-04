@@ -15,8 +15,27 @@ export function setCleanUp(on: boolean): void {
   } catch {}
 }
 
-// How much darker than its paper each pixel of the small copy is. Blurred, it shows where the
-// writing is. Kept linear so thin, faint strokes still count once shrunk.
+// Two guesses at the paper on the small copy. The coarse one wipes out ink up to about 12 px wide
+// but blurs across shadow edges, leaving a grey band along them. The fine one keeps edges sharp
+// but also keeps anything over about 11 px wide, ink included. The fine one wins where it looks
+// like shadow: 15-65% darker than the coarse one, in nearly the same colour. Darker is ink;
+// lighter is usually blurred text, and the coarse guess turns light shadow white anyway.
+const paperEffect = Skia.RuntimeEffect.Make(`
+uniform shader coarse;
+uniform shader fine;
+half4 main(float2 xy) {
+  half3 c = coarse.eval(xy).rgb;
+  half3 f = fine.eval(xy).rgb;
+  half3 s = f / max(c, half3(0.05));
+  half lo = min(min(s.r, s.g), s.b);
+  half grey = 1 - smoothstep(0.15, 0.3, max(max(s.r, s.g), s.b) - lo);
+  half shadow = smoothstep(0.35, 0.5, lo) * (1 - smoothstep(0.75, 0.85, lo)) * grey;
+  return half4(mix(c, f, shadow), 1);
+}`)!;
+
+// How much darker than the coarse paper each pixel of the small copy is. Blurred, it shows where
+// the writing is. Kept linear so thin, faint strokes still count once shrunk. Not the picked
+// paper: that can follow blurred text, which would then pass for dirt.
 const inkEffect = Skia.RuntimeEffect.Make(`
 uniform shader page;
 uniform shader paper;
@@ -39,7 +58,7 @@ half4 main(float2 xy) {
   return half4(mix(half3(1), c, keep), 1);
 }`)!;
 
-// Paper and text are found on a copy this wide: dilating wipes out the ink, blurring smooths the rest.
+// Paper and text are found on a copy this wide.
 const SMALL_WIDTH = 500;
 
 async function cleanPage(uri: string): Promise<void> {
@@ -64,11 +83,21 @@ async function cleanPage(uri: string): Promise<void> {
   const wipeInk = Skia.Paint();
   wipeInk.setImageFilter(Skia.ImageFilter.MakeBlur(8, 8, TileMode.Clamp, Skia.ImageFilter.MakeDilate(6, 6, null)));
   canvas.drawImage(smallPage, 0, 0, wipeInk);
+  const coarse = surface.makeImageSnapshot();
+  const wipeText = Skia.Paint();
+  wipeText.setImageFilter(Skia.ImageFilter.MakeErode(5, 5, Skia.ImageFilter.MakeDilate(5, 5, null)));
+  canvas.drawImage(smallPage, 0, 0, wipeText);
+  const fine = surface.makeImageSnapshot();
+  const coarseShader = clamp(coarse, FilterMode.Nearest);
+  const fineShader = clamp(fine, FilterMode.Nearest);
+  const pickShader = paperEffect.makeShaderWithChildren([], [coarseShader, fineShader]);
+  const pickPaper = Skia.Paint();
+  pickPaper.setShader(pickShader);
+  canvas.drawRect(Skia.XYWHRect(0, 0, sw, sh), pickPaper);
   const paper = surface.makeImageSnapshot();
 
   const smallPageShader = clamp(smallPage, FilterMode.Nearest);
-  const smallPaperShader = clamp(paper, FilterMode.Nearest);
-  const inkShader = inkEffect.makeShaderWithChildren([], [smallPageShader, smallPaperShader]);
+  const inkShader = inkEffect.makeShaderWithChildren([], [smallPageShader, coarseShader]);
   const spreadInk = Skia.Paint();
   spreadInk.setShader(inkShader);
   spreadInk.setImageFilter(Skia.ImageFilter.MakeBlur(6, 6, TileMode.Clamp, null));
@@ -88,8 +117,9 @@ async function cleanPage(uri: string): Promise<void> {
   const bytes = snapshot.encodeToBytes(ImageFormat.JPEG, 90);
   // A page holds about 100 MB of bitmaps: free them now, not whenever the garbage collector runs.
   for (const o of [
-    data, image, surface, smallPage, wipeInk, paper, smallPageShader, smallPaperShader, inkShader, spreadInk,
-    ink, pageShader, paperShader, textShader, cleanShader, out, paint, snapshot,
+    data, image, surface, smallPage, wipeInk, coarse, wipeText, fine, coarseShader, fineShader, pickShader,
+    pickPaper, paper, smallPageShader, inkShader, spreadInk, ink, pageShader, paperShader, textShader,
+    cleanShader, out, paint, snapshot,
   ]) {
     o.dispose();
   }
