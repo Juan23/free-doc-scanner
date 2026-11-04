@@ -62,8 +62,7 @@ function Root() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [cleanUp, setCleanUpState] = useState(cleanUpOn);
-  // Set while the Android camera screen is open: what to do with the pages it returns.
-  const [capture, setCapture] = useState<((pages: string[]) => Promise<void>) | null>(null);
+  const [onCapturedPages, setOnCapturedPages] = useState<((pages: string[]) => Promise<void>) | null>(null);
   // State updates are async, so a second tap in the same frame would still see busy=false.
   const inFlight = useRef(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -118,7 +117,7 @@ function Root() {
     if (Platform.OS === 'android') {
       return guarded(async () => {
         const { granted, canAskAgain } = await Camera.requestCameraPermissionsAsync();
-        if (granted) setCapture(() => onPages);
+        if (granted) setOnCapturedPages(() => onPages);
         else if (!canAskAgain) askForSettings('Camera access needed', 'Allow camera access in Settings to scan.');
       }, 'Scan failed');
     }
@@ -145,8 +144,8 @@ function Root() {
   }
 
   function endCapture(pages: string[]) {
-    const onPages = capture;
-    setCapture(null);
+    const onPages = onCapturedPages;
+    setOnCapturedPages(null);
     if (onPages && pages.length) {
       guarded(async () => {
         try {
@@ -216,7 +215,7 @@ function Root() {
 
   return (
     <View style={styles.screen}>
-      {capture ? (
+      {onCapturedPages ? (
         <Capture onEnd={endCapture} />
       ) : open ? (
         <Detail
@@ -241,7 +240,7 @@ function Root() {
           onOpen={(s) => { setMessage(''); setOpen(s); }}
         />
       )}
-      <StatusBar style={capture ? 'light' : 'dark'} />
+      <StatusBar style={onCapturedPages ? 'light' : 'dark'} />
     </View>
   );
 }
@@ -481,8 +480,7 @@ const deleteQuietly = (uri: string) => {
   } catch {}
 };
 
-// Android's scanner: a photo, then its page corners, found automatically and draggable, then the
-// straightened page. Photos and pages wait in cache folders that are cleared at launch.
+// Android's scanner. Its photos and pages wait in cache folders that clearScannerCache empties at launch.
 function Capture(props: { onEnd: (pages: string[]) => void }) {
   const insets = useSafeAreaInsets();
   const camera = useRef<CameraView>(null);
@@ -613,16 +611,13 @@ function CaptureButton(props: { label: string; onPress: () => void; disabled: bo
   );
 }
 
-// The photo, fitted to the space, with the page outline and a handle on each corner. A drag that
-// starts on a handle moves that corner.
+// A drag that starts on a corner handle moves that corner.
 function PageEditor(props: { photo: Photo; onChange: (corners: Quad) => void }) {
-  // The editor's size, and where it sits on screen: touches are placed by their screen position,
-  // since their position within a view depends on which view the finger lands on.
+  // Touches use page coordinates: locationX/Y is relative to whichever child view the finger lands on.
   const view = useRef<React.ComponentRef<typeof View>>(null);
   const [box, setBox] = useState({ width: 0, height: 0, pageX: 0, pageY: 0 });
   const { photo } = props;
-  // Handles on the photo's edge stay whole on screen and, at the sides, clear of Android's
-  // swipe-back zone, which would take the drag.
+  // Keeps edge handles whole on screen and, at the sides, out of Android's swipe-back zone, which would take the drag.
   const sideMargin = 48;
   const endMargin = 20;
   const scale = Math.max(
@@ -633,13 +628,12 @@ function PageEditor(props: { photo: Photo; onChange: (corners: Quad) => void }) 
   const top = (box.height - photo.height * scale) / 2;
   const onScreen = photo.corners.map((p) => ({ x: left + p.x * scale, y: top + p.y * scale }));
 
-  // Where the drag started, on screen and in the photo.
-  const drag = useRef<{ corner: number; touch: Point; from: Point } | null>(null);
+  const drag = useRef<{ corner: number; startOnScreen: Point; startInPhoto: Point } | null>(null);
   const onGrant = (e: GestureResponderEvent) => {
     const { pageX, pageY } = e.nativeEvent;
     const distances = onScreen.map((p) => Math.hypot(p.x - (pageX - box.pageX), p.y - (pageY - box.pageY)));
     const corner = distances.indexOf(Math.min(...distances));
-    drag.current = distances[corner] < 60 ? { corner, touch: { x: pageX, y: pageY }, from: photo.corners[corner] } : null;
+    drag.current = distances[corner] < 60 ? { corner, startOnScreen: { x: pageX, y: pageY }, startInPhoto: photo.corners[corner] } : null;
   };
   const onMove = (e: GestureResponderEvent) => {
     const d = drag.current;
@@ -647,8 +641,8 @@ function PageEditor(props: { photo: Photo; onChange: (corners: Quad) => void }) 
     const clamp = (v: number, max: number) => Math.min(max, Math.max(0, v));
     const corners = [...photo.corners] as Quad;
     corners[d.corner] = {
-      x: clamp(d.from.x + (e.nativeEvent.pageX - d.touch.x) / scale, photo.width),
-      y: clamp(d.from.y + (e.nativeEvent.pageY - d.touch.y) / scale, photo.height),
+      x: clamp(d.startInPhoto.x + (e.nativeEvent.pageX - d.startOnScreen.x) / scale, photo.width),
+      y: clamp(d.startInPhoto.y + (e.nativeEvent.pageY - d.startOnScreen.y) / scale, photo.height),
     };
     // A corner dragged past another would cut out a mirrored or twisted page.
     if (isConvex(corners)) props.onChange(corners);

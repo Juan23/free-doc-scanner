@@ -24,8 +24,7 @@ export function isConvex(q: Quad): boolean {
   return turns.every((t) => t > 0) || turns.every((t) => t < 0);
 }
 
-// The page is looked for on a copy whose long side is this many pixels.
-const SMALL_SIDE = 300;
+const SEARCH_LONG_SIDE = 300;
 
 async function decode(uri: string) {
   const data = Skia.Data.fromBytes(await new File(uri).bytes());
@@ -144,12 +143,12 @@ function brightPage(luma: Uint8Array, level: number, w: number, h: number): Quad
   return corners;
 }
 
-/** Finds the page in a photo. When none stands out, the corners are the whole photo's. */
+/** When no page stands out, the corners are the whole photo's. */
 export async function findPage(uri: string): Promise<FoundPage> {
   const image = await decode(uri);
   const width = image.width();
   const height = image.height();
-  const scale = Math.min(1, SMALL_SIDE / Math.max(width, height));
+  const scale = Math.min(1, SEARCH_LONG_SIDE / Math.max(width, height));
   const sw = Math.round(width * scale);
   const sh = Math.round(height * scale);
   const surface = Skia.Surface.Make(sw, sh)!;
