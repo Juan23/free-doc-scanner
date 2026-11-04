@@ -123,6 +123,73 @@ it('turns paper under hard-edged shadows and thin shadow strands white, up to th
   expect(luma(page, 900, 404)).toBeLessThan(60); // ink deep in the shadow
 }, 30000);
 
+// A straightened photo of a bent page. A corner curled up, so a triangle of table shows at the top
+// right; the left edge was not straight, so a wavy strip of table runs along it, with text close
+// by. The bottom edge curls away from the light, so the paper darkens there, text included.
+function bentPage(): Uint8Array {
+  const surface = Skia.Surface.Make(W, H)!;
+  const canvas = surface.getCanvas();
+  canvas.drawColor(Skia.Color('rgb(235,228,210)'));
+  const shade = Skia.Paint();
+  for (let y = 720; y < H; y += 4) {
+    shade.setColor(Skia.Color(`rgba(20,15,10,${(0.6 * (y - 720)) / (H - 720)})`));
+    canvas.drawRect(Skia.XYWHRect(0, y, W, 4), shade);
+  }
+  const ink = Skia.Paint();
+  ink.setColor(Skia.Color('rgb(35,35,40)'));
+  for (let y = 60; y < 760; y += 30) canvas.drawRect(Skia.XYWHRect(36, y, 420, 6), ink);
+  canvas.drawRect(Skia.XYWHRect(60, 784, 420, 6), ink);
+  const table = Skia.Paint();
+  table.setColor(Skia.Color('rgb(80,58,42)'));
+  const strip = [{ x: 0, y: 0 }];
+  for (let y = 0; y <= H; y += 10) strip.push({ x: 16 + 8 * Math.sin(y / 70), y });
+  strip.push({ x: 0, y: H });
+  canvas.drawPath(Skia.Path.Polygon(strip, true), table);
+  canvas.drawPath(Skia.Path.Polygon([{ x: 500, y: 0 }, { x: W, y: 0 }, { x: W, y: 100 }], true), table);
+  return surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 95);
+}
+
+it('turns table showing past the bent edges of a page white and keeps text near them', async () => {
+  mockFiles.set('file:///doc/scans/1/p1.jpg', bentPage());
+
+  await cleanPages(['file:///doc/scans/1/p1.jpg']);
+
+  const page = mockFiles.get('file:///doc/scans/1/p1.jpg')!;
+  for (const y of [20, 50, 80]) {
+    for (const x of [500 + y + 3, 500 + y + 8]) expect(luma(page, x, y)).toBeGreaterThan(240); // curled corner
+  }
+  for (const y of [100, 250, 400, 640]) {
+    const edge = 16 + 8 * Math.sin(y / 70);
+    for (const x of [2, edge / 2, edge - 2]) expect(luma(page, Math.round(x), y)).toBeGreaterThan(240); // strip
+  }
+  for (const y of [63, 243, 423, 603]) expect(luma(page, 40, y)).toBeLessThan(80); // text by the strip
+  expect(luma(page, 200, 787)).toBeLessThan(80); // text in the darkened bottom
+  expect(luma(page, 200, 796)).toBeGreaterThan(240); // darkened paper
+}, 30000);
+
+// A page with a dark picture printed off its right edge, light details in it.
+function pageWithPictureOffEdge(): Uint8Array {
+  const surface = Skia.Surface.Make(W, H)!;
+  const canvas = surface.getCanvas();
+  canvas.drawColor(Skia.Color('rgb(235,228,210)'));
+  const dark = Skia.Paint();
+  dark.setColor(Skia.Color('rgb(40,60,40)'));
+  canvas.drawRect(Skia.XYWHRect(380, 250, 220, 300), dark);
+  const light = Skia.Paint();
+  light.setColor(Skia.Color('rgb(235,235,235)'));
+  for (let y = 270; y < 550; y += 25) canvas.drawRect(Skia.XYWHRect(380, y, 220, 3), light);
+  return surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 95);
+}
+
+it('keeps a dark picture that runs off the edge of the page', async () => {
+  mockFiles.set('file:///doc/scans/1/p1.jpg', pageWithPictureOffEdge());
+
+  await cleanPages(['file:///doc/scans/1/p1.jpg']);
+
+  const page = mockFiles.get('file:///doc/scans/1/p1.jpg')!;
+  for (const x of [596, 590, 560]) expect(luma(page, x, 377)).toBeLessThan(100);
+}, 30000);
+
 it('leaves a page it cannot read as it is, and cleans the rest', async () => {
   const broken = new Uint8Array([1, 2, 3]);
   mockFiles.set('file:///doc/scans/1/p1.jpg', broken);
