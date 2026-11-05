@@ -6,6 +6,8 @@ import { scanName } from './save';
 const mockFs = { nodes: new Map<string, string>(), failMoveAt: 0, moves: 0, failDelete: false };
 const DIR = '<dir>';
 
+jest.mock('@shopify/react-native-skia', () => ({}));
+
 jest.mock('expo-file-system', () => {
   const tick = () => new Promise<void>((r) => setTimeout(r, 0));
   const join = (parts: any[]) => parts.map((p) => p.uri ?? p).join('/');

@@ -3,6 +3,8 @@ import {
 } from '@shopify/react-native-skia';
 import { File, Paths } from 'expo-file-system';
 
+import { readPage, replacePage } from './scans';
+
 // Clean-up is on unless this file exists.
 const offFile = () => new File(Paths.document, 'clean-up-off');
 
@@ -207,8 +209,7 @@ function pastEdges(page: Uint8Array, fine: Uint8Array, w: number, h: number): Ui
 }
 
 async function cleanPage(uri: string): Promise<void> {
-  const data = Skia.Data.fromBytes(await new File(uri).bytes());
-  const image = Skia.Image.MakeImageFromEncoded(data);
+  const image = await readPage(uri);
   if (!image) throw new Error('unreadable page');
   const w = image.width();
   const h = image.height();
@@ -276,7 +277,7 @@ async function cleanPage(uri: string): Promise<void> {
   const bytes = snapshot.encodeToBytes(ImageFormat.JPEG, 90);
   // A page holds about 100 MB of bitmaps: free them now, not whenever the garbage collector runs.
   for (const o of [
-    data, image, surface, smallPage, wipeInk, coarse, wipeText, fine, coarseShader, fineShader, pickShader,
+    image, surface, smallPage, wipeInk, coarse, wipeText, fine, coarseShader, fineShader, pickShader,
     pickPaper, paper, smallPageShader, inkShader, spreadInk, ink, beyondData, beyondMask, feather, beyond,
     pageShader, paperShader, textShader, beyondShader, cleanShader, out, paint, snapshot,
   ]) {
@@ -285,10 +286,7 @@ async function cleanPage(uri: string): Promise<void> {
   // Native Skia returns null when encoding fails, whatever the type says.
   if (!bytes?.length) throw new Error('could not encode page');
 
-  // Swapping in a finished file means a crash mid-write can't leave a broken page.
-  const tmp = new File(`${uri}.tmp`);
-  await tmp.write(bytes);
-  await tmp.move(new File(uri), { overwrite: true });
+  await replacePage(uri, bytes);
 }
 
 /**

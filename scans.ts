@@ -1,3 +1,4 @@
+import { Skia, type SkImage } from '@shopify/react-native-skia';
 import { Directory, File, Paths } from 'expo-file-system';
 
 import { scanName } from './save';
@@ -9,6 +10,21 @@ const root = () => new Directory(Paths.document, 'scans');
 const PAGE = /^p(\d+)\.jpg$/;
 // A page is replaced by writing p<N>.jpg.tmp, then moving it over the page, which deletes the page first.
 const REPLACEMENT = /^(p\d+\.jpg)\.tmp$/;
+
+/** The page's image, or null when the file is not a readable image. */
+export async function readPage(uri: string): Promise<SkImage | null> {
+  const data = Skia.Data.fromBytes(await new File(uri).bytes());
+  const image = Skia.Image.MakeImageFromEncoded(data);
+  data.dispose();
+  return image;
+}
+
+/** Replaces the page at `uri` with the JPEG `bytes`. Swapping in a finished file means a crash mid-write can't leave a broken page. */
+export async function replacePage(uri: string, bytes: Uint8Array): Promise<void> {
+  const tmp = new File(`${uri}.tmp`);
+  await tmp.write(bytes);
+  await tmp.move(new File(uri), { overwrite: true });
+}
 
 /** The folder's page files, sorted by number so p2 comes before p10. */
 function pagesIn(dir: Directory): { n: number; name: string }[] {

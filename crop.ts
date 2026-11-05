@@ -1,5 +1,7 @@
-import { FilterMode, ImageFormat, MipmapMode, Skia, TileMode } from '@shopify/react-native-skia';
+import { AlphaType, ColorType, FilterMode, ImageFormat, MipmapMode, Skia, TileMode } from '@shopify/react-native-skia';
 import { File } from 'expo-file-system';
+
+import { readPage } from './scans';
 
 export type Point = { x: number; y: number };
 /** Page corners in photo pixels: top-left, top-right, bottom-right, bottom-left. */
@@ -27,9 +29,7 @@ export function isConvex(q: Quad): boolean {
 const SEARCH_LONG_SIDE = 300;
 
 async function decode(uri: string) {
-  const data = Skia.Data.fromBytes(await new File(uri).bytes());
-  const image = Skia.Image.MakeImageFromEncoded(data);
-  data.dispose();
+  const image = await readPage(uri);
   if (!image) throw new Error('unreadable photo');
   return image;
 }
@@ -156,7 +156,7 @@ export async function findPage(uri: string): Promise<FoundPage> {
     .getCanvas()
     .drawImageRectOptions(image, Skia.XYWHRect(0, 0, width, height), Skia.XYWHRect(0, 0, sw, sh), FilterMode.Linear, MipmapMode.Linear);
   const small = surface.makeImageSnapshot();
-  const rgba = small.readPixels(0, 0, { width: sw, height: sh, colorType: 4, alphaType: 3 }) as Uint8Array | null;
+  const rgba = small.readPixels(0, 0, { width: sw, height: sh, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul }) as Uint8Array | null;
   for (const o of [image, surface, small]) o.dispose();
   if (!rgba) throw new Error('unreadable photo');
 

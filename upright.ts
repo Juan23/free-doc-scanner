@@ -1,10 +1,9 @@
-import { FilterMode, ImageFormat, MipmapMode, Skia, type SkImage } from '@shopify/react-native-skia';
-import { File } from 'expo-file-system';
+import { AlphaType, ColorType, FilterMode, ImageFormat, MipmapMode, Skia, type SkImage } from '@shopify/react-native-skia';
+
+import { readPage, replacePage } from './scans';
 
 async function decode(uri: string): Promise<SkImage> {
-  const data = Skia.Data.fromBytes(await new File(uri).bytes());
-  const image = Skia.Image.MakeImageFromEncoded(data);
-  data.dispose();
+  const image = await readPage(uri);
   if (!image) throw new Error('unreadable page');
   return image;
 }
@@ -27,7 +26,7 @@ function findInk(image: SkImage): { ink: Uint8Array; w: number; h: number } {
     .getCanvas()
     .drawImageRectOptions(image, Skia.XYWHRect(0, 0, width, height), Skia.XYWHRect(0, 0, w, h), FilterMode.Linear, MipmapMode.Linear);
   const small = surface.makeImageSnapshot();
-  const rgba = small.readPixels(0, 0, { width: w, height: h, colorType: 4, alphaType: 3 }) as Uint8Array | null;
+  const rgba = small.readPixels(0, 0, { width: w, height: h, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul }) as Uint8Array | null;
   for (const o of [surface, small]) o.dispose();
   if (!rgba) throw new Error('unreadable page');
 
@@ -260,7 +259,9 @@ function strokes(ink: Uint8Array, w: number, h: number) {
         };
         const after = blank(left + b + 1, 1);
         const before = blank(left + a - 1, -1);
-        const [marks, ltr, rtl] = isStop ? [low, after, before] : [high, before, after];
+        const marks = isStop ? low : high;
+        const ltr = isStop ? after : before;
+        const rtl = isStop ? before : after;
         if (ltr >= space && (rtl < space || ltr >= WIDER * rtl)) marks.ltr++;
         else if (rtl >= space && (ltr < space || rtl >= WIDER * ltr)) marks.rtl++;
         else if (ltr >= space) marks.alone++;
@@ -351,10 +352,7 @@ async function storeTurned(image: SkImage, turns: number, uri: string): Promise<
   // Native Skia returns null when encoding fails, whatever the type says.
   if (!bytes?.length) throw new Error('could not encode page');
 
-  // Swapping in a finished file means a crash mid-write can't leave a broken page.
-  const tmp = new File(`${uri}.tmp`);
-  await tmp.write(bytes);
-  await tmp.move(new File(uri), { overwrite: true });
+  await replacePage(uri, bytes);
 }
 
 /** Turns the stored page JPEG at `uri` clockwise by `quarterTurns` × 90°, replacing it. */
