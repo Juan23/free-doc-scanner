@@ -476,9 +476,9 @@ function Detail(props: {
               <View style={[styles.cell, { width: cell }]}>
                 {picked ? (
                   <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`Page ${item.n}, ${on ? 'selected' : 'not selected'}`}
-                    accessibilityState={{ selected: on, disabled: busy }}
+                    accessibilityRole="checkbox"
+                    accessibilityLabel={`Page ${item.n}`}
+                    accessibilityState={{ checked: on, disabled: busy }}
                     disabled={busy}
                     onPress={() => props.onPick(on ? picked.filter((p) => p !== uri) : [...picked, uri])}
                     style={disabled}>
@@ -489,7 +489,7 @@ function Detail(props: {
                   image
                 )}
                 <View style={styles.pageBar}>
-                  <Text style={styles.pageNum} importantForAccessibility="no" accessible={false}>
+                  <Text style={styles.pageNum} importantForAccessibility="no" accessible={false} maxFontSizeMultiplier={1.5}>
                     {item.n}
                   </Text>
                   <Pressable
