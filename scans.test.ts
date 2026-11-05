@@ -36,6 +36,11 @@ jest.mock('expo-file-system', () => {
       mockFs.nodes.set(dest.uri, mockFs.nodes.get(this.uri)!);
       mockFs.nodes.delete(this.uri);
     }
+    rename(name: string) {
+      const to = this.uri.replace(/[^/]+$/, name);
+      mockFs.nodes.set(to, mockFs.nodes.get(this.uri)!);
+      mockFs.nodes.delete(this.uri);
+    }
   }
   class Directory extends Node {
     create(options?: { idempotent?: boolean }) {
@@ -125,6 +130,21 @@ it('listScans orders pages numerically and skips empty or non-numeric folders', 
       pages: [`${ROOT}/5/p1.jpg`, `${ROOT}/5/p2.jpg`, `${ROOT}/5/p10.jpg`],
     },
   ]);
+});
+
+// A page is replaced by writing p<N>.jpg.tmp, then moving it over the page, which deletes the page first.
+it('listScans puts back a page killed mid-replace and drops replacements cut short', () => {
+  putScan('5', ['p1.jpg', 'p1.jpg.tmp', 'p2.jpg.tmp']);
+  expect(listScans()[0].pages).toEqual([`${ROOT}/5/p1.jpg`, `${ROOT}/5/p2.jpg`]);
+  expect(mockFs.nodes.get(`${ROOT}/5/p1.jpg`)).toBe('img-p1.jpg');
+  expect(mockFs.nodes.get(`${ROOT}/5/p2.jpg`)).toBe('img-p2.jpg.tmp');
+  expect([...mockFs.nodes.keys()].filter((k) => k.endsWith('.tmp'))).toEqual([]);
+});
+
+it('listScans still lists a scan whose leftover replacement cannot be removed', () => {
+  putScan('5', ['p1.jpg', 'p1.jpg.tmp']);
+  mockFs.failDelete = true;
+  expect(listScans()[0].pages).toEqual([`${ROOT}/5/p1.jpg`]);
 });
 
 it('addPages continues numbering after the highest page and never overwrites', async () => {

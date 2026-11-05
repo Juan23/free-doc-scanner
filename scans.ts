@@ -7,13 +7,30 @@ export type Scan = { id: string; name: string; pages: string[] };
 
 const root = () => new Directory(Paths.document, 'scans');
 const PAGE = /^p(\d+)\.jpg$/;
+// A page is replaced by writing p<N>.jpg.tmp, then moving it over the page, which deletes the page first.
+const REPLACEMENT = /^(p\d+\.jpg)\.tmp$/;
 
 /** The folder's page files, sorted by number so p2 comes before p10. */
 function pagesIn(dir: Directory): { n: number; name: string }[] {
+  const entries = dir.list();
+  const names = new Set(entries.map((f) => f.name));
   const pages: { n: number; name: string }[] = [];
-  for (const f of dir.list()) {
-    const m = PAGE.exec(f.name);
-    if (m) pages.push({ n: Number(m[1]), name: f.name });
+  for (const f of entries) {
+    let name = f.name;
+    const replaced = REPLACEMENT.exec(name);
+    if (replaced && f instanceof File) {
+      // With its page still there, the write was cut short. Without, the app died mid-move and the
+      // replacement is whole. On failure everything stays as it was.
+      try {
+        if (names.has(replaced[1])) f.delete();
+        else {
+          f.rename(replaced[1]);
+          name = replaced[1];
+        }
+      } catch {}
+    }
+    const m = PAGE.exec(name);
+    if (m) pages.push({ n: Number(m[1]), name });
   }
   return pages.sort((a, b) => a.n - b.n);
 }
