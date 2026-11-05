@@ -188,6 +188,142 @@ it.each([0, 1, 2, 3])('never turns a page of Russian text the wrong way (%i)', a
   expect(untouched(page) || difference(mockFiles.get(PAGE)!, letter(0, RUSSIAN)) < 3).toBe(true);
 }, 30000);
 
+// Every line runs flush from margin to margin, so the line ends can't tell which way is up: the
+// full stops sitting on the baseline must.
+const NOTICE = `The office will be closed on Monday for the bank holiday. Post that arrives on that day will be
+handled on Tuesday morning. Rent paid by standing order will leave your account as usual. If you pay by
+cheque, please post it by Thursday so that it reaches us in time. The car park will be locked from
+Saturday evening until Tuesday. Residents can still use the side gate with their own key. The lift
+engineer is booked for Wednesday. The lift will be out of use from nine until about noon. We are sorry
+for the trouble. Bins will be collected a day late that week. Please leave them out on Tuesday night
+rather than on Monday. The cleaners will come on Friday as usual. Parcels left with the porter can be
+picked up from Tuesday. Bring the card that was put through your door. If you have any questions, ring
+the office or send us a note. Our phone number is on the board in the hall. We will reply as soon as we
+can. Thank you for your patience. We hope you all have a good break. The next newsletter will come out
+at the end of the month. It will have the dates for the summer fair. Volunteers for the fair can give
+their names to the porter. The garden committee meets on the first Thursday of each month.`;
+
+const flushFont = new CanvasKit.Font(CanvasKit.Typeface.GetDefault(), 22);
+const width = (word: string): number => flushFont.getGlyphWidths(flushFont.getGlyphIDs(word)).reduce((a: number, b: number) => a + b, 0);
+
+/** `text` drawn like `letter`, its words wrapped and spread so every line is 980 wide; the last, partly filled line left out. */
+function justified(turns: number, text: string, eachGap?: (canvas: any, x: number, y: number) => void): Uint8Array {
+  const [w, h] = turns % 2 ? [H, W] : [W, H];
+  const surface = CanvasKit.MakeSurface(w, h);
+  const canvas = surface.getCanvas();
+  canvas.clear(CanvasKit.Color(236, 230, 214));
+  canvas.translate(w / 2, h / 2);
+  canvas.rotate(turns * 90, 0, 0);
+  canvas.translate(-W / 2, -H / 2);
+  const ink = new CanvasKit.Paint();
+  ink.setColor(CanvasKit.Color(30, 30, 40));
+  ink.setAntiAlias(true);
+  const space = width(' ');
+  const lines: string[][] = [[]];
+  let used = 0;
+  for (const word of text.split(/\s+/)) {
+    if (used + width(word) > 980) {
+      lines.push([]);
+      used = 0;
+    }
+    lines[lines.length - 1].push(word);
+    used += width(word) + space;
+  }
+  lines.slice(0, -1).forEach((words, i) => {
+    const y = 160 + i * 36;
+    const gap = (980 - words.reduce((sum, word) => sum + width(word), 0)) / (words.length - 1);
+    let x = 110;
+    for (const word of words) {
+      canvas.drawText(word, x, y, ink, flushFont);
+      x += width(word) + gap;
+      eachGap?.(canvas, x - gap / 2, y);
+    }
+  });
+  return surface.makeImageSnapshot().encodeToBytes(CanvasKit.ImageFormat.JPEG, 92);
+}
+
+it.each([1, 2, 3])('turns a page of flush lines %i quarter turns clockwise upright', async (turns) => {
+  mockFiles.set(PAGE, justified(turns, NOTICE));
+
+  await uprightPages([PAGE]);
+
+  expect(difference(mockFiles.get(PAGE)!, justified(0, NOTICE))).toBeLessThan(3);
+}, 30000);
+
+// Its strokes lean like upside-down Latin, while its full stops sit on the baseline: the two disagree.
+const RUSSIAN_NOTICE = `Офис будет закрыт в понедельник по случаю праздника. Почта, которая придёт в этот день, будет
+разобрана во вторник утром. Плата за аренду по поручению уйдёт с вашего счёта как обычно. Если вы
+платите чеком, отправьте его до четверга, чтобы он успел дойти. Стоянка будет закрыта с вечера
+субботы до вторника. Жильцы могут пользоваться боковой калиткой со своим ключом. Мастер по лифтам
+придёт в среду. Лифт не будет работать с девяти часов примерно до полудня. Просим прощения за
+неудобства. Мусор в ту неделю вывезут на день позже. Пожалуйста, выставляйте баки во вторник
+вечером, а не в понедельник. Уборщицы придут в пятницу как обычно. Посылки, оставленные у
+консьержа, можно забрать со вторника. Возьмите с собой карточку, которую вам опустили в ящик.
+Если у вас есть вопросы, позвоните в офис или оставьте записку. Наш телефон есть на доске в
+холле. Мы ответим как можно скорее. Спасибо за терпение. Желаем всем хорошо отдохнуть. Следующий
+выпуск новостей выйдет в конце месяца. В нём будут даты летней ярмарки. Добровольцы для ярмарки
+могут оставить свои имена у консьержа. Садовый комитет собирается в первый четверг каждого месяца.`;
+
+// Three times over, to fill the page.
+const RUSSIAN_PAGE = Array(3).fill(RUSSIAN_NOTICE).join(' ');
+
+it.each([0, 1, 2, 3])('never turns a page of flush Russian lines the wrong way (%i)', async (turns) => {
+  const page = justified(turns, RUSSIAN_PAGE);
+  mockFiles.set(PAGE, page);
+
+  await uprightPages([PAGE]);
+
+  expect(untouched(page) || difference(mockFiles.get(PAGE)!, justified(0, RUSSIAN_PAGE)) < 3).toBe(true);
+}, 30000);
+
+// Hebrew's yod hangs from the top of its line like an upside-down full stop, in nearly every word.
+// Marks that common belong to the script, so they mustn't count as full stops: here they hang from
+// the x-line of Russian text, whose strokes already lean like upside-down Latin.
+function withYods(turns: number): Uint8Array {
+  const xHeight = -flushFont.getGlyphBounds(flushFont.getGlyphIDs('x'))[1];
+  const yod = new CanvasKit.Paint();
+  yod.setColor(CanvasKit.Color(30, 30, 40));
+  return justified(turns, RUSSIAN_PAGE, (canvas, x, y) => canvas.drawRect(CanvasKit.XYWHRect(x - 2, y - xHeight, 4, 4), yod));
+}
+
+it.each([0, 1, 2, 3])('never takes marks in nearly every word for full stops (%i)', async (turns) => {
+  const page = withYods(turns);
+  mockFiles.set(PAGE, page);
+
+  await uprightPages([PAGE]);
+
+  expect(untouched(page) || difference(mockFiles.get(PAGE)!, withYods(0)) < 3).toBe(true);
+}, 30000);
+
+/** A folded card: its top lines upright, its bottom lines upside down, all turned by `turns`. */
+function card(turns: number): Uint8Array {
+  const lines = LETTER.split('\n').filter((line) => line.length > 40);
+  const [w, h] = turns % 2 ? [H, W] : [W, H];
+  const surface = CanvasKit.MakeSurface(w, h);
+  const canvas = surface.getCanvas();
+  canvas.clear(CanvasKit.Color(236, 230, 214));
+  canvas.translate(w / 2, h / 2);
+  canvas.rotate(turns * 90, 0, 0);
+  const ink = new CanvasKit.Paint();
+  ink.setColor(CanvasKit.Color(30, 30, 40));
+  ink.setAntiAlias(true);
+  const font = new CanvasKit.Font(CanvasKit.Typeface.GetDefault(), 22);
+  lines.forEach((line, i) => canvas.drawText(line, -490, -720 + i * 36, ink, font));
+  canvas.rotate(180, 0, 0);
+  lines.slice(0, 8).forEach((line, i) => canvas.drawText(line, -490, -720 + i * 36, ink, font));
+  return surface.makeImageSnapshot().encodeToBytes(CanvasKit.ImageFormat.JPEG, 92);
+}
+
+// Most lines say one way up, but a third say the other: the lines disagree, so the page stays as it is.
+it.each([0, 1, 2, 3])('leaves a card with lines both ways up as it is (%i)', async (turns) => {
+  const page = card(turns);
+  mockFiles.set(PAGE, page);
+
+  await uprightPages([PAGE]);
+
+  expect(untouched(page)).toBe(true);
+}, 30000);
+
 it.each([0, 1, 2, 3])('leaves a photo with no writing untouched, however it is turned (%i)', async (turns) => {
   mockFiles.set(PAGE, landscape());
   await rotatePage(PAGE, turns);
