@@ -31,34 +31,38 @@ function findInk(image: SkImage): { ink: Uint8Array; w: number; h: number } {
   for (const o of [surface, small]) o.dispose();
   if (!rgba) throw new Error('unreadable page');
 
-  const luma = new Uint8Array(w * h);
-  for (let i = 0; i < luma.length; i++) luma[i] = (rgba[i * 4] * 77 + rgba[i * 4 + 1] * 150 + rgba[i * 4 + 2] * 29) >> 8;
+  // The per-pixel loops run on Hermes, which interprets them: index work and calls are kept out of them.
   const bw = Math.ceil(w / BLOCK);
   const bh = Math.ceil(h / BLOCK);
+  const column = new Int32Array(w);
+  for (let x = 0; x < w; x++) column[x] = (x / BLOCK) | 0;
+  const luma = new Uint8Array(w * h);
   const brightest = new Uint8Array(bw * bh);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const b = ((y / BLOCK) | 0) * bw + ((x / BLOCK) | 0);
-      if (luma[y * w + x] > brightest[b]) brightest[b] = luma[y * w + x];
+  for (let y = 0, i = 0; y < h; y++) {
+    const row = ((y / BLOCK) | 0) * bw;
+    for (let x = 0; x < w; x++, i++) {
+      const v = (rgba[i * 4] * 77 + rgba[i * 4 + 1] * 150 + rgba[i * 4 + 2] * 29) >> 8;
+      luma[i] = v;
+      if (v > brightest[row + column[x]]) brightest[row + column[x]] = v;
     }
   }
-  const paper = new Uint8Array(bw * bh);
+  // Ink is clearly darker than the paper p: below both 0.75 p and p - 25.
+  const below = new Float32Array(bw * bh);
   for (let by = 0; by < bh; by++) {
     for (let bx = 0; bx < bw; bx++) {
-      for (let y = Math.max(0, by - 1); y <= Math.min(bh - 1, by + 1); y++) {
-        for (let x = Math.max(0, bx - 1); x <= Math.min(bw - 1, bx + 1); x++) {
-          paper[by * bw + bx] = Math.max(paper[by * bw + bx], brightest[y * bw + x]);
-        }
+      let p = 0;
+      const lastY = Math.min(bh - 1, by + 1);
+      const lastX = Math.min(bw - 1, bx + 1);
+      for (let y = Math.max(0, by - 1); y <= lastY; y++) {
+        for (let x = Math.max(0, bx - 1); x <= lastX; x++) if (brightest[y * bw + x] > p) p = brightest[y * bw + x];
       }
+      below[by * bw + bx] = Math.min(0.75 * p, p - 25);
     }
   }
   const ink = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const p = paper[((y / BLOCK) | 0) * bw + ((x / BLOCK) | 0)];
-      const v = luma[y * w + x];
-      ink[y * w + x] = v < 0.75 * p && p - v > 25 ? 1 : 0;
-    }
+  for (let y = 0, i = 0; y < h; y++) {
+    const row = ((y / BLOCK) | 0) * bw;
+    for (let x = 0; x < w; x++, i++) ink[i] = luma[i] < below[row + column[x]] ? 1 : 0;
   }
   return { ink, w, h };
 }
@@ -140,7 +144,9 @@ function strokes(ink: Uint8Array, w: number, h: number): { up: number; down: num
     for (let y = 1; y + 1 < h; y++) smooth[y] = (rows[y - 1] + 2 * rows[y] + rows[y + 1]) / 4;
     for (let y = 0; y < h; y++) {
       let most = 0;
-      for (let k = Math.max(0, y - NEARBY); k <= Math.min(h - 1, y + NEARBY); k++) most = Math.max(most, smooth[k]);
+      // The busiest loop: calls kept out of it, as in findInk.
+      const last = Math.min(h - 1, y + NEARBY);
+      for (let k = Math.max(0, y - NEARBY); k <= last; k++) if (smooth[k] > most) most = smooth[k];
       lowercase[y] = most > 3 && smooth[y] >= most / 2 ? 1 : 0;
     }
     // Each band of lowercase rows is a line, reaching out to the emptiest rows between it and its neighbours.
