@@ -87,13 +87,13 @@ const STICK_OUT = 0.3;
 // In a line of text, most columns start at the x-line and end at the baseline, within this share
 // of the x-height. Not so for pictures, or for the ragged line ends of a text column seen sideways.
 const ALIGNED = 0.2;
-// A gap this many x-heights wide ends a line: wider than a word space, narrower than most column gaps.
-const LINE_GAP = 4;
-// A line ends short, or starts late, when a line within NEIGHBOURS x-heights above or below it
-// reaches SHORT x-heights further: more than a paragraph's indent (1.25 cm is about 7 x-heights of
-// 10 pt type).
-const NEIGHBOURS = 6;
-const SHORT = 10;
+// A full stop or comma is a mark at most this many x-heights tall and wide, on its own in its columns...
+const MARK = 0.6;
+// ...with its middle this far down from the x-line (0) towards the baseline (1)...
+const STOP_FROM = 0.65;
+const STOP_TO = 1.25;
+// ...and a space at least this many x-heights wide after it, wider than most between letters.
+const SPACE = 0.45;
 
 function median(values: number[]): number {
   const sorted = values.sort((a, b) => a - b);
@@ -120,16 +120,16 @@ function edge(columns: number[], at: Int32Array): (x: number) => number {
  * running the other way and pictures give about as many of each; capitals only, few. Other scripts
  * vary: upright Cyrillic has more descenders, so it leans like upside-down Latin.
  *
- * Also counts the whole lines that end short of the lines around them and those that start late.
- * Text starting at the left, in any left-to-right script, ends short far more often: ragged right
- * edges and paragraphs' last lines.
+ * Also counts full stops and commas, which in any left-to-right script sit on the baseline with a
+ * space after them, and the marks that sit where they would upside down: at the x-line, with the
+ * space before them.
  */
-function strokes(ink: Uint8Array, w: number, h: number): { up: number; down: number; lines: number; short: number; late: number } {
+function strokes(ink: Uint8Array, w: number, h: number): { up: number; down: number; lines: number; stops: number; hanging: number } {
   let up = 0;
   let down = 0;
   let lines = 0;
-  // Whole lines, each once: first and last inked column, middle row, x-height.
-  const found: [number, number, number, number][] = [];
+  let stops = 0;
+  let hanging = 0;
   const rows = new Float32Array(h);
   const smooth = new Float32Array(h);
   const lowercase = new Uint8Array(h);
@@ -183,24 +183,6 @@ function strokes(ink: Uint8Array, w: number, h: number): { up: number; down: num
       if (Math.min(onXLine, onBaseline) < 0.4 * columns.length) return;
       lines++;
 
-      // The first strip with ink of a line not yet followed follows it out both ways along its
-      // lowercase rows, until a gap no word space is as wide as.
-      const inked = (x: number) => {
-        for (let y = top; y < bottom; y++) if (ink[y * w + x]) return true;
-        return false;
-      };
-      let first = left;
-      while (first < left + STRIP && !inked(first)) first++;
-      const middle = (top + bottom) / 2;
-      if (first < left + STRIP && !found.some(([s, e, y]) => s <= first && first <= e && Math.abs(y - middle) < xHeight)) {
-        const gap = Math.max(6, LINE_GAP * xHeight);
-        let start = first;
-        let end = first;
-        for (let x = first - 1; x >= 0 && start - x <= gap; x--) if (inked(x)) start = x;
-        for (let x = first + 1; x < w && x - end <= gap; x++) if (inked(x)) end = x;
-        found.push([start, end, middle, xHeight]);
-      }
-
       const reach = Math.max(1.5, STICK_OUT * xHeight);
       // A run of sticking-out columns is one stroke.
       let wasUp = false;
@@ -213,18 +195,40 @@ function strokes(ink: Uint8Array, w: number, h: number): { up: number; down: num
         wasUp = isUp;
         wasDown = isDown;
       }
+
+      // Each run of inked columns with blank ones either side is a mark when it is small enough.
+      const mark = Math.max(2, MARK * xHeight);
+      const space = Math.max(2, SPACE * xHeight);
+      for (let a = 1; a < STRIP - 1; a++) {
+        if (tops[a] < 0 || tops[a - 1] >= 0) continue;
+        let b = a;
+        let markTop = tops[a];
+        let markBottom = bottoms[a];
+        for (; b + 1 < STRIP && tops[b + 1] >= 0; b++) {
+          markTop = Math.min(markTop, tops[b + 1]);
+          markBottom = Math.max(markBottom, bottoms[b + 1]);
+        }
+        if (b === STRIP - 1 || b - a + 1 > mark || markBottom - markTop + 1 > mark) continue;
+        const middle = (a + b) / 2;
+        const at = ((markTop + markBottom) / 2 - xLine(middle)) / xHeight;
+        const isStop = at >= STOP_FROM && at <= STOP_TO;
+        if (!isStop && (at < 1 - STOP_TO || at > 1 - STOP_FROM)) continue;
+        const xRow = Math.max(0, Math.round(xLine(middle)));
+        const baseRow = Math.min(h - 1, Math.round(baseline(middle)));
+        // Whether the `space` columns from x on, stepping by `step`, are blank between the x-line and the baseline.
+        const blank = (x: number, step: number) => {
+          for (let n = 0; n < space; n++, x += step) {
+            if (x < 0 || x >= w) return true;
+            for (let y = xRow; y <= baseRow; y++) if (ink[y * w + x]) return false;
+          }
+          return true;
+        };
+        if (isStop && blank(left + b + 1, 1)) stops++;
+        if (!isStop && blank(left + a - 1, -1)) hanging++;
+      }
     });
   }
-  let short = 0;
-  let late = 0;
-  for (const [start, end, y, xHeight] of found) {
-    // Lines just above and below, side by side with this one (not those of the next column).
-    const near = found.filter(([s, e, y2]) => Math.abs(y2 - y) <= NEIGHBOURS * xHeight && s <= end && e >= start);
-    if (near.length < 2) continue;
-    if (end < Math.max(...near.map(([, e]) => e)) - SHORT * xHeight) short++;
-    if (start > Math.min(...near.map(([s]) => s)) + SHORT * xHeight) late++;
-  }
-  return { up, down, lines, short, late };
+  return { up, down, lines, stops, hanging };
 }
 
 // Upright Latin text leans about 0.5 to the up side (sticking up minus hanging down, over both).
@@ -237,16 +241,17 @@ const SURE_DEVIATIONS = 6;
 // Text in capitals sticks out only at stray marks (commas, Q), which don't show reliably which way is up.
 const SURE_PER_LINE = 0.8;
 // Strokes alone can't tell upright Cyrillic (or another script heavy in descenders) from
-// upside-down Latin, so the line ends must agree: short ones must outnumber late ones on the side
-// the strokes say is up by this many standard deviations, (short - late) / √(short + late).
-const SURE_MARGINS = 1.5;
+// upside-down Latin, so the full stops and commas must agree: those on the baseline must outnumber
+// those hanging from the x-line on the side the strokes say is up by this many standard
+// deviations, (stops - hanging) / √(stops + hanging).
+const SURE_STOPS = 2;
 
-function lean({ up, down, lines, short, late }: ReturnType<typeof strokes>) {
+function lean({ up, down, lines, stops, hanging }: ReturnType<typeof strokes>) {
   return {
     lean: (up - down) / (up + down || 1),
     deviations: (up - down) / Math.sqrt(up + down || 1),
     perLine: Math.max(up, down) / (lines || 1),
-    margins: (short - late) / Math.sqrt(short + late || 1),
+    stops: (stops - hanging) / Math.sqrt(stops + hanging || 1),
   };
 }
 
@@ -263,7 +268,7 @@ export function quarterTurnsToUpright(image: SkImage): 0 | 1 | 2 | 3 {
     Math.abs(a.lean) >= SURE_LEAN &&
     Math.abs(a.deviations) >= SURE_DEVIATIONS &&
     a.perLine >= SURE_PER_LINE &&
-    a.margins * Math.sign(a.lean) >= SURE_MARGINS &&
+    a.stops * Math.sign(a.lean) >= SURE_STOPS &&
     Math.abs(b.deviations) <= Math.abs(a.deviations) / 2;
   if (clear(asIs, turned)) return asIs.lean > 0 ? 0 : 2;
   if (clear(turned, asIs)) return turned.lean > 0 ? 1 : 3;

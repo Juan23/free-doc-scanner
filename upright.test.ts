@@ -72,8 +72,11 @@ Yours sincerely,
 Jonathan Fairbanks
 Lettings Manager`;
 
-/** A photographed letter, turned clockwise by `turns` quarter turns: tinted paper, a little shadow at one side. */
-function letter(turns = 0, text = LETTER): Uint8Array {
+/**
+ * A photographed letter, turned clockwise by `turns` quarter turns: tinted paper, a little shadow at one side.
+ * With `flush`, each line's words are spread to end at that x, as in justified text.
+ */
+function letter(turns = 0, text = LETTER, flush?: number): Uint8Array {
   const [w, h] = turns % 2 ? [H, W] : [W, H];
   const surface = CanvasKit.MakeSurface(w, h);
   const canvas = surface.getCanvas();
@@ -90,7 +93,16 @@ function letter(turns = 0, text = LETTER): Uint8Array {
   ink.setColor(CanvasKit.Color(30, 30, 40));
   ink.setAntiAlias(true);
   const font = new CanvasKit.Font(CanvasKit.Typeface.GetDefault(), 22);
-  text.split('\n').forEach((line, i) => canvas.drawText(line, 110, 160 + i * 36, ink, font));
+  const width = (s: string): number => font.getGlyphWidths(font.getGlyphIDs(s)).reduce((a: number, b: number) => a + b, 0);
+  text.split('\n').forEach((line, i) => {
+    const words = line.split(' ');
+    const space = flush && words.length > 1 ? (flush - 110 - width(words.join(''))) / (words.length - 1) : width(' ');
+    let x = 110;
+    for (const word of words) {
+      canvas.drawText(word, x, 160 + i * 36, ink, font);
+      x += width(word) + space;
+    }
+  });
   return surface.makeImageSnapshot().encodeToBytes(CanvasKit.ImageFormat.JPEG, 92);
 }
 
@@ -154,6 +166,23 @@ it('leaves an upright letter untouched', async () => {
   await uprightPages([PAGE]);
 
   expect(untouched(page)).toBe(true);
+}, 30000);
+
+// Justified text has no short line ends to show which side its lines start at, but its full stops
+// and commas still sit on the baseline.
+const ARTICLE = Array.from({ length: 34 }, (_, i) => [
+  'The new bridge across the river was opened on Saturday morning, after almost',
+  'three years of work. Hundreds of people walked over it before the first cars',
+  'were allowed on, and a brass band played on the north bank. The old bridge,',
+  'which was built in the eighteen sixties, will be kept for walkers and bicycles.',
+][i % 4]).join('\n');
+
+it.each([1, 2, 3])('turns justified text turned %i quarter turns clockwise upright', async (turns) => {
+  mockFiles.set(PAGE, letter(turns, ARTICLE, 1090));
+
+  await uprightPages([PAGE]);
+
+  expect(difference(mockFiles.get(PAGE)!, letter(0, ARTICLE, 1090))).toBeLessThan(3);
 }, 30000);
 
 // Capitals all stand on the baseline and reach the same height, so only stray marks such as commas
