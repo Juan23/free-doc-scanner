@@ -1,12 +1,6 @@
-import { AlphaType, ColorType, FilterMode, ImageFormat, MipmapMode, Skia, type SkImage } from '@shopify/react-native-skia';
+import { AlphaType, ColorType, FilterMode, MipmapMode, Skia, type SkImage } from '@shopify/react-native-skia';
 
 import { readPage, replacePage } from './scans';
-
-async function decode(uri: string): Promise<SkImage> {
-  const image = await readPage(uri);
-  if (!image) throw new Error('unreadable page');
-  return image;
-}
 
 // Text is looked for on a copy this long, where body text is still 5-10 px high.
 const SMALL_LONG_SIDE = 1000;
@@ -345,19 +339,18 @@ async function storeTurned(image: SkImage, turns: number, uri: string): Promise<
   canvas.rotate(turns * 90, 0, 0);
   canvas.drawImage(image, -w / 2, -h / 2);
   const turned = surface.makeImageSnapshot();
-  const bytes = turned.encodeToBytes(ImageFormat.JPEG, 90);
-  for (const o of [surface, turned]) o.dispose();
-  // Native Skia returns null when encoding fails, whatever the type says.
-  if (!bytes?.length) throw new Error('could not encode page');
-
-  await replacePage(uri, bytes);
+  try {
+    await replacePage(uri, turned);
+  } finally {
+    for (const o of [surface, turned]) o.dispose();
+  }
 }
 
 /** Turns the stored page JPEG at `uri` clockwise by `quarterTurns` × 90°, replacing it. */
 export async function rotatePage(uri: string, quarterTurns: number): Promise<void> {
   const turns = ((quarterTurns % 4) + 4) % 4;
   if (!turns) return;
-  const image = await decode(uri);
+  const image = await readPage(uri);
   try {
     await storeTurned(image, turns, uri);
   } finally {
@@ -373,7 +366,7 @@ export async function uprightPages(pageUris: string[]): Promise<void> {
   // One page at a time: each holds a full-size bitmap in memory.
   for (const uri of pageUris) {
     try {
-      const image = await decode(uri);
+      const image = await readPage(uri);
       try {
         const turns = quarterTurnsToUpright(image);
         if (turns) await storeTurned(image, turns, uri);

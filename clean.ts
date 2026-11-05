@@ -1,5 +1,5 @@
 import {
-  AlphaType, ColorType, FilterMode, ImageFormat, MipmapMode, Skia, TileMode, type SkImage, type SkMatrix,
+  AlphaType, ColorType, FilterMode, MipmapMode, Skia, TileMode, type SkImage, type SkMatrix,
 } from '@shopify/react-native-skia';
 import { File, Paths } from 'expo-file-system';
 
@@ -210,7 +210,6 @@ function pastEdges(page: Uint8Array, fine: Uint8Array, w: number, h: number): Ui
 
 async function cleanPage(uri: string): Promise<void> {
   const image = await readPage(uri);
-  if (!image) throw new Error('unreadable page');
   const w = image.width();
   const h = image.height();
   const scale = Math.min(1, SMALL_WIDTH / w);
@@ -274,19 +273,19 @@ async function cleanPage(uri: string): Promise<void> {
   paint.setShader(cleanShader);
   out.getCanvas().drawPaint(paint);
   const snapshot = out.makeImageSnapshot();
-  const bytes = snapshot.encodeToBytes(ImageFormat.JPEG, 90);
   // A page holds about 100 MB of bitmaps: free them now, not whenever the garbage collector runs.
   for (const o of [
     image, surface, smallPage, wipeInk, coarse, wipeText, fine, coarseShader, fineShader, pickShader,
     pickPaper, paper, smallPageShader, inkShader, spreadInk, ink, beyondData, beyondMask, feather, beyond,
-    pageShader, paperShader, textShader, beyondShader, cleanShader, out, paint, snapshot,
+    pageShader, paperShader, textShader, beyondShader, cleanShader, out, paint,
   ]) {
     o.dispose();
   }
-  // Native Skia returns null when encoding fails, whatever the type says.
-  if (!bytes?.length) throw new Error('could not encode page');
-
-  await replacePage(uri, bytes);
+  try {
+    await replacePage(uri, snapshot);
+  } finally {
+    snapshot.dispose();
+  }
 }
 
 /**
