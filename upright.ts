@@ -92,8 +92,10 @@ const MARK = 0.6;
 // ...with its middle this far down from the x-line (0) towards the baseline (1)...
 const STOP_FROM = 0.65;
 const STOP_TO = 1.25;
-// ...and a space at least this many x-heights wide after it, wider than most between letters.
+// ...and a space at least this many x-heights wide after it, wider than most between letters,
+// and at least MIN_SPACE pixels: narrower, it can't be told from the gap between small letters.
 const SPACE = 0.45;
+const MIN_SPACE = 3;
 
 function median(values: number[]): number {
   const sorted = values.sort((a, b) => a - b);
@@ -114,22 +116,31 @@ function edge(columns: number[], at: Int32Array): (x: number) => number {
 }
 
 /**
+ * Stop-sized marks along one edge of the lines, by the side their space is on, reading the edge as
+ * the baseline (at the x-line, read upside down, "after" is to the left).
+ */
+type Marks = {
+  ltr: number; // space after, as full stops of left-to-right text have
+  rtl: number; // space only before, as those of right-to-left text have
+  inWord: number; // letters close on both sides
+};
+
+/**
  * Counts the strokes that stick up above lines of text running across `ink`, those that hang down
  * below them, and the lines (one strip wide) read. Latin text is upright when far more stick up:
  * ascenders, capitals and digits (b d f h k l t, A-Z, 0-9) outnumber descenders (g j p q y). Lines
  * running the other way and pictures give about as many of each; capitals only, few. Other scripts
  * vary: upright Cyrillic has more descenders, so it leans like upside-down Latin.
  *
- * Also counts full stops and commas, which in any left-to-right script sit on the baseline with a
- * space after them, and the marks that sit where they would upside down: at the x-line, with the
- * space before them.
+ * Also counts the stop-sized marks on the baseline (`low`) and at the x-line (`high`), where full
+ * stops and commas sit upright and upside down.
  */
-function strokes(ink: Uint8Array, w: number, h: number): { up: number; down: number; lines: number; stops: number; hanging: number } {
+function strokes(ink: Uint8Array, w: number, h: number): { up: number; down: number; lines: number; low: Marks; high: Marks } {
   let up = 0;
   let down = 0;
   let lines = 0;
-  let stops = 0;
-  let hanging = 0;
+  const low: Marks = { ltr: 0, rtl: 0, inWord: 0 };
+  const high: Marks = { ltr: 0, rtl: 0, inWord: 0 };
   const rows = new Float32Array(h);
   const smooth = new Float32Array(h);
   const lowercase = new Uint8Array(h);
@@ -198,7 +209,7 @@ function strokes(ink: Uint8Array, w: number, h: number): { up: number; down: num
 
       // Each run of inked columns with blank ones either side is a mark when it is small enough.
       const mark = Math.max(2, MARK * xHeight);
-      const space = Math.max(2, SPACE * xHeight);
+      const space = Math.max(MIN_SPACE, SPACE * xHeight);
       for (let a = 1; a < STRIP - 1; a++) {
         if (tops[a] < 0 || tops[a - 1] >= 0) continue;
         let b = a;
@@ -223,12 +234,16 @@ function strokes(ink: Uint8Array, w: number, h: number): { up: number; down: num
           }
           return true;
         };
-        if (isStop && blank(left + b + 1, 1)) stops++;
-        if (!isStop && blank(left + a - 1, -1)) hanging++;
+        const after = blank(left + b + 1, 1);
+        const before = blank(left + a - 1, -1);
+        const [marks, ltr, rtl] = isStop ? [low, after, before] : [high, before, after];
+        if (ltr) marks.ltr++;
+        else if (rtl) marks.rtl++;
+        else marks.inWord++;
       }
     });
   }
-  return { up, down, lines, stops, hanging };
+  return { up, down, lines, low, high };
 }
 
 // Upright Latin text leans about 0.5 to the up side (sticking up minus hanging down, over both).
@@ -241,17 +256,23 @@ const SURE_DEVIATIONS = 6;
 // Text in capitals sticks out only at stray marks (commas, Q), which don't show reliably which way is up.
 const SURE_PER_LINE = 0.8;
 // Strokes alone can't tell upright Cyrillic (or another script heavy in descenders) from
-// upside-down Latin, so the full stops and commas must agree: those on the baseline must outnumber
-// those hanging from the x-line on the side the strokes say is up by this many standard
+// upside-down Latin, so the full stops and commas must agree: on the side the strokes say is up,
+// those on the baseline must outnumber those hanging from the x-line by this many standard
 // deviations, (stops - hanging) / √(stops + hanging).
 const SURE_STOPS = 2;
 
-function lean({ up, down, lines, stops, hanging }: ReturnType<typeof strokes>) {
+function lean({ up, down, lines, low, high }: ReturnType<typeof strokes>) {
+  const [stops, hanging] = up >= down ? [low, high] : [high, low];
   return {
     lean: (up - down) / (up + down || 1),
     deviations: (up - down) / Math.sqrt(up + down || 1),
     perLine: Math.max(up, down) / (lines || 1),
-    stops: (stops - hanging) / Math.sqrt(stops + hanging || 1),
+    stops: (stops.ltr - hanging.ltr) / Math.sqrt(stops.ltr + hanging.ltr || 1),
+    // Some scripts' letters leave stop-sized marks too: Hebrew's yod hangs from the top of the line,
+    // so upside down one ending a word sits like a full stop. Such marks also come inside words, and
+    // right-to-left text turned the other way up has its own full stops on the other edge, with the
+    // space on the other side. Together those must be fewer than the full stops.
+    script: stops.inWord + hanging.rtl >= stops.ltr,
   };
 }
 
@@ -268,7 +289,8 @@ export function quarterTurnsToUpright(image: SkImage): 0 | 1 | 2 | 3 {
     Math.abs(a.lean) >= SURE_LEAN &&
     Math.abs(a.deviations) >= SURE_DEVIATIONS &&
     a.perLine >= SURE_PER_LINE &&
-    a.stops * Math.sign(a.lean) >= SURE_STOPS &&
+    a.stops >= SURE_STOPS &&
+    !a.script &&
     Math.abs(b.deviations) <= Math.abs(a.deviations) / 2;
   if (clear(asIs, turned)) return asIs.lean > 0 ? 0 : 2;
   if (clear(turned, asIs)) return turned.lean > 0 ? 1 : 3;

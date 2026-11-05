@@ -217,6 +217,69 @@ it.each([0, 1, 2, 3])('never turns a page of Russian text the wrong way (%i)', a
   expect(untouched(page) || difference(mockFiles.get(PAGE)!, letter(0, RUSSIAN)) < 3).toBe(true);
 }, 30000);
 
+/**
+ * A page in a made-up script of blocks, turned clockwise by `turns` quarter turns. Like Hebrew, its
+ * letters hang down below the line more often than they stick up, and its smallest letter, like
+ * Hebrew's yod, hangs from the top of the line: upside down, one ending a word looks like a full
+ * stop. Read right to left, so a word ends at its left. Yods end some words, and with `inWords`
+ * also come between letters; with `stops`, full stops end some words.
+ */
+function blocks(turns: number, { inWords = false, stops = false } = {}): Uint8Array {
+  const [w, h] = turns % 2 ? [H, W] : [W, H];
+  const surface = CanvasKit.MakeSurface(w, h);
+  const canvas = surface.getCanvas();
+  canvas.clear(CanvasKit.Color(236, 230, 214));
+  canvas.translate(w / 2, h / 2);
+  canvas.rotate(turns * 90, 0, 0);
+  canvas.translate(-W / 2, -H / 2);
+  const ink = new CanvasKit.Paint();
+  ink.setColor(CanvasKit.Color(30, 30, 40));
+  const box = (x: number, y: number, width: number, height: number) => canvas.drawRect(CanvasKit.XYWHRect(x, y, width, height), ink);
+  const yod = (x: number, top: number) => box(x, top, 4, 6);
+  let k = 0;
+  let word = 0;
+  for (let top = 140; top < H - 120; top += 38) {
+    for (let x = 1090; x > 140; word++) {
+      x -= 12; // the space between words
+      for (let letter = 0; letter < 2 + (word % 5); letter++, k++) {
+        if (inWords && k % 4 === 2) {
+          x -= 4;
+          yod(x, top);
+        } else {
+          const up = k % 13 === 4 ? 7 : 0;
+          const down = k % 3 === 1 ? 8 : 0;
+          x -= 11;
+          box(x, top - up, 11, up + 14 + down);
+        }
+        x -= 3;
+      }
+      if (word % 7 === 0) {
+        x -= 4;
+        yod(x, top);
+      }
+      if (stops && word % 6 === 0) {
+        x -= 7;
+        box(x, top + 10, 4, 4);
+      }
+    }
+  }
+  return surface.makeImageSnapshot().encodeToBytes(CanvasKit.ImageFormat.JPEG, 92);
+}
+
+describe.each([
+  ['with yods inside words too', { inWords: true }],
+  ['with full stops', { stops: true }],
+])('a page of a right-to-left script whose yods look like full stops upside down, %s,', (_, options) => {
+  it.each([0, 1, 2, 3])('is never turned the wrong way (%i)', async (turns) => {
+    const page = blocks(turns, options);
+    mockFiles.set(PAGE, page);
+
+    await uprightPages([PAGE]);
+
+    expect(untouched(page) || difference(mockFiles.get(PAGE)!, blocks(0, options)) < 3).toBe(true);
+  }, 30000);
+});
+
 it.each([0, 1, 2, 3])('leaves a photo with no writing untouched, however it is turned (%i)', async (turns) => {
   mockFiles.set(PAGE, landscape());
   await rotatePage(PAGE, turns);
