@@ -221,10 +221,17 @@ it.each([0, 1, 2, 3])('never turns a page of Russian text the wrong way (%i)', a
  * A page in a made-up script of blocks, turned clockwise by `turns` quarter turns. Like Hebrew, its
  * letters hang down below the line more often than they stick up, and its smallest letter, like
  * Hebrew's yod, hangs from the top of the line: upside down, one ending a word looks like a full
- * stop. Read right to left, so a word ends at its left. Yods end some words, and with `inWords`
- * also come between letters; with `stops`, full stops end some words.
+ * stop. Read right to left, so a word ends at its left. A yod ends every `finalYodsEvery`th word;
+ * with `yodsEvery`, yods also come between letters, and with `stopsEvery`, full stops end words.
+ * With `pointsEvery`, a vowel point sits apart below letters, as in pointed Hebrew; `tallEvery`
+ * sets how often a letter sticks up (0: never). With `spaced`, each yod stands alone between wide
+ * gaps, as in a typewriter font. With `bars`, letters are a bar along the top on two stems, heavy
+ * at the top as Hebrew's are, rather than solid blocks.
  */
-function blocks(turns: number, { inWords = false, stops = false } = {}): Uint8Array {
+function blocks(
+  turns: number,
+  { finalYodsEvery = 7, yodsEvery = 0, stopsEvery = 0, pointsEvery = 0, tallEvery = 13, spaced = false, bars = false } = {},
+): Uint8Array {
   const [w, h] = turns % 2 ? [H, W] : [W, H];
   const surface = CanvasKit.MakeSurface(w, h);
   const canvas = surface.getCanvas();
@@ -235,29 +242,37 @@ function blocks(turns: number, { inWords = false, stops = false } = {}): Uint8Ar
   const ink = new CanvasKit.Paint();
   ink.setColor(CanvasKit.Color(30, 30, 40));
   const box = (x: number, y: number, width: number, height: number) => canvas.drawRect(CanvasKit.XYWHRect(x, y, width, height), ink);
+  const gap = spaced ? 9 : 0;
   const yod = (x: number, top: number) => box(x, top, 4, 6);
   let k = 0;
   let word = 0;
   for (let top = 140; top < H - 120; top += 38) {
-    for (let x = 1090; x > 140; word++) {
+    // Each line starts a little further in, so letters don't line up down the page.
+    for (let x = 1090 - ((top * 7) % 30); x > 140; word++) {
       x -= 12; // the space between words
       for (let letter = 0; letter < 2 + (word % 5); letter++, k++) {
-        if (inWords && k % 4 === 2) {
-          x -= 4;
+        if (yodsEvery && k % yodsEvery === 2) {
+          x -= 4 + gap;
           yod(x, top);
+          x -= gap;
         } else {
-          const up = k % 13 === 4 ? 7 : 0;
+          const up = k % tallEvery === 4 ? 7 : 0;
           const down = k % 3 === 1 ? 8 : 0;
           x -= 11;
-          box(x, top - up, 11, up + 14 + down);
+          if (bars) {
+            box(x, top, 11, 3);
+            box(x, top, 3, 14);
+            box(x + 8, top - up, 3, up + 14 + down);
+          } else box(x, top - up, 11, up + 14 + down);
+          if (pointsEvery && !down && k % pointsEvery === 0) box(x + 4, top + 17, 3, 3);
         }
         x -= 3;
       }
-      if (word % 7 === 0) {
-        x -= 4;
+      if (word % finalYodsEvery === 0) {
+        x -= 4 + gap;
         yod(x, top);
       }
-      if (stops && word % 6 === 0) {
+      if (stopsEvery && word % stopsEvery === 0) {
         x -= 7;
         box(x, top + 10, 4, 4);
       }
@@ -267,8 +282,14 @@ function blocks(turns: number, { inWords = false, stops = false } = {}): Uint8Ar
 }
 
 describe.each([
-  ['with yods inside words too', { inWords: true }],
-  ['with full stops', { stops: true }],
+  ['with yods inside words too', { yodsEvery: 4 }],
+  ['with full stops', { stopsEvery: 6 }],
+  // As when blur joins vowel points to their letters and hides the yods inside words.
+  ["with yods only ending words, its letters heavy at the top as Hebrew's are", { bars: true }],
+  ['with yods alone between wide gaps, as in a typewriter font', { spaced: true }],
+  ['with a few yods inside words and full stops', { finalYodsEvery: 4, stopsEvery: 16, yodsEvery: 50 }],
+  ['with nothing sticking up', { tallEvery: 0 }],
+  ["with vowel points, its letters heavy at the top as Hebrew's are", { pointsEvery: 3, tallEvery: 5, bars: true }],
 ])('a page of a right-to-left script whose yods look like full stops upside down, %s,', (_, options) => {
   it.each([0, 1, 2, 3])('is never turned the wrong way (%i)', async (turns) => {
     const page = blocks(turns, options);
