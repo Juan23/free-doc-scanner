@@ -134,7 +134,6 @@ it('listScans orders pages numerically and skips empty or non-numeric folders', 
   ]);
 });
 
-// A page is replaced by writing p<N>.jpg.tmp, then moving it over the page, which deletes the page first.
 it('listScans puts back a page killed mid-replace and drops replacements cut short', () => {
   putScan('5', ['p1.jpg', 'p1.jpg.tmp', 'p2.jpg.tmp']);
   expect(listScans()[0].pages).toEqual([`${ROOT}/5/p1.jpg`, `${ROOT}/5/p2.jpg`]);

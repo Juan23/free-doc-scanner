@@ -134,8 +134,7 @@ type Marks = {
  * Counts the strokes that stick up above lines of text running across `ink`, those that hang down
  * below them, and the lines (one strip wide) read. Latin text is upright when far more stick up:
  * ascenders, capitals and digits (b d f h k l t, A-Z, 0-9) outnumber descenders (g j p q y). Lines
- * running the other way and pictures give about as many of each; capitals only, few. Other scripts
- * vary: upright Cyrillic has more descenders, so it leans like upside-down Latin.
+ * running the other way and pictures give about as many of each; capitals only, few.
  *
  * Also counts the stop-sized marks on the baseline (`low`) and at the x-line (`high`), where full
  * stops and commas sit upright and upside down, and the ink in the top and bottom thirds of the
@@ -202,7 +201,6 @@ function strokes(ink: Uint8Array, w: number, h: number) {
       if (Math.min(onXLine, onBaseline) < 0.4 * columns.length) return;
       lines++;
 
-      // Ink in the top and bottom thirds of the line's lowercase letters.
       for (let x = 0; x < STRIP; x++) {
         const upper = xLine(x);
         const lower = baseline(x);
@@ -281,7 +279,7 @@ const MAX_LEAN = 0.7;
 // The lean must also hold over enough strokes that chance can't explain it: it is this many
 // standard deviations from even, (up - down) / √(up + down).
 const SURE_DEVIATIONS = 6;
-// Lowercase text has an ascender or capital in nearly every word: more than one per line in a strip.
+// Lowercase text has an ascender or capital in nearly every word: at least this many per line in a strip.
 // Text in capitals sticks out only at stray marks (commas, Q), which don't show reliably which way is up.
 const SURE_PER_LINE = 0.8;
 // Strokes alone can't tell upright Cyrillic (or another script heavy in descenders) from

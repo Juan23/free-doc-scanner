@@ -382,7 +382,6 @@ function Detail(props: {
   scan: Scan;
   busy: boolean;
   message: string;
-  /** Pages picked in Select mode, or null outside it. */
   picked: string[] | null;
   onPick: (pages: string[] | null) => void;
   shown: (page: string) => string;

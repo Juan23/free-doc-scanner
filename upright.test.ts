@@ -168,8 +168,7 @@ it('leaves an upright letter untouched', async () => {
   expect(untouched(page)).toBe(true);
 }, 30000);
 
-// Justified text has no short line ends to show which side its lines start at, but its full stops
-// and commas still sit on the baseline.
+// Justified text: its full stops and commas still sit on the baseline.
 const ARTICLE = Array.from({ length: 34 }, (_, i) => [
   'The new bridge across the river was opened on Saturday morning, after almost',
   'three years of work. Hundreds of people walked over it before the first cars',
