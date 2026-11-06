@@ -347,16 +347,6 @@ async function storeTurned(image: SkImage, turns: number, uri: string): Promise<
   }
 }
 
-/** Turns the stored JPEG at `uri` by `turns` quarter turns, replacing it. */
-async function turnStored(uri: string, turns: number): Promise<void> {
-  const image = await readPage(uri);
-  try {
-    await storeTurned(image, turns, uri);
-  } finally {
-    image.dispose();
-  }
-}
-
 /**
  * Turns the stored page JPEG at `uri` clockwise by `quarterTurns` × 90°, replacing it and its
  * untouched original alike so a later filter change keeps the turn.
@@ -364,9 +354,21 @@ async function turnStored(uri: string, turns: number): Promise<void> {
 export async function rotatePage(uri: string, quarterTurns: number): Promise<void> {
   const turns = ((quarterTurns % 4) + 4) % 4;
   if (!turns) return;
-  const original = originalOf(uri);
-  if (new File(original).exists) await turnStored(original, turns);
-  await turnStored(uri, turns);
+  const image = await readPage(uri);
+  try {
+    const original = originalOf(uri);
+    const hasOriginal = original !== uri && new File(original).exists;
+    // Read both before writing either, so a page that can't be read leaves the pair as it was.
+    const originalImage = hasOriginal ? await readPage(original) : null;
+    try {
+      if (originalImage) await storeTurned(originalImage, turns, original);
+      await storeTurned(image, turns, uri);
+    } finally {
+      originalImage?.dispose();
+    }
+  } finally {
+    image.dispose();
+  }
 }
 
 /**

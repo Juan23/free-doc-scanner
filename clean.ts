@@ -8,17 +8,20 @@ import { copyPage, keepOriginal, originalOf, readPage, replacePage } from './sca
 /** How to treat a page: leave it as photographed, clean it, or clean it to grey. Light, Normal and Strong set how much clean-up keeps. */
 export type Filter = { kind: 'original' | 'clean' | 'gray'; strength: 0 | 1 | 2 };
 
-// `cleanEffect`'s white point per strength: a pixel at this share of the paper's brightness turns white.
-const WHITE_POINT = [0.95, 0.85, 0.8];
-// What `inkEffect` counts as writing per strength: a mark at this share of the paper's brightness
-// or darker. Light keeps faint pencil; Strong treats more faint marks as dirt.
-const INK_THRESHOLD = [0.97, 0.9, 0.87];
+// How much clean-up keeps, per strength. `whitePoint`: a pixel at this share of the paper's
+// brightness turns white. `inkThreshold`: a mark at this share or darker counts as writing. Light
+// keeps faint pencil; Strong treats more faint marks as dirt.
+const KEEP = [
+  { whitePoint: 0.95, inkThreshold: 0.97 },
+  { whitePoint: 0.85, inkThreshold: 0.9 },
+  { whitePoint: 0.8, inkThreshold: 0.87 },
+];
 
 const NORMAL: Filter = { kind: 'clean', strength: 1 };
 const ORIGINAL: Filter = { kind: 'original', strength: 1 };
 
-// The filter for new scans, as JSON. Versions before the filter choices turned clean-up off with
-// this file instead; it is read once and deleted.
+// The filter for new scans, as JSON. Older versions turned clean-up off with a separate file
+// instead: defaultFilter reads it once, remembers Original and deletes it.
 const filterFile = () => new File(Paths.document, 'filter');
 const offFile = () => new File(Paths.document, 'clean-up-off');
 
@@ -292,7 +295,7 @@ async function cleanPage(uri: string, filter: Filter): Promise<void> {
 
   const smallPageShader = clamp(smallPage, FilterMode.Nearest);
   const inkShader = inkEffect.makeShaderWithChildren(
-    [INK_THRESHOLD[filter.strength]],
+    [KEEP[filter.strength].inkThreshold],
     [smallPageShader, coarseShader],
   );
   const spreadInk = Skia.Paint();
@@ -320,7 +323,7 @@ async function cleanPage(uri: string, filter: Filter): Promise<void> {
   const textShader = clamp(ink, FilterMode.Linear, toFull);
   const beyondShader = clamp(beyond, FilterMode.Linear, toFull);
   const cleanShader = cleanEffect.makeShaderWithChildren(
-    [WHITE_POINT[filter.strength], filter.kind === 'gray' ? 1 : 0],
+    [KEEP[filter.strength].whitePoint, filter.kind === 'gray' ? 1 : 0],
     [pageShader, paperShader, textShader, beyondShader],
   );
   const out = Skia.Surface.Make(w, h)!;

@@ -160,12 +160,16 @@ it('listScans still lists a scan whose leftover replacement cannot be removed', 
   expect(listScans()[0].pages).toEqual([`${ROOT}/5/p1.jpg`]);
 });
 
-it('listScans puts back an original killed mid-copy and ignores originals', () => {
+it('listScans drops a leftover original write and ignores originals', async () => {
   putScan('5', ['p1.jpg', 'o1.jpg.tmp', 'o2.jpg', 'o2.jpg.tmp']);
   expect(listScans()[0].pages).toEqual([`${ROOT}/5/p1.jpg`]);
-  expect(mockFs.nodes.get(`${ROOT}/5/o1.jpg`)).toBe('img-o1.jpg.tmp');
+  expect(mockFs.nodes.has(`${ROOT}/5/o1.jpg`)).toBe(false);
   expect(mockFs.nodes.get(`${ROOT}/5/o2.jpg`)).toBe('img-o2.jpg');
   expect([...mockFs.nodes.keys()].filter((k) => k.endsWith('.tmp'))).toEqual([]);
+
+  // A copy that was cut short is dropped, so the original is made again whole.
+  await keepOriginal(`${ROOT}/5/p1.jpg`);
+  expect(mockFs.nodes.get(`${ROOT}/5/o1.jpg`)).toBe('img-p1.jpg');
 });
 
 it('keepOriginal copies the page to o once and never overwrites it', async () => {

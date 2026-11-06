@@ -173,7 +173,7 @@ function Root() {
     await cleanPages(pages, defaultFilter());
   }
 
-  // Remembers the choice for new scans; the Detail screen uses it only until a scan's own is picked.
+  // Remembers the choice for new scans.
   function chooseFilter(chosen: Filter) {
     setFilterState(chosen);
     setDefaultFilter(chosen);
@@ -194,7 +194,7 @@ function Root() {
       await finishNewest(await addPages(open, pages), pages.length);
     });
 
-  const bumped = (pages: string[]) =>
+  const touchPages = (pages: string[]) =>
     setEdits((edits) => {
       const next = { ...edits };
       for (const page of pages) next[page] = (next[page] ?? 0) + 1;
@@ -204,7 +204,7 @@ function Root() {
   const rotate = (page: string) =>
     guarded(async () => {
       await rotatePage(page, 1);
-      bumped([page]);
+      touchPages([page]);
     }, 'Could not rotate');
 
   // Applies to the picked pages, or every page when none are picked.
@@ -214,7 +214,7 @@ function Root() {
     guarded(async () => {
       const pages = pagesToSave(scan.pages, picked ?? []);
       await cleanPages(pages, filter);
-      bumped(pages);
+      touchPages(pages);
     }, 'Could not change filter');
   };
 
@@ -393,43 +393,50 @@ const FILTER_STRENGTHS: { strength: Filter['strength']; label: string }[] = [
   { strength: 2, label: 'Strong' },
 ];
 
+/** One radio button of a filter choice. */
+function Choice(props: { label: string; checked: boolean; disabled?: boolean; onPress: () => void }) {
+  const { label, checked, disabled } = props;
+  return (
+    <Pressable
+      accessibilityRole="radio"
+      accessibilityLabel={label}
+      accessibilityState={{ checked, disabled }}
+      disabled={disabled}
+      onPress={props.onPress}
+      style={[styles.choice, checked && styles.choiceOn, disabled && styles.disabled]}>
+      <Text style={[styles.choiceText, checked && styles.choiceTextOn]} maxFontSizeMultiplier={1.5}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
 /** Original / Clean / Grayscale, and Light / Normal / Strong for the two clean-ups. */
 function FilterChoices(props: { filter: Filter; onChange: (filter: Filter) => void; disabled?: boolean }) {
   const { filter, onChange, disabled } = props;
-  const choice = (checked: boolean) => [styles.choice, checked && styles.choiceOn, disabled && styles.disabled];
   return (
     <View style={styles.filterChoices}>
       <View style={styles.choices} accessibilityRole="radiogroup" accessibilityLabel="Filter">
         {FILTER_KINDS.map(({ kind, label }) => (
-          <Pressable
+          <Choice
             key={kind}
-            accessibilityRole="radio"
-            accessibilityLabel={label}
-            accessibilityState={{ checked: filter.kind === kind, disabled }}
+            label={label}
+            checked={filter.kind === kind}
             disabled={disabled}
             onPress={() => onChange({ ...filter, kind })}
-            style={choice(filter.kind === kind)}>
-            <Text style={[styles.choiceText, filter.kind === kind && styles.choiceTextOn]} maxFontSizeMultiplier={1.5}>
-              {label}
-            </Text>
-          </Pressable>
+          />
         ))}
       </View>
       {filter.kind !== 'original' && (
         <View style={styles.choices} accessibilityRole="radiogroup" accessibilityLabel="Clean-up strength">
           {FILTER_STRENGTHS.map(({ strength, label }) => (
-            <Pressable
+            <Choice
               key={label}
-              accessibilityRole="radio"
-              accessibilityLabel={label}
-              accessibilityState={{ checked: filter.strength === strength, disabled }}
+              label={label}
+              checked={filter.strength === strength}
               disabled={disabled}
               onPress={() => onChange({ ...filter, strength })}
-              style={choice(filter.strength === strength)}>
-              <Text style={[styles.choiceText, filter.strength === strength && styles.choiceTextOn]} maxFontSizeMultiplier={1.5}>
-                {label}
-              </Text>
-            </Pressable>
+            />
           ))}
         </View>
       )}

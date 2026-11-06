@@ -62,13 +62,17 @@ function pagesIn(dir: Directory): { n: number; name: string }[] {
     let name = f.name;
     const replaced = REPLACEMENT.exec(name);
     if (replaced && f instanceof File) {
-      // With its page still there, the write was cut short. Without, the app died mid-move and the
-      // replacement is whole. On failure everything stays as it was.
+      const target = replaced[1];
       try {
-        if (names.has(replaced[1])) f.delete();
-        else {
-          f.rename(replaced[1]);
-          name = replaced[1];
+        if (PAGE.test(target) && !names.has(target)) {
+          // The app died mid-move, after the page was deleted, so the replacement is whole.
+          f.rename(target);
+          name = target;
+        } else {
+          // With its page still there, the page write was cut short. An original is only a copy of
+          // its page, so a cut-short write, or one whose move never happened, is safe to drop:
+          // keepOriginal copies the page again when the original is missing.
+          f.delete();
         }
       } catch {}
     }
