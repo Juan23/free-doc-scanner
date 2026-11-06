@@ -19,6 +19,9 @@ jest.mock('expo-file-system', () => {
     constructor(uri: string) {
       this.uri = uri;
     }
+    get exists() {
+      return mockFiles.has(this.uri);
+    }
     async bytes() {
       const b = mockFiles.get(this.uri);
       if (!b) throw new Error('not found');
@@ -355,6 +358,19 @@ it.each([
   expect(isRed(page, x, y)).toBe(true);
   expect(isRed(page, 20, 20)).toBe(false);
 });
+
+it('turns the untouched original along with the page', async () => {
+  const ORIGINAL = 'file:///doc/scans/1/o1.jpg';
+  mockFiles.set(PAGE, marked());
+  mockFiles.set(ORIGINAL, marked());
+
+  await rotatePage(PAGE, 1);
+
+  expect([decode(mockFiles.get(PAGE)!).width(), decode(mockFiles.get(PAGE)!).height()]).toEqual([200, 300]);
+  expect(isRed(mockFiles.get(PAGE)!, 180, 20)).toBe(true);
+  expect([decode(mockFiles.get(ORIGINAL)!).width(), decode(mockFiles.get(ORIGINAL)!).height()]).toEqual([200, 300]);
+  expect(isRed(mockFiles.get(ORIGINAL)!, 180, 20)).toBe(true);
+}, 30000);
 
 it('does not rewrite a page turned by whole turns', async () => {
   const page = marked();

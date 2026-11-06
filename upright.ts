@@ -1,6 +1,7 @@
 import { AlphaType, ColorType, FilterMode, MipmapMode, Skia, type SkImage } from '@shopify/react-native-skia';
+import { File } from 'expo-file-system';
 
-import { readPage, replacePage } from './scans';
+import { originalOf, readPage, replacePage } from './scans';
 
 // Text is looked for on a copy this long, where body text is still 5-10 px high.
 const SMALL_LONG_SIDE = 1000;
@@ -346,13 +347,25 @@ async function storeTurned(image: SkImage, turns: number, uri: string): Promise<
   }
 }
 
-/** Turns the stored page JPEG at `uri` clockwise by `quarterTurns` × 90°, replacing it. */
+/**
+ * Turns the stored page JPEG at `uri` clockwise by `quarterTurns` × 90°, replacing it and its
+ * untouched original alike so a later filter change keeps the turn.
+ */
 export async function rotatePage(uri: string, quarterTurns: number): Promise<void> {
   const turns = ((quarterTurns % 4) + 4) % 4;
   if (!turns) return;
   const image = await readPage(uri);
   try {
-    await storeTurned(image, turns, uri);
+    const original = originalOf(uri);
+    const hasOriginal = original !== uri && new File(original).exists;
+    // Read both before writing either, so a page that can't be read leaves the pair as it was.
+    const originalImage = hasOriginal ? await readPage(original) : null;
+    try {
+      if (originalImage) await storeTurned(originalImage, turns, original);
+      await storeTurned(image, turns, uri);
+    } finally {
+      originalImage?.dispose();
+    }
   } finally {
     image.dispose();
   }

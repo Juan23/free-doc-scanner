@@ -3,19 +3,60 @@ import {
 } from '@shopify/react-native-skia';
 import { File, Paths } from 'expo-file-system';
 
-import { readPage, replacePage } from './scans';
+import { copyPage, keepOriginal, originalOf, readPage, replacePage } from './scans';
 
-// Clean-up is on unless this file exists.
+/** How to treat a page: leave it as photographed, clean it, or clean it to grey. Light, Normal and Strong set how much clean-up keeps. */
+export type Filter = { kind: 'original' | 'clean' | 'gray'; strength: 0 | 1 | 2 };
+
+// How much clean-up keeps, per strength. `whitePoint`: a pixel at this share of the paper's
+// brightness turns white. `inkThreshold`: a mark at this share or darker counts as writing. Light
+// keeps faint pencil; Strong treats more faint marks as dirt.
+const KEEP = [
+  { whitePoint: 0.95, inkThreshold: 0.97 },
+  { whitePoint: 0.85, inkThreshold: 0.9 },
+  { whitePoint: 0.8, inkThreshold: 0.87 },
+];
+
+const NORMAL: Filter = { kind: 'clean', strength: 1 };
+const ORIGINAL: Filter = { kind: 'original', strength: 1 };
+
+// The filter for new scans, as JSON. Older versions turned clean-up off with a separate file
+// instead: defaultFilter reads it once, remembers Original and deletes it.
+const filterFile = () => new File(Paths.document, 'filter');
 const offFile = () => new File(Paths.document, 'clean-up-off');
 
-export const cleanUpOn = () => !offFile().exists;
+function parseFilter(text: string): Filter | null {
+  try {
+    const f = JSON.parse(text);
+    const kinds = ['original', 'clean', 'gray'];
+    if (kinds.includes(f.kind) && [0, 1, 2].includes(f.strength)) return f;
+  } catch {}
+  return null;
+}
+
+/** The filter for new scans: Clean, Normal unless another was chosen. */
+export function defaultFilter(): Filter {
+  try {
+    const f = filterFile();
+    if (f.exists) {
+      const filter = parseFilter(f.textSync());
+      if (filter) return filter;
+    }
+  } catch {}
+  try {
+    if (offFile().exists) {
+      setDefaultFilter(ORIGINAL);
+      offFile().delete();
+      return ORIGINAL;
+    }
+  } catch {}
+  return NORMAL;
+}
 
 /** Remembers the choice across launches. Never throws: at worst the choice resets at next launch. */
-export function setCleanUp(on: boolean): void {
+export function setDefaultFilter(filter: Filter): void {
   try {
-    const f = offFile();
-    if (on && f.exists) f.delete();
-    if (!on && !f.exists) f.create();
+    filterFile().writeSync(JSON.stringify(filter));
   } catch {}
 }
 
@@ -43,9 +84,10 @@ half4 main(float2 xy) {
 const inkEffect = Skia.RuntimeEffect.Make(`
 uniform shader page;
 uniform shader paper;
+uniform float inkThreshold;
 half4 main(float2 xy) {
   half3 c = page.eval(xy).rgb / max(paper.eval(xy).rgb, half3(0.05));
-  return half4(0, 0, 0, saturate(0.9 - min(min(c.r, c.g), c.b)));
+  return half4(0, 0, 0, saturate(half(inkThreshold) - min(min(c.r, c.g), c.b)));
 }`)!;
 
 // Divides each pixel by the paper's brightness around it, so shadows and tint turn white, and
@@ -57,11 +99,15 @@ uniform shader page;
 uniform shader paper;
 uniform shader ink;
 uniform shader beyond;
+uniform float whitePoint;
+uniform float grey;
 half4 main(float2 xy) {
-  half3 c = saturate((page.eval(xy).rgb / max(paper.eval(xy).rgb, half3(0.05)) - 0.25) / 0.6);
+  half3 c = saturate((page.eval(xy).rgb / max(paper.eval(xy).rgb, half3(0.05)) - (half(whitePoint) - 0.6)) / 0.6);
   half dark = 1 - min(min(c.r, c.g), c.b);
   half keep = max(smoothstep(0.45, 0.65, dark), smoothstep(0.02, 0.05, ink.eval(xy).a));
-  return half4(mix(half3(1), c, keep * (1 - beyond.eval(xy).a)), 1);
+  half3 cleaned = mix(half3(1), c, keep * (1 - beyond.eval(xy).a));
+  half greyed = dot(cleaned, half3(0.2126, 0.7152, 0.0722));
+  return half4(mix(cleaned, half3(greyed), half(grey)), 1);
 }`)!;
 
 // Paper and text are found on a copy this wide.
@@ -208,8 +254,14 @@ function pastEdges(page: Uint8Array, fine: Uint8Array, w: number, h: number): Ui
   return out;
 }
 
-async function cleanPage(uri: string): Promise<void> {
-  const image = await readPage(uri);
+async function cleanPage(uri: string, filter: Filter): Promise<void> {
+  // Every filter starts from the photo as it was before any cleaning, so changes never stack.
+  await keepOriginal(uri);
+  if (filter.kind === 'original') {
+    await copyPage(originalOf(uri), uri);
+    return;
+  }
+  const image = await readPage(originalOf(uri));
   const w = image.width();
   const h = image.height();
   const scale = Math.min(1, SMALL_WIDTH / w);
@@ -242,7 +294,10 @@ async function cleanPage(uri: string): Promise<void> {
   const paper = surface.makeImageSnapshot();
 
   const smallPageShader = clamp(smallPage, FilterMode.Nearest);
-  const inkShader = inkEffect.makeShaderWithChildren([], [smallPageShader, coarseShader]);
+  const inkShader = inkEffect.makeShaderWithChildren(
+    [KEEP[filter.strength].inkThreshold],
+    [smallPageShader, coarseShader],
+  );
   const spreadInk = Skia.Paint();
   spreadInk.setShader(inkShader);
   spreadInk.setImageFilter(Skia.ImageFilter.MakeBlur(6, 6, TileMode.Clamp, null));
@@ -267,7 +322,10 @@ async function cleanPage(uri: string): Promise<void> {
   const paperShader = clamp(paper, FilterMode.Linear, toFull);
   const textShader = clamp(ink, FilterMode.Linear, toFull);
   const beyondShader = clamp(beyond, FilterMode.Linear, toFull);
-  const cleanShader = cleanEffect.makeShaderWithChildren([], [pageShader, paperShader, textShader, beyondShader]);
+  const cleanShader = cleanEffect.makeShaderWithChildren(
+    [KEEP[filter.strength].whitePoint, filter.kind === 'gray' ? 1 : 0],
+    [pageShader, paperShader, textShader, beyondShader],
+  );
   const out = Skia.Surface.Make(w, h)!;
   const paint = Skia.Paint();
   paint.setShader(cleanShader);
@@ -290,13 +348,14 @@ async function cleanPage(uri: string): Promise<void> {
 
 /**
  * Whitens the paper of stored page JPEGs (shadows, tint, grain, specks) and darkens the ink,
- * replacing each page. A page that can't be cleaned stays as it was.
+ * replacing each page. Original puts each page's untouched photo back. A page that can't be
+ * cleaned stays as it was.
  */
-export async function cleanPages(pageUris: string[]): Promise<void> {
+export async function cleanPages(pageUris: string[], filter: Filter = NORMAL): Promise<void> {
   // One page at a time: each holds full-size bitmaps in memory.
   for (const uri of pageUris) {
     try {
-      await cleanPage(uri);
+      await cleanPage(uri, filter);
     } catch {}
   }
 }

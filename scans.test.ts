@@ -1,5 +1,5 @@
 /// <reference types="jest" />
-import { addPages, createScan, deleteScan, listScans } from './scans';
+import { addPages, createScan, deleteScan, keepOriginal, listScans } from './scans';
 import { scanName } from './save';
 
 // In-memory file system: uri -> directory marker or file text. Moves finish on a later tick.
@@ -31,6 +31,18 @@ jest.mock('expo-file-system', () => {
     }
   }
   class File extends Node {
+    async bytes() {
+      const text = mockFs.nodes.get(this.uri);
+      if (text === undefined) throw new Error('not found');
+      const bytes = new Uint8Array(text.length);
+      for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i);
+      return bytes;
+    }
+    async write(bytes: Uint8Array) {
+      let text = '';
+      for (const b of bytes) text += String.fromCharCode(b);
+      mockFs.nodes.set(this.uri, text);
+    }
     async move(dest: File) {
       await tick();
       if (++mockFs.moves === mockFs.failMoveAt) throw new Error('move failed');
@@ -146,6 +158,33 @@ it('listScans still lists a scan whose leftover replacement cannot be removed', 
   putScan('5', ['p1.jpg', 'p1.jpg.tmp']);
   mockFs.failDelete = true;
   expect(listScans()[0].pages).toEqual([`${ROOT}/5/p1.jpg`]);
+});
+
+it('listScans drops a leftover original write and ignores originals', async () => {
+  putScan('5', ['p1.jpg', 'o1.jpg.tmp', 'o2.jpg', 'o2.jpg.tmp']);
+  expect(listScans()[0].pages).toEqual([`${ROOT}/5/p1.jpg`]);
+  expect(mockFs.nodes.has(`${ROOT}/5/o1.jpg`)).toBe(false);
+  expect(mockFs.nodes.get(`${ROOT}/5/o2.jpg`)).toBe('img-o2.jpg');
+  expect([...mockFs.nodes.keys()].filter((k) => k.endsWith('.tmp'))).toEqual([]);
+
+  // A copy that was cut short is dropped, so the original is made again whole.
+  await keepOriginal(`${ROOT}/5/p1.jpg`);
+  expect(mockFs.nodes.get(`${ROOT}/5/o1.jpg`)).toBe('img-p1.jpg');
+});
+
+it('keepOriginal copies the page to o once and never overwrites it', async () => {
+  putScan('5', ['p1.jpg']);
+  const page = `${ROOT}/5/p1.jpg`;
+  const original = `${ROOT}/5/o1.jpg`;
+
+  await keepOriginal(page);
+
+  expect(mockFs.nodes.get(original)).toBe('img-p1.jpg');
+  expect(mockFs.nodes.get(page)).toBe('img-p1.jpg');
+  put(page, 'cleaned');
+  await keepOriginal(page);
+  expect(mockFs.nodes.get(original)).toBe('img-p1.jpg');
+  expect([...mockFs.nodes.keys()].filter((k) => k.endsWith('.tmp'))).toEqual([]);
 });
 
 it('addPages continues numbering after the highest page and never overwrites', async () => {

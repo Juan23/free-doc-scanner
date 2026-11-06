@@ -4,7 +4,7 @@
 /// <reference types="jest" />
 import { BlurStyle, ImageFormat, Skia } from '@shopify/react-native-skia';
 
-import { cleanPages } from './clean';
+import { cleanPages, defaultFilter, setDefaultFilter } from './clean';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
 const mockFiles = new Map<string, Uint8Array>();
@@ -14,10 +14,16 @@ jest.mock('@shopify/react-native-skia', () =>
 );
 
 jest.mock('expo-file-system', () => {
+  // Text files hold their bytes as characters, as the JSON filter file is ASCII.
+  const encode = (text: string) => Uint8Array.from(text, (c) => c.charCodeAt(0));
+  const decode = (bytes: Uint8Array) => String.fromCharCode(...bytes);
   class File {
     uri: string;
-    constructor(uri: string) {
-      this.uri = uri;
+    constructor(...parts: any[]) {
+      this.uri = parts.map((p) => p.uri ?? p).join('/');
+    }
+    get exists() {
+      return mockFiles.has(this.uri);
     }
     async bytes() {
       const b = mockFiles.get(this.uri);
@@ -27,13 +33,25 @@ jest.mock('expo-file-system', () => {
     async write(b: Uint8Array) {
       mockFiles.set(this.uri, b);
     }
+    writeSync(text: string) {
+      mockFiles.set(this.uri, encode(text));
+    }
+    textSync() {
+      return decode(mockFiles.get(this.uri)!);
+    }
+    create() {
+      mockFiles.set(this.uri, new Uint8Array());
+    }
+    delete() {
+      mockFiles.delete(this.uri);
+    }
     async move(dest: File, options?: { overwrite?: boolean }) {
       if (mockFiles.has(dest.uri) && !options?.overwrite) throw new Error('destination exists');
       mockFiles.set(dest.uri, mockFiles.get(this.uri)!);
       mockFiles.delete(this.uri);
     }
   }
-  return { File };
+  return { File, Paths: { document: { uri: 'file:///doc' } } };
 });
 
 beforeEach(() => mockFiles.clear());
@@ -68,9 +86,13 @@ function photographedPage(): Uint8Array {
   return surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 95);
 }
 
-function luma(bytes: Uint8Array, x: number, y: number): number {
+function pixel(bytes: Uint8Array, x: number, y: number): Uint8Array {
   const image = Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(bytes))!;
-  const px = image.readPixels(x, y, { width: 1, height: 1, colorType: 4, alphaType: 3 }) as Uint8Array;
+  return image.readPixels(x, y, { width: 1, height: 1, colorType: 4, alphaType: 3 }) as Uint8Array;
+}
+
+function luma(bytes: Uint8Array, x: number, y: number): number {
+  const px = pixel(bytes, x, y);
   return (px[0] + px[1] + px[2]) / 3;
 }
 
@@ -79,7 +101,10 @@ it('turns shadowed, tinted paper, specks and creases white and keeps ink dark, i
 
   await cleanPages(['file:///doc/scans/1/p1.jpg']);
 
-  expect([...mockFiles.keys()]).toEqual(['file:///doc/scans/1/p1.jpg']);
+  expect([...mockFiles.keys()].sort()).toEqual([
+    'file:///doc/scans/1/o1.jpg',
+    'file:///doc/scans/1/p1.jpg',
+  ]);
   const page = mockFiles.get('file:///doc/scans/1/p1.jpg')!;
   expect(luma(page, 30, 400)).toBeGreaterThan(245); // lit paper
   expect(luma(page, 570, 400)).toBeGreaterThan(245); // paper in shadow
@@ -241,6 +266,101 @@ it('keeps bold letters, frame lines, bands and boxes that a tight crop cuts into
   for (const y of [20, 400, 780]) expect(luma(page, W - 9, y)).toBeLessThan(100); // frame line
   for (const x of [10, 300, 500]) expect(luma(page, x, H - 12)).toBeLessThan(160); // footer band
   expect(luma(page, 30, 18)).toBeLessThan(80); // box
+}, 30000);
+
+it('defaults to Clean Normal and keeps a chosen filter across launches', () => {
+  expect(defaultFilter()).toEqual({ kind: 'clean', strength: 1 });
+
+  setDefaultFilter({ kind: 'gray', strength: 0 });
+  expect(defaultFilter()).toEqual({ kind: 'gray', strength: 0 });
+
+  setDefaultFilter({ kind: 'clean', strength: 2 });
+  expect(defaultFilter()).toEqual({ kind: 'clean', strength: 2 });
+});
+
+it('turns an old clean-up-off file into Original once, then deletes it', () => {
+  mockFiles.set('file:///doc/clean-up-off', new Uint8Array());
+
+  expect(defaultFilter()).toEqual({ kind: 'original', strength: 1 });
+  expect(mockFiles.has('file:///doc/clean-up-off')).toBe(false);
+  expect(defaultFilter()).toEqual({ kind: 'original', strength: 1 });
+});
+
+it('ignores an unreadable filter file', () => {
+  mockFiles.set('file:///doc/filter', Uint8Array.from('{"kind":"sepia","strength":1}', (c) => c.charCodeAt(0)));
+  expect(defaultFilter()).toEqual({ kind: 'clean', strength: 1 });
+});
+
+// Pencil, or faded print: a line of letter-sized marks. The default marks are at about 92% of the
+// paper's brightness.
+function faintPage(colour = 'rgb(216,210,193)', width = 16): Uint8Array {
+  const surface = Skia.Surface.Make(W, H)!;
+  const canvas = surface.getCanvas();
+  canvas.drawColor(Skia.Color('rgb(235,228,210)'));
+  const faint = Skia.Paint();
+  faint.setColor(Skia.Color(colour));
+  for (let x = 150; x < 450; x += 24) canvas.drawRect(Skia.XYWHRect(x, 380, width, 70), faint);
+  return surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 95);
+}
+
+it('keeps faint grey text at Light and wipes it at Normal', async () => {
+  const PAGE = 'file:///doc/scans/1/p1.jpg';
+  mockFiles.set(PAGE, faintPage());
+
+  await cleanPages([PAGE], { kind: 'clean', strength: 0 });
+  expect(luma(mockFiles.get(PAGE)!, 158, 415)).toBeLessThan(250);
+  expect(luma(mockFiles.get(PAGE)!, 30, 400)).toBeGreaterThan(245); // paper
+
+  await cleanPages([PAGE], { kind: 'clean', strength: 1 });
+  expect(luma(mockFiles.get(PAGE)!, 158, 415)).toBeGreaterThan(253);
+}, 30000);
+
+it('wipes at Strong what Normal keeps', async () => {
+  const PAGE = 'file:///doc/scans/1/p1.jpg';
+  // Narrow strokes, so the paper estimate stays the paper among them.
+  mockFiles.set(PAGE, faintPage('rgb(193,187,172)', 8));
+
+  await cleanPages([PAGE], { kind: 'clean', strength: 1 });
+  expect(luma(mockFiles.get(PAGE)!, 154, 415)).toBeLessThan(252);
+
+  await cleanPages([PAGE], { kind: 'clean', strength: 2 });
+  expect(luma(mockFiles.get(PAGE)!, 154, 415)).toBeGreaterThan(254);
+}, 30000);
+
+it('turns the cleaned page grey, not hard black and white', async () => {
+  const PAGE = 'file:///doc/scans/1/p1.jpg';
+  mockFiles.set(PAGE, photographedPage());
+
+  await cleanPages([PAGE], { kind: 'gray', strength: 1 });
+
+  const page = mockFiles.get(PAGE)!;
+  for (const [x, y] of [[80, 208], [303, 453], [30, 400]]) {
+    const [r, g, b] = pixel(page, x, y);
+    expect([r, g, b]).toEqual([r, r, r]);
+  }
+}, 30000);
+
+it('cleans a page the same way twice as once, from its untouched original', async () => {
+  const PAGE = 'file:///doc/scans/1/p1.jpg';
+  mockFiles.set(PAGE, photographedPage());
+
+  await cleanPages([PAGE]);
+  const once = mockFiles.get(PAGE)!;
+  await cleanPages([PAGE]);
+
+  expect(mockFiles.get(PAGE)).toEqual(once);
+}, 30000);
+
+it('puts back the untouched photo for Original', async () => {
+  const PAGE = 'file:///doc/scans/1/p1.jpg';
+  const photo = photographedPage();
+  mockFiles.set(PAGE, photo);
+
+  await cleanPages([PAGE]);
+  expect(mockFiles.get(PAGE)).not.toEqual(photo);
+  await cleanPages([PAGE], { kind: 'original', strength: 1 });
+
+  expect(mockFiles.get(PAGE)).toEqual(photo);
 }, 30000);
 
 it('leaves a page it cannot read as it is, and cleans the rest', async () => {

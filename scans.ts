@@ -9,7 +9,8 @@ export type Scan = { id: string; name: string; pages: string[] };
 const root = () => new Directory(Paths.document, 'scans');
 const PAGE = /^p(\d+)\.jpg$/;
 // A page is replaced by writing p<N>.jpg.tmp, then moving it over the page, which deletes the page first.
-const REPLACEMENT = /^(p\d+\.jpg)\.tmp$/;
+// The untouched original o<N>.jpg is written the same way.
+const REPLACEMENT = /^([po]\d+\.jpg)\.tmp$/;
 
 /** The page's image. Throws when the file is not a readable image. */
 export async function readPage(uri: string): Promise<SkImage> {
@@ -18,6 +19,28 @@ export async function readPage(uri: string): Promise<SkImage> {
   data.dispose();
   if (!image) throw new Error('unreadable page');
   return image;
+}
+
+/** The untouched photo of the page at `uri`: the page after upright turning, before any filter. */
+export function originalOf(uri: string): string {
+  return uri.replace(/p(\d+\.jpg)$/, 'o$1');
+}
+
+/** Keeps the page at `uri` as its untouched original, once: an original already there stays. */
+export async function keepOriginal(uri: string): Promise<void> {
+  const original = originalOf(uri);
+  if (original === uri || new File(original).exists) return;
+  const tmp = new File(`${original}.tmp`);
+  await tmp.write(await new File(uri).bytes());
+  // No overwrite: an original that appeared meanwhile is older, so it wins.
+  await tmp.move(new File(original));
+}
+
+/** Copies the page at `from` over the page at `to`, as a page write, so a crash mid-copy can't leave a broken page. */
+export async function copyPage(from: string, to: string): Promise<void> {
+  const tmp = new File(`${to}.tmp`);
+  await tmp.write(await new File(from).bytes());
+  await tmp.move(new File(to), { overwrite: true });
 }
 
 /** Replaces the page at `uri` with `image` as a JPEG. Swapping in a finished file means a crash mid-write can't leave a broken page. */
@@ -39,13 +62,17 @@ function pagesIn(dir: Directory): { n: number; name: string }[] {
     let name = f.name;
     const replaced = REPLACEMENT.exec(name);
     if (replaced && f instanceof File) {
-      // With its page still there, the write was cut short. Without, the app died mid-move and the
-      // replacement is whole. On failure everything stays as it was.
+      const target = replaced[1];
       try {
-        if (names.has(replaced[1])) f.delete();
-        else {
-          f.rename(replaced[1]);
-          name = replaced[1];
+        if (PAGE.test(target) && !names.has(target)) {
+          // The app died mid-move, after the page was deleted, so the replacement is whole.
+          f.rename(target);
+          name = target;
+        } else {
+          // With its page still there, the page write was cut short. An original is only a copy of
+          // its page, so a cut-short write, or one whose move never happened, is safe to drop:
+          // keepOriginal copies the page again when the original is missing.
+          f.delete();
         }
       } catch {}
     }
