@@ -66,9 +66,9 @@ function Root() {
   const [onCapturedPages, setOnCapturedPages] = useState<((pages: string[]) => Promise<void>) | null>(null);
   // Pages picked in Select mode, or null outside it.
   const [picked, setPicked] = useState<string[] | null>(null);
-  // Hand turns per page, added to its URI as a query: Image keeps showing a page it already loaded from the same URI,
-  // and both platforms read a file:// image by its path, ignoring the query.
-  const [turns, setTurns] = useState<Record<string, number>>({});
+  // Edits per page (hand turns and filter changes), added to its URI as a query: Image keeps showing a page it already
+  // loaded from the same URI, and both platforms read a file:// image by its path, ignoring the query.
+  const [edits, setEdits] = useState<Record<string, number>>({});
   // State updates are async, so a second tap in the same frame would still see busy=false.
   const inFlight = useRef(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -194,13 +194,31 @@ function Root() {
       await finishNewest(await addPages(open, pages), pages.length);
     });
 
+  const bumped = (pages: string[]) =>
+    setEdits((edits) => {
+      const next = { ...edits };
+      for (const page of pages) next[page] = (next[page] ?? 0) + 1;
+      return next;
+    });
+
   const rotate = (page: string) =>
     guarded(async () => {
       await rotatePage(page, 1);
-      setTurns((t) => ({ ...t, [page]: (t[page] ?? 0) + 1 }));
+      bumped([page]);
     }, 'Could not rotate');
 
-  const shown = (page: string) => (turns[page] ? `${page}?turned=${turns[page]}` : page);
+  // Applies to the picked pages, or every page when none are picked.
+  const applyFilter = (filter: Filter) => {
+    if (!open) return;
+    const scan = open;
+    guarded(async () => {
+      const pages = pagesToSave(scan.pages, picked ?? []);
+      await cleanPages(pages, filter);
+      bumped(pages);
+    }, 'Could not change filter');
+  };
+
+  const shown = (page: string) => (edits[page] ? `${page}?v=${edits[page]}` : page);
 
   function save(kind: 'pdf' | 'jpeg') {
     if (!open) return;
@@ -255,6 +273,7 @@ function Root() {
           onDelete={confirmDelete}
           onAdd={addToOpen}
           onRotate={rotate}
+          onApplyFilter={applyFilter}
           onSave={save}
         />
       ) : (
@@ -431,6 +450,7 @@ function Detail(props: {
   onDelete: () => void;
   onAdd: () => void;
   onRotate: (page: string) => void;
+  onApplyFilter: (filter: Filter) => void;
   onSave: (kind: 'pdf' | 'jpeg') => void;
 }) {
   const { width } = useWindowDimensions();
@@ -438,6 +458,8 @@ function Detail(props: {
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [current, setCurrent] = useState(0);
   const [pagerHeight, setPagerHeight] = useState(0);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [filter, setFilter] = useState<Filter>(defaultFilter);
   const cell = (width - 40 - 28) / 3;
   const { scan, busy, picked } = props;
   const available = scannerAvailable();
@@ -590,6 +612,15 @@ function Detail(props: {
         <View style={styles.actions}>
           <Pressable
             accessibilityRole="button"
+            accessibilityLabel="Filter pages"
+            accessibilityState={{ disabled: busy }}
+            disabled={busy}
+            onPress={() => setFilterOpen(true)}
+            style={[styles.action, styles.secondary, disabled]}>
+            <Text style={styles.secondaryText} maxFontSizeMultiplier={1.5}>Filter</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
             accessibilityLabel="Save PDF"
             accessibilityState={{ disabled: busy }}
             disabled={busy}
@@ -650,6 +681,51 @@ function Detail(props: {
               />
             )}
           />
+        </View>
+      </Modal>
+      <Modal
+        visible={filterOpen}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setFilterOpen(false)}>
+        <View style={styles.sheetBackdrop}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Close filter"
+            onPress={() => setFilterOpen(false)}
+            style={StyleSheet.absoluteFill}
+          />
+          <View
+            accessibilityViewIsModal
+            style={[styles.sheet, { paddingBottom: bottomPad(insets.bottom) }]}>
+            <Text style={styles.sheetTitle} accessibilityRole="header">Filter</Text>
+            <Text style={styles.rowSub}>
+              {picked?.length ? 'Applies to the picked pages.' : 'Applies to every page.'}
+            </Text>
+            <FilterChoices filter={filter} onChange={setFilter} disabled={busy} />
+            <View style={styles.actions}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Cancel filter"
+                onPress={() => setFilterOpen(false)}
+                style={[styles.action, styles.secondary]}>
+                <Text style={styles.secondaryText} maxFontSizeMultiplier={1.5}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Apply filter"
+                accessibilityState={{ disabled: busy }}
+                disabled={busy}
+                onPress={() => {
+                  props.onApplyFilter(filter);
+                  setFilterOpen(false);
+                }}
+                style={[styles.action, styles.primary, disabled]}>
+                <Text style={styles.primaryText} maxFontSizeMultiplier={1.5}>Apply</Text>
+              </Pressable>
+            </View>
+          </View>
         </View>
       </Modal>
     </View>
@@ -1135,6 +1211,16 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   toastText: { fontSize: 15, lineHeight: 20, fontWeight: '500', color: '#fff' },
+  sheetBackdrop: { flex: 1, backgroundColor: 'rgba(21,23,28,0.45)', justifyContent: 'flex-end' },
+  sheet: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    gap: 12,
+  },
+  sheetTitle: { fontSize: 22, lineHeight: 28, fontWeight: '700', color: C.text },
   actions: { width: '100%', flexDirection: 'row', gap: 12 },
   action: { flex: 1, minHeight: 54, paddingVertical: 8, paddingHorizontal: 4, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   primary: { backgroundColor: C.accent },
