@@ -11,6 +11,7 @@ import {
   FlatList,
   Image,
   Linking,
+  Modal,
   type GestureResponderEvent,
   Platform,
   Pressable,
@@ -391,8 +392,11 @@ function Detail(props: {
   onRotate: (page: string) => void;
   onSave: (kind: 'pdf' | 'jpeg') => void;
 }) {
-  const { width } = useWindowDimensions();
+  const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
+  // Index of the page open in the full-screen preview, or null.
+  const [preview, setPreview] = useState<number | null>(null);
+  const [current, setCurrent] = useState(0);
   const cell = (width - 40 - 28) / 3;
   const { scan, busy, picked } = props;
   const available = scannerAvailable();
@@ -485,7 +489,18 @@ function Detail(props: {
                     <View style={[styles.pickMark, on && styles.pickMarkOn]}>{on && <Check />}</View>
                   </Pressable>
                 ) : (
-                  image
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Preview page ${item.n}`}
+                    accessibilityState={{ disabled: busy }}
+                    disabled={busy}
+                    onPress={() => {
+                      setCurrent(item.n! - 1);
+                      setPreview(item.n! - 1);
+                    }}
+                    style={disabled}>
+                    {image}
+                  </Pressable>
                 )}
                 <View style={styles.pageBar}>
                   <Text style={styles.pageNum} importantForAccessibility="no" accessible={false} maxFontSizeMultiplier={1.5}>
@@ -551,6 +566,41 @@ function Detail(props: {
           </Pressable>
         </View>
       </View>
+      <Modal visible={preview !== null} animationType="fade" onRequestClose={() => setPreview(null)}>
+        <View style={[styles.preview, { paddingTop: insets.top + 8, paddingBottom: bottomPad(insets.bottom) }]}>
+          <View style={styles.nav}>
+            <Text style={styles.previewCount} maxFontSizeMultiplier={1.5}>
+              {current + 1} of {scan.pages.length}
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Close preview"
+              onPress={() => setPreview(null)}
+              style={styles.navButton}>
+              <Text style={styles.previewClose} maxFontSizeMultiplier={1.5}>Close</Text>
+            </Pressable>
+          </View>
+          <FlatList
+            style={styles.flex}
+            data={scan.pages}
+            horizontal
+            pagingEnabled
+            showsHorizontalScrollIndicator={false}
+            keyExtractor={(uri) => uri}
+            initialScrollIndex={preview ?? 0}
+            getItemLayout={(_, i) => ({ length: width, offset: width * i, index: i })}
+            onMomentumScrollEnd={(e) => setCurrent(Math.round(e.nativeEvent.contentOffset.x / width))}
+            renderItem={({ item, index }) => (
+              <Image
+                source={{ uri: props.shown(item) }}
+                accessibilityLabel={`Page ${index + 1}`}
+                style={{ width, height: height - insets.top - bottomPad(insets.bottom) - 60 }}
+                resizeMode="contain"
+              />
+            )}
+          />
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -956,6 +1006,9 @@ const styles = StyleSheet.create({
   back: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 8 },
   backText: { fontSize: 17, fontWeight: '500', color: C.accent },
   navCount: { flexShrink: 1, paddingHorizontal: 8, fontSize: 17, fontWeight: '600', color: C.text },
+  preview: { flex: 1, backgroundColor: C.text },
+  previewCount: { flexShrink: 1, paddingHorizontal: 20, fontSize: 17, fontWeight: '600', color: '#fff' },
+  previewClose: { fontSize: 16, fontWeight: '500', color: '#fff' },
   navRight: { flexDirection: 'row', alignItems: 'center' },
   navButton: { minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
   selectText: { fontSize: 16, fontWeight: '500', color: C.accent },
