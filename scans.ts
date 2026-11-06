@@ -9,7 +9,8 @@ export type Scan = { id: string; name: string; pages: string[] };
 const root = () => new Directory(Paths.document, 'scans');
 const PAGE = /^p(\d+)\.jpg$/;
 // A page is replaced by writing p<N>.jpg.tmp, then moving it over the page, which deletes the page first.
-const REPLACEMENT = /^(p\d+\.jpg)\.tmp$/;
+// The untouched original o<N>.jpg is written the same way.
+const REPLACEMENT = /^([po]\d+\.jpg)\.tmp$/;
 
 /** The page's image. Throws when the file is not a readable image. */
 export async function readPage(uri: string): Promise<SkImage> {
@@ -18,6 +19,21 @@ export async function readPage(uri: string): Promise<SkImage> {
   data.dispose();
   if (!image) throw new Error('unreadable page');
   return image;
+}
+
+/** The untouched photo of the page at `uri`: the page after upright turning, before any filter. */
+export function originalOf(uri: string): string {
+  return uri.replace(/p(\d+\.jpg)$/, 'o$1');
+}
+
+/** Keeps the page at `uri` as its untouched original, once: an original already there stays. */
+export async function keepOriginal(uri: string): Promise<void> {
+  const original = originalOf(uri);
+  if (original === uri || new File(original).exists) return;
+  const tmp = new File(`${original}.tmp`);
+  await tmp.write(await new File(uri).bytes());
+  // No overwrite: an original that appeared meanwhile is older, so it wins.
+  await tmp.move(new File(original));
 }
 
 /** Replaces the page at `uri` with `image` as a JPEG. Swapping in a finished file means a crash mid-write can't leave a broken page. */
