@@ -575,7 +575,7 @@ function Detail(props: {
         <StatusBar style="light" />
         <View style={[styles.preview, { paddingTop: insets.top + 8, paddingBottom: bottomPad(insets.bottom) }]}>
           <View style={styles.nav}>
-            <Text style={styles.previewCount} maxFontSizeMultiplier={1.5}>
+            <Text style={styles.previewCount} accessibilityLiveRegion="polite" maxFontSizeMultiplier={1.5}>
               {current + 1} of {scan.pages.length}
             </Text>
             <Pressable
@@ -592,6 +592,8 @@ function Detail(props: {
             data={scan.pages}
             horizontal
             pagingEnabled
+            windowSize={3}
+            initialNumToRender={1}
             showsHorizontalScrollIndicator={false}
             keyExtractor={(uri) => uri}
             initialScrollIndex={previewIndex ?? 0}
@@ -600,7 +602,8 @@ function Detail(props: {
             renderItem={({ item, index }) => (
               <Image
                 source={{ uri: props.shown(item) }}
-                accessibilityLabel={`Page ${index + 1}`}
+                accessible
+                accessibilityLabel={`Page ${index + 1} of ${scan.pages.length}`}
                 style={{ width, height: pagerHeight }}
                 resizeMode="contain"
               />
