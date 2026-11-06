@@ -29,7 +29,7 @@ npx expo run:ios --device
 ```
 
 ```bash
-export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+export JAVA_HOME="$(/usr/libexec/java_home -v 17)"
 export ANDROID_HOME="$HOME/Library/Android/sdk"
 npx expo run:android --device
 ```

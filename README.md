@@ -28,7 +28,7 @@ Scanning and saving happen on your phone. The app makes no network requests. It 
 
 ## Build and run
 
-You need Node, Xcode with CocoaPods for iOS, and Android Studio for Android.
+You need Node, Xcode with CocoaPods for iOS, and a JDK 17 and the Android SDK for Android.
 
 Install dependencies:
 
@@ -45,7 +45,7 @@ npx expo run:ios --device
 Android:
 
 ```bash
-export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+export JAVA_HOME="$(/usr/libexec/java_home -v 17)"
 export ANDROID_HOME="$HOME/Library/Android/sdk"
 npx expo run:android --device
 ```
