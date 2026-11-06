@@ -160,15 +160,41 @@ it('listScans still lists a scan whose leftover replacement cannot be removed', 
   expect(listScans()[0].pages).toEqual([`${ROOT}/5/p1.jpg`]);
 });
 
-it('listScans drops a leftover original write and ignores originals', async () => {
+it('listScans puts back an original killed mid-replace and drops a copy cut short', async () => {
   putScan('5', ['p1.jpg', 'o1.jpg.tmp', 'o2.jpg', 'o2.jpg.tmp']);
   expect(listScans()[0].pages).toEqual([`${ROOT}/5/p1.jpg`]);
-  expect(mockFs.nodes.has(`${ROOT}/5/o1.jpg`)).toBe(false);
+  // Its move never happened, so the whole write is the photo: put it back, filtered page or not.
+  expect(mockFs.nodes.get(`${ROOT}/5/o1.jpg`)).toBe('img-o1.jpg.tmp');
   expect(mockFs.nodes.get(`${ROOT}/5/o2.jpg`)).toBe('img-o2.jpg');
   expect([...mockFs.nodes.keys()].filter((k) => k.endsWith('.tmp'))).toEqual([]);
 
-  // A copy that was cut short is dropped, so the original is made again whole.
   await keepOriginal(`${ROOT}/5/p1.jpg`);
+  expect(mockFs.nodes.get(`${ROOT}/5/o1.jpg`)).toBe('img-o1.jpg.tmp');
+});
+
+it('listScans deletes a first original copy and never makes the original from it', async () => {
+  putScan('5', ['p1.jpg', 'o1.jpg.part']);
+  expect(listScans()[0].pages).toEqual([`${ROOT}/5/p1.jpg`]);
+  expect(mockFs.nodes.has(`${ROOT}/5/o1.jpg`)).toBe(false);
+  expect(mockFs.nodes.has(`${ROOT}/5/o1.jpg.part`)).toBe(false);
+
+  // The original is made again from the page, whole.
+  await keepOriginal(`${ROOT}/5/p1.jpg`);
+  expect(mockFs.nodes.get(`${ROOT}/5/o1.jpg`)).toBe('img-p1.jpg');
+});
+
+it('keepOriginal writes the first original copy as .part and drops it when the move fails', async () => {
+  putScan('5', ['p1.jpg']);
+  const page = `${ROOT}/5/p1.jpg`;
+  mockFs.failMoveAt = 1;
+  await expect(keepOriginal(page)).rejects.toThrow('move failed');
+  expect(mockFs.nodes.has(`${ROOT}/5/o1.jpg`)).toBe(false);
+  expect(mockFs.nodes.has(`${ROOT}/5/o1.jpg.part`)).toBe(true);
+
+  // Never renamed into place: listing drops it, and the next copy starts from the page again.
+  listScans();
+  expect(mockFs.nodes.has(`${ROOT}/5/o1.jpg.part`)).toBe(false);
+  await keepOriginal(page);
   expect(mockFs.nodes.get(`${ROOT}/5/o1.jpg`)).toBe('img-p1.jpg');
 });
 
@@ -184,7 +210,7 @@ it('keepOriginal copies the page to o once and never overwrites it', async () =>
   put(page, 'cleaned');
   await keepOriginal(page);
   expect(mockFs.nodes.get(original)).toBe('img-p1.jpg');
-  expect([...mockFs.nodes.keys()].filter((k) => k.endsWith('.tmp'))).toEqual([]);
+  expect([...mockFs.nodes.keys()].filter((k) => /\.(tmp|part)$/.test(k))).toEqual([]);
 });
 
 it('addPages continues numbering after the highest page and never overwrites', async () => {
