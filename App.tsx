@@ -392,11 +392,11 @@ function Detail(props: {
   onRotate: (page: string) => void;
   onSave: (kind: 'pdf' | 'jpeg') => void;
 }) {
-  const { width, height } = useWindowDimensions();
+  const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  // Index of the page open in the full-screen preview, or null.
-  const [preview, setPreview] = useState<number | null>(null);
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [current, setCurrent] = useState(0);
+  const [pagerHeight, setPagerHeight] = useState(0);
   const cell = (width - 40 - 28) / 3;
   const { scan, busy, picked } = props;
   const available = scannerAvailable();
@@ -495,8 +495,9 @@ function Detail(props: {
                     accessibilityState={{ disabled: busy }}
                     disabled={busy}
                     onPress={() => {
-                      setCurrent(item.n! - 1);
-                      setPreview(item.n! - 1);
+                      const i = item.n! - 1;
+                      setCurrent(i);
+                      setPreviewIndex(i);
                     }}
                     style={disabled}>
                     {image}
@@ -566,7 +567,12 @@ function Detail(props: {
           </Pressable>
         </View>
       </View>
-      <Modal visible={preview !== null} animationType="fade" onRequestClose={() => setPreview(null)}>
+      <Modal
+        visible={previewIndex !== null}
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setPreviewIndex(null)}>
+        <StatusBar style="light" />
         <View style={[styles.preview, { paddingTop: insets.top + 8, paddingBottom: bottomPad(insets.bottom) }]}>
           <View style={styles.nav}>
             <Text style={styles.previewCount} maxFontSizeMultiplier={1.5}>
@@ -575,26 +581,27 @@ function Detail(props: {
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Close preview"
-              onPress={() => setPreview(null)}
+              onPress={() => setPreviewIndex(null)}
               style={styles.navButton}>
               <Text style={styles.previewClose} maxFontSizeMultiplier={1.5}>Close</Text>
             </Pressable>
           </View>
           <FlatList
             style={styles.flex}
+            onLayout={(e) => setPagerHeight(e.nativeEvent.layout.height)}
             data={scan.pages}
             horizontal
             pagingEnabled
             showsHorizontalScrollIndicator={false}
             keyExtractor={(uri) => uri}
-            initialScrollIndex={preview ?? 0}
+            initialScrollIndex={previewIndex ?? 0}
             getItemLayout={(_, i) => ({ length: width, offset: width * i, index: i })}
             onMomentumScrollEnd={(e) => setCurrent(Math.round(e.nativeEvent.contentOffset.x / width))}
             renderItem={({ item, index }) => (
               <Image
                 source={{ uri: props.shown(item) }}
                 accessibilityLabel={`Page ${index + 1}`}
-                style={{ width, height: height - insets.top - bottomPad(insets.bottom) - 60 }}
+                style={{ width, height: pagerHeight }}
                 resizeMode="contain"
               />
             )}
