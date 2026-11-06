@@ -1,5 +1,7 @@
-import { FilterMode, ImageFormat, MipmapMode, Skia, TileMode } from '@shopify/react-native-skia';
+import { AlphaType, ColorType, FilterMode, ImageFormat, MipmapMode, Skia, TileMode } from '@shopify/react-native-skia';
 import { File } from 'expo-file-system';
+
+import { readPage } from './scans';
 
 export type Point = { x: number; y: number };
 /** Page corners in photo pixels: top-left, top-right, bottom-right, bottom-left. */
@@ -25,14 +27,6 @@ export function isConvex(q: Quad): boolean {
 }
 
 const SEARCH_LONG_SIDE = 300;
-
-async function decode(uri: string) {
-  const data = Skia.Data.fromBytes(await new File(uri).bytes());
-  const image = Skia.Image.MakeImageFromEncoded(data);
-  data.dispose();
-  if (!image) throw new Error('unreadable photo');
-  return image;
-}
 
 /** The brightness that best splits the photo into a dark and a light group (Otsu's method), or -1 when all of it is one brightness. */
 function splitLevel(luma: Uint8Array): number {
@@ -145,7 +139,7 @@ function brightPage(luma: Uint8Array, level: number, w: number, h: number): Quad
 
 /** When no page stands out, the corners are the whole photo's. */
 export async function findPage(uri: string): Promise<FoundPage> {
-  const image = await decode(uri);
+  const image = await readPage(uri);
   const width = image.width();
   const height = image.height();
   const scale = Math.min(1, SEARCH_LONG_SIDE / Math.max(width, height));
@@ -156,9 +150,9 @@ export async function findPage(uri: string): Promise<FoundPage> {
     .getCanvas()
     .drawImageRectOptions(image, Skia.XYWHRect(0, 0, width, height), Skia.XYWHRect(0, 0, sw, sh), FilterMode.Linear, MipmapMode.Linear);
   const small = surface.makeImageSnapshot();
-  const rgba = small.readPixels(0, 0, { width: sw, height: sh, colorType: 4, alphaType: 3 }) as Uint8Array | null;
+  const rgba = small.readPixels(0, 0, { width: sw, height: sh, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul }) as Uint8Array | null;
   for (const o of [image, surface, small]) o.dispose();
-  if (!rgba) throw new Error('unreadable photo');
+  if (!rgba) throw new Error('unreadable page');
 
   const found = pageCorners(rgba, sw, sh);
   const corners = found ? (found.map((p) => ({ x: (p.x * width) / sw, y: (p.y * height) / sh })) as Quad) : whole(width, height);
@@ -193,7 +187,7 @@ export async function cropPage(uri: string, corners: Quad, dest: string): Promis
   const length = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
   const w = Math.max(1, Math.round(Math.max(length(tl, tr), length(bl, br))));
   const h = Math.max(1, Math.round(Math.max(length(tl, bl), length(tr, br))));
-  const image = await decode(uri);
+  const image = await readPage(uri);
   const matrix = Skia.Matrix(perspective(corners, whole(w, h)));
   const shader = image.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, MipmapMode.None, matrix);
   const paint = Skia.Paint();

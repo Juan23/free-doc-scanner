@@ -11,6 +11,7 @@ import {
   FlatList,
   Image,
   Linking,
+  Modal,
   type GestureResponderEvent,
   Platform,
   Pressable,
@@ -23,8 +24,9 @@ import {
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { cleanPages, cleanUpOn, setCleanUp } from './clean';
 import { cropPage, findPage, isConvex, type FoundPage, type Point, type Quad } from './crop';
-import { clearScannerCache, saveJpegs, savePdf } from './save';
+import { clearScannerCache, pagesToSave, saveJpegs, savePdf } from './save';
 import { addPages, createScan, deleteScan, listScans, type Scan } from './scans';
+import { rotatePage, uprightPages } from './upright';
 
 const C = {
   text: '#15171C',
@@ -63,6 +65,11 @@ function Root() {
   const [message, setMessage] = useState('');
   const [cleanUp, setCleanUpState] = useState(cleanUpOn);
   const [onCapturedPages, setOnCapturedPages] = useState<((pages: string[]) => Promise<void>) | null>(null);
+  // Pages picked in Select mode, or null outside it.
+  const [picked, setPicked] = useState<string[] | null>(null);
+  // Hand turns per page, added to its URI as a query: Image keeps showing a page it already loaded from the same URI,
+  // and both platforms read a file:// image by its path, ignoring the query.
+  const [turns, setTurns] = useState<Record<string, number>>({});
   // State updates are async, so a second tap in the same frame would still see busy=false.
   const inFlight = useRef(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -77,11 +84,13 @@ function Root() {
     if (!open) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       // Still consumes the event while busy, so Android back never falls through to closing the app.
-      if (!inFlight.current) setOpen(null);
+      if (inFlight.current) return true;
+      if (picked) setPicked(null);
+      else setOpen(null);
       return true;
     });
     return () => sub.remove();
-  }, [open]);
+  }, [open, picked]);
 
   const showToast = useCallback((text: string) => {
     setMessage(text);
@@ -106,10 +115,11 @@ function Root() {
     }
   }
 
-  // Re-reads the list and the open scan, so pages moved before a failure show up.
+  // Re-reads the list and the open scan, so pages moved before a failure show up. Its pages changed, so Select mode ends.
   function refresh() {
     const all = listScans();
     setScans(all);
+    setPicked(null);
     if (open) setOpen(all.find((s) => s.id === open.id) ?? null);
   }
 
@@ -157,34 +167,45 @@ function Root() {
     }
   }
 
-  // Runs once the pages are stored, so a crash mid-clean can't lose them. New pages are the scan's last.
-  async function cleanNewest(scan: Scan, count: number) {
-    if (cleanUp) await cleanPages(scan.pages.slice(-count));
+  // Runs once the pages are stored, so a crash mid-way can't lose them. New pages are the scan's last.
+  async function finishNewest(scan: Scan, count: number) {
+    const pages = scan.pages.slice(-count);
+    await uprightPages(pages);
+    if (cleanUp) await cleanPages(pages);
   }
 
   const scanNew = () =>
     scanPages(async (pages) => {
       setMessage('');
       const scan = await createScan(pages);
-      await cleanNewest(scan, pages.length);
-      // Opened only after cleaning: Image would keep showing a page it already loaded from the same URI.
+      await finishNewest(scan, pages.length);
+      // Opened only after turning and cleaning: Image would keep showing a page it already loaded from the same URI.
       setOpen(scan);
     });
 
   const addToOpen = () =>
     open &&
     scanPages(async (pages) => {
-      await cleanNewest(await addPages(open, pages), pages.length);
+      await finishNewest(await addPages(open, pages), pages.length);
     });
+
+  const rotate = (page: string) =>
+    guarded(async () => {
+      await rotatePage(page, 1);
+      setTurns((t) => ({ ...t, [page]: (t[page] ?? 0) + 1 }));
+    }, 'Could not rotate');
+
+  const shown = (page: string) => (turns[page] ? `${page}?turned=${turns[page]}` : page);
 
   function save(kind: 'pdf' | 'jpeg') {
     if (!open) return;
     const scan = open;
+    const pages = pagesToSave(scan.pages, picked ?? []);
     setMessage('');
     guarded(async () => {
       if (kind === 'pdf') {
-        if ((await savePdf(scan.pages, scan.name)) === 'saved') showToast('PDF saved');
-      } else if ((await saveJpegs(scan.pages, scan.name)) === 'saved') {
+        if ((await savePdf(pages, scan.name)) === 'saved') showToast('PDF saved');
+      } else if ((await saveJpegs(pages, scan.name)) === 'saved') {
         showToast('JPEGs saved to Photos');
       } else {
         askForSettings('Photo access needed', 'Allow photo access in Settings to save JPEGs.');
@@ -222,22 +243,27 @@ function Root() {
           scan={open}
           busy={busy}
           message={message}
+          picked={picked}
+          onPick={setPicked}
+          shown={shown}
           onBack={() => setOpen(null)}
           onDelete={confirmDelete}
           onAdd={addToOpen}
+          onRotate={rotate}
           onSave={save}
         />
       ) : (
         <Home
           scans={scans}
           busy={busy}
+          shown={shown}
           cleanUp={cleanUp}
           onCleanUp={(on) => {
             setCleanUpState(on);
             setCleanUp(on);
           }}
           onScan={scanNew}
-          onOpen={(s) => { setMessage(''); setOpen(s); }}
+          onOpen={(s) => { setMessage(''); setPicked(null); setOpen(s); }}
         />
       )}
       <StatusBar style={onCapturedPages ? 'light' : 'dark'} />
@@ -248,6 +274,7 @@ function Root() {
 function Home(props: {
   scans: Scan[];
   busy: boolean;
+  shown: (page: string) => string;
   cleanUp: boolean;
   onCleanUp: (on: boolean) => void;
   onScan: () => void;
@@ -287,7 +314,7 @@ function Home(props: {
             disabled={props.busy}
             onPress={() => props.onOpen(item)}
             style={[styles.row, props.busy && styles.disabled]}>
-            <Image source={{ uri: item.pages[0] }} style={styles.rowThumb} resizeMode="cover" />
+            <Image source={{ uri: props.shown(item.pages[0]) }} style={styles.rowThumb} resizeMode="cover" />
             <View style={styles.rowText}>
               <Text style={styles.rowName}>{item.name}</Text>
               <Text style={styles.rowSub}>{pagesLabel(item.pages.length)}</Text>
@@ -356,43 +383,70 @@ function Detail(props: {
   scan: Scan;
   busy: boolean;
   message: string;
+  picked: string[] | null;
+  onPick: (pages: string[] | null) => void;
+  shown: (page: string) => string;
   onBack: () => void;
   onDelete: () => void;
   onAdd: () => void;
+  onRotate: (page: string) => void;
   onSave: (kind: 'pdf' | 'jpeg') => void;
 }) {
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const [current, setCurrent] = useState(0);
+  const [pagerHeight, setPagerHeight] = useState(0);
   const cell = (width - 40 - 28) / 3;
-  const { scan, busy } = props;
+  const { scan, busy, picked } = props;
   const available = scannerAvailable();
   const data: Cell[] = [
     ...scan.pages.map((uri, i) => ({ key: uri, uri, n: i + 1 })),
-    ...(available ? [{ key: 'add' }] : []),
+    ...(available && !picked ? [{ key: 'add' }] : []),
   ];
   const disabled = busy && styles.disabled;
   return (
     <View style={[styles.flex, { paddingTop: insets.top + 8, paddingBottom: bottomPad(insets.bottom) }]}>
       <View style={styles.nav}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Back to Scans"
-          accessibilityState={{ disabled: busy }}
-          disabled={busy}
-          onPress={props.onBack}
-          style={[styles.back, disabled]}>
-          <Chevron color={C.accent} left />
-          <Text style={styles.backText} maxFontSizeMultiplier={1.5}>Scans</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Delete scan"
-          accessibilityState={{ disabled: busy }}
-          disabled={busy}
-          onPress={props.onDelete}
-          style={[styles.deleteButton, disabled]}>
-          <Text style={styles.deleteText} maxFontSizeMultiplier={1.5}>Delete</Text>
-        </Pressable>
+        {picked ? (
+          <Text style={styles.navCount} maxFontSizeMultiplier={1.5}>
+            {picked.length ? `${picked.length} of ${scan.pages.length} selected` : 'Pick pages to save'}
+          </Text>
+        ) : (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Back to Scans"
+            accessibilityState={{ disabled: busy }}
+            disabled={busy}
+            onPress={props.onBack}
+            style={[styles.back, disabled]}>
+            <Chevron color={C.accent} left />
+            <Text style={styles.backText} maxFontSizeMultiplier={1.5}>Scans</Text>
+          </Pressable>
+        )}
+        <View style={styles.navRight}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={picked ? 'Cancel selecting' : 'Select pages'}
+            accessibilityState={{ disabled: busy }}
+            disabled={busy}
+            onPress={() => props.onPick(picked ? null : [])}
+            style={[styles.navButton, disabled]}>
+            <Text style={styles.selectText} maxFontSizeMultiplier={1.5}>{picked ? 'Cancel' : 'Select'}</Text>
+          </Pressable>
+          {/* Hidden while selecting, so it can't be mistaken for deleting the picked pages. */}
+          {!picked && (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Delete scan"
+              accessibilityState={{ disabled: busy }}
+              disabled={busy}
+              onPress={props.onDelete}
+              style={[styles.navButton, disabled]}>
+              <Text style={styles.deleteText} maxFontSizeMultiplier={1.5}>Delete</Text>
+            </Pressable>
+          )}
+        </View>
       </View>
       <FlatList
         style={styles.flex}
@@ -407,21 +461,66 @@ function Detail(props: {
             <Text style={styles.subtitle}>{pagesLabel(scan.pages.length)}</Text>
           </View>
         }
-        renderItem={({ item }) =>
-          item.uri ? (
-            <View style={[styles.cell, { width: cell }]}>
+        renderItem={({ item }) => {
+          const { uri } = item;
+          if (uri) {
+            const on = !!picked?.includes(uri);
+            const image = (
               <Image
-                source={{ uri: item.uri }}
-                accessible
+                source={{ uri: props.shown(uri) }}
+                accessible={!picked}
                 accessibilityLabel={`Page ${item.n}`}
-                style={[styles.page, { width: cell, height: (cell * 4) / 3 }]}
+                style={[styles.page, { width: cell, height: (cell * 4) / 3 }, on && styles.pagePicked]}
                 resizeMode="contain"
               />
-              <Text style={styles.pageNum} importantForAccessibility="no" accessible={false}>
-                {item.n}
-              </Text>
-            </View>
-          ) : (
+            );
+            // The cell stays a View so a corner button can sit beside the picking Pressable, not inside it.
+            return (
+              <View style={[styles.cell, { width: cell }]}>
+                {picked ? (
+                  <Pressable
+                    accessibilityRole="checkbox"
+                    accessibilityLabel={`Page ${item.n}`}
+                    accessibilityState={{ checked: on, disabled: busy }}
+                    disabled={busy}
+                    onPress={() => props.onPick(on ? picked.filter((p) => p !== uri) : [...picked, uri])}
+                    style={disabled}>
+                    {image}
+                    <View style={[styles.pickMark, on && styles.pickMarkOn]}>{on && <Check />}</View>
+                  </Pressable>
+                ) : (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Preview page ${item.n}`}
+                    accessibilityState={{ disabled: busy }}
+                    disabled={busy}
+                    onPress={() => {
+                      const i = item.n! - 1;
+                      setCurrent(i);
+                      setPreviewIndex(i);
+                    }}
+                    style={disabled}>
+                    {image}
+                  </Pressable>
+                )}
+                <View style={styles.pageBar}>
+                  <Text style={styles.pageNum} importantForAccessibility="no" accessible={false} maxFontSizeMultiplier={1.5}>
+                    {item.n}
+                  </Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Rotate page ${item.n}`}
+                    accessibilityState={{ disabled: busy }}
+                    disabled={busy}
+                    onPress={() => props.onRotate(uri)}
+                    style={[styles.rotate, disabled]}>
+                    <Text style={styles.rotateText} maxFontSizeMultiplier={1.5}>Rotate</Text>
+                  </Pressable>
+                </View>
+              </View>
+            );
+          }
+          return (
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Add pages"
@@ -435,8 +534,8 @@ function Detail(props: {
               </View>
               <Text style={styles.addText} maxFontSizeMultiplier={1.5}>Add pages</Text>
             </Pressable>
-          )
-        }
+          );
+        }}
       />
       <View style={styles.bottom}>
         <View accessibilityLiveRegion="polite" collapsable={false}>
@@ -468,6 +567,50 @@ function Detail(props: {
           </Pressable>
         </View>
       </View>
+      <Modal
+        visible={previewIndex !== null}
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setPreviewIndex(null)}>
+        <StatusBar style="light" />
+        <View style={[styles.preview, { paddingTop: insets.top + 8, paddingBottom: bottomPad(insets.bottom) }]}>
+          <View style={styles.nav}>
+            <Text style={styles.previewCount} accessibilityLiveRegion="polite" maxFontSizeMultiplier={1.5}>
+              {current + 1} of {scan.pages.length}
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Close preview"
+              onPress={() => setPreviewIndex(null)}
+              style={styles.navButton}>
+              <Text style={styles.previewClose} maxFontSizeMultiplier={1.5}>Close</Text>
+            </Pressable>
+          </View>
+          <FlatList
+            style={styles.flex}
+            onLayout={(e) => setPagerHeight(e.nativeEvent.layout.height)}
+            data={scan.pages}
+            horizontal
+            pagingEnabled
+            windowSize={3}
+            initialNumToRender={1}
+            showsHorizontalScrollIndicator={false}
+            keyExtractor={(uri) => uri}
+            initialScrollIndex={previewIndex ?? 0}
+            getItemLayout={(_, i) => ({ length: width, offset: width * i, index: i })}
+            onMomentumScrollEnd={(e) => setCurrent(Math.round(e.nativeEvent.contentOffset.x / width))}
+            renderItem={({ item, index }) => (
+              <Image
+                source={{ uri: props.shown(item) }}
+                accessible
+                accessibilityLabel={`Page ${index + 1} of ${scan.pages.length}`}
+                style={{ width, height: pagerHeight }}
+                resizeMode="contain"
+              />
+            )}
+          />
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -872,15 +1015,40 @@ const styles = StyleSheet.create({
   },
   back: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 8 },
   backText: { fontSize: 17, fontWeight: '500', color: C.accent },
-  deleteButton: { minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
+  navCount: { flexShrink: 1, paddingHorizontal: 8, fontSize: 17, fontWeight: '600', color: C.text },
+  preview: { flex: 1, backgroundColor: C.text },
+  previewCount: { flexShrink: 1, paddingHorizontal: 20, fontSize: 17, fontWeight: '600', color: '#fff' },
+  previewClose: { fontSize: 16, fontWeight: '500', color: '#fff' },
+  navRight: { flexDirection: 'row', alignItems: 'center' },
+  navButton: { minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
+  selectText: { fontSize: 16, fontWeight: '500', color: C.accent },
   deleteText: { fontSize: 16, fontWeight: '500', color: C.muted },
   detailHeader: { paddingTop: 12, paddingBottom: 20 },
   detailTitle: { fontSize: 24, lineHeight: 30, fontWeight: '700', letterSpacing: -0.24, color: C.text },
   gridContent: { paddingHorizontal: 20 },
   gridRow: { gap: 14, marginBottom: 14 },
-  cell: { alignItems: 'center', gap: 6 },
+  cell: { alignItems: 'center' },
+  pageBar: { alignSelf: 'stretch', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   page: { borderWidth: 1, borderColor: C.hairline, borderRadius: 8, backgroundColor: '#fff' },
-  pageNum: { fontSize: 13, lineHeight: 18, color: C.muted },
+  pagePicked: { borderWidth: 2, borderColor: C.accent },
+  // Top-left, like Google Photos, leaving the other corners free.
+  pickMark: {
+    position: 'absolute',
+    top: 6,
+    left: 6,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 1.5,
+    borderColor: C.chevron,
+    backgroundColor: 'rgba(255,255,255,0.9)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pickMarkOn: { borderColor: C.accent, backgroundColor: C.accent },
+  pageNum: { fontSize: 13, lineHeight: 18, color: C.muted, paddingLeft: 4 },
+  rotate: { minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 },
+  rotateText: { fontSize: 14, fontWeight: '600', color: C.accent },
   addTile: {
     borderWidth: 1.5,
     borderStyle: 'dashed',
