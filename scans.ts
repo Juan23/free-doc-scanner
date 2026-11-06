@@ -36,6 +36,13 @@ export async function keepOriginal(uri: string): Promise<void> {
   await tmp.move(new File(original));
 }
 
+/** Copies the page at `from` over the page at `to`, as a page write, so a crash mid-copy can't leave a broken page. */
+export async function copyPage(from: string, to: string): Promise<void> {
+  const tmp = new File(`${to}.tmp`);
+  await tmp.write(await new File(from).bytes());
+  await tmp.move(new File(to), { overwrite: true });
+}
+
 /** Replaces the page at `uri` with `image` as a JPEG. Swapping in a finished file means a crash mid-write can't leave a broken page. */
 export async function replacePage(uri: string, image: SkImage): Promise<void> {
   const bytes = image.encodeToBytes(ImageFormat.JPEG, 90);
