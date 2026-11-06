@@ -9,6 +9,7 @@ A lightweight, free document scanner for iOS and Android. Scan a document and sa
 - Choose pages to save: tap Select on a scan and pick pages; Save PDF and Save JPEG then save only those, in page order.
 - Filter for new scans (Clean, Normal by default): Clean whitens the paper and removes shadows, tint, specks and faint creases from each new scan, keeping the writing, and whitens table showing past bent or curled page edges. Light keeps faint pencil and faded print; Strong wipes more. Grayscale cleans to grey, and Original keeps the photos. Choose it on the Scans screen.
 - Change a saved scan's filter at any time with Filter: it applies to the picked pages, or every page, and each later change starts from the page's untouched photo, so changes never stack.
+- Pages scanned before this version have no untouched photo, so they keep the clean-up already applied: Original can't bring their photo back.
 - Upright pages: a page of text scanned sideways or upside down is turned upright when the app can tell which way is up, whatever the filter, and Rotate under each page turns it by hand.
 - History: every scan stays in the app, so you can add pages to it later or save it again.
 - No accounts, no sign-up, no ads.

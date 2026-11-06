@@ -28,6 +28,14 @@ export function originalOf(uri: string): string {
   return uri.replace(/p(\d+\.jpg)$/, 'o$1');
 }
 
+/** Whether any of `pages` has no untouched photo, as pages scanned before originals were kept do. */
+export function anyOriginalMissing(pages: string[]): boolean {
+  return pages.some((page) => {
+    const original = originalOf(page);
+    return original !== page && !new File(original).exists;
+  });
+}
+
 /** Keeps the page at `uri` as its untouched original, once: an original already there stays. */
 export async function keepOriginal(uri: string): Promise<void> {
   const original = originalOf(uri);

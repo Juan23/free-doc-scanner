@@ -2,7 +2,7 @@ import { Canvas, Circle, Path } from '@shopify/react-native-skia';
 import { Camera, CameraView } from 'expo-camera';
 import { Directory, File, Paths } from 'expo-file-system';
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AccessibilityInfo,
   ActivityIndicator,
@@ -24,7 +24,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 import { cleanPages, defaultFilter, setDefaultFilter, type Filter } from './clean';
 import { cropPage, findPage, isConvex, type FoundPage, type Point, type Quad } from './crop';
 import { clearScannerCache, pagesToSave, saveJpegs, savePdf } from './save';
-import { addPages, createScan, deleteScan, listScans, type Scan } from './scans';
+import { addPages, anyOriginalMissing, createScan, deleteScan, listScans, type Scan } from './scans';
 import { rotatePage, uprightPages } from './upright';
 
 const C = {
@@ -213,8 +213,10 @@ function Root() {
     const scan = open;
     guarded(async () => {
       const pages = pagesToSave(scan.pages, picked ?? []);
-      await cleanPages(pages, filter);
+      const failed = await cleanPages(pages, filter);
+      // Pages that did change must reload even when another failed.
       touchPages(pages);
+      if (failed) throw new Error(failed === 1 ? 'One page could not be changed.' : `${failed} pages could not be changed.`);
     }, 'Could not change filter');
   };
 
@@ -474,6 +476,11 @@ function Detail(props: {
     ...scan.pages.map((uri, i) => ({ key: uri, uri, n: i + 1 })),
     ...(available && !picked ? [{ key: 'add' }] : []),
   ];
+  // Pages scanned before untouched photos were kept have no photo to put back.
+  const hasMissingPhoto = useMemo(
+    () => filterOpen && anyOriginalMissing(pagesToSave(scan.pages, picked ?? [])),
+    [filterOpen, scan.pages, picked],
+  );
   const disabled = busy && styles.disabled;
   return (
     <View style={[styles.flex, { paddingTop: insets.top + 8, paddingBottom: bottomPad(insets.bottom) }]}>
@@ -710,6 +717,9 @@ function Detail(props: {
             <Text style={styles.rowSub}>
               {picked?.length ? 'Applies to the picked pages.' : 'Applies to every page.'}
             </Text>
+            {hasMissingPhoto && (
+              <Text style={styles.rowSub}>Pages scanned before this version keep their clean-up.</Text>
+            )}
             <FilterChoices filter={filter} onChange={setFilter} disabled={busy} />
             <View style={styles.actions}>
               <Pressable

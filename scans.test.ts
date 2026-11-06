@@ -1,5 +1,5 @@
 /// <reference types="jest" />
-import { addPages, createScan, deleteScan, keepOriginal, listScans } from './scans';
+import { addPages, anyOriginalMissing, createScan, deleteScan, keepOriginal, listScans } from './scans';
 import { scanName } from './save';
 
 // In-memory file system: uri -> directory marker or file text. Moves finish on a later tick.
@@ -196,6 +196,15 @@ it('keepOriginal writes the first original copy as .part and drops it when the m
   expect(mockFs.nodes.has(`${ROOT}/5/o1.jpg.part`)).toBe(false);
   await keepOriginal(page);
   expect(mockFs.nodes.get(`${ROOT}/5/o1.jpg`)).toBe('img-p1.jpg');
+});
+
+it('anyOriginalMissing reports a page with no untouched photo, and only then', () => {
+  putScan('5', ['p1.jpg', 'p2.jpg', 'o2.jpg']);
+  const pages = [`${ROOT}/5/p1.jpg`, `${ROOT}/5/p2.jpg`];
+
+  expect(anyOriginalMissing(pages)).toBe(true);
+  put(`${ROOT}/5/o1.jpg`, 'img-o1.jpg');
+  expect(anyOriginalMissing(pages)).toBe(false);
 });
 
 it('keepOriginal copies the page to o once and never overwrites it', async () => {
