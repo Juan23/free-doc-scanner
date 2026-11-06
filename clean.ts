@@ -256,6 +256,7 @@ function pastEdges(page: Uint8Array, fine: Uint8Array, w: number, h: number): Ui
 
 async function cleanPage(uri: string, filter: Filter): Promise<void> {
   // Every filter starts from the photo as it was before any cleaning, so changes never stack.
+  // shortcut: pages scanned before untouched photos were kept have no o<N>.jpg, so this copies their already-cleaned page; Original can't bring the photo back, and the filter sheet says so.
   await keepOriginal(uri);
   if (filter.kind === 'original') {
     await copyPage(originalOf(uri), uri);
@@ -349,13 +350,17 @@ async function cleanPage(uri: string, filter: Filter): Promise<void> {
 /**
  * Whitens the paper of stored page JPEGs (shadows, tint, grain, specks) and darkens the ink,
  * replacing each page. Original puts each page's untouched photo back. A page that can't be
- * cleaned stays as it was.
+ * cleaned stays as it was. Returns how many pages failed.
  */
-export async function cleanPages(pageUris: string[], filter: Filter = NORMAL): Promise<void> {
+export async function cleanPages(pageUris: string[], filter: Filter = NORMAL): Promise<number> {
+  let failed = 0;
   // One page at a time: each holds full-size bitmaps in memory.
   for (const uri of pageUris) {
     try {
       await cleanPage(uri, filter);
-    } catch {}
+    } catch {
+      failed++;
+    }
   }
+  return failed;
 }

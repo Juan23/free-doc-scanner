@@ -8,9 +8,11 @@ export type Scan = { id: string; name: string; pages: string[] };
 
 const root = () => new Directory(Paths.document, 'scans');
 const PAGE = /^p(\d+)\.jpg$/;
-// A page is replaced by writing p<N>.jpg.tmp, then moving it over the page, which deletes the page first.
-// The untouched original o<N>.jpg is written the same way.
+// A page or original is replaced by writing <name>.tmp, then moving it over the file, which deletes
+// the old one first. An original's first copy goes through <name>.part instead: it has no file to
+// move over, so a copy cut short must never be renamed into place.
 const REPLACEMENT = /^([po]\d+\.jpg)\.tmp$/;
+const PART = /^o\d+\.jpg\.part$/;
 
 /** The page's image. Throws when the file is not a readable image. */
 export async function readPage(uri: string): Promise<SkImage> {
@@ -26,14 +28,24 @@ export function originalOf(uri: string): string {
   return uri.replace(/p(\d+\.jpg)$/, 'o$1');
 }
 
+/** Whether any of `pages` has no untouched photo, as pages scanned before originals were kept do. */
+export function anyOriginalMissing(pages: string[]): boolean {
+  return pages.some((page) => {
+    const original = originalOf(page);
+    return original !== page && !new File(original).exists;
+  });
+}
+
 /** Keeps the page at `uri` as its untouched original, once: an original already there stays. */
 export async function keepOriginal(uri: string): Promise<void> {
   const original = originalOf(uri);
   if (original === uri || new File(original).exists) return;
-  const tmp = new File(`${original}.tmp`);
-  await tmp.write(await new File(uri).bytes());
+  // Nothing is there to move the copy over, so it goes through .part: listing drops a copy cut
+  // short instead of keeping half a photo as the original.
+  const part = new File(`${original}.part`);
+  await part.write(await new File(uri).bytes());
   // No overwrite: an original that appeared meanwhile is older, so it wins.
-  await tmp.move(new File(original));
+  await part.move(new File(original));
 }
 
 /** Copies the page at `from` over the page at `to`, as a page write, so a crash mid-copy can't leave a broken page. */
@@ -60,18 +72,24 @@ function pagesIn(dir: Directory): { n: number; name: string }[] {
   const pages: { n: number; name: string }[] = [];
   for (const f of entries) {
     let name = f.name;
+    if (f instanceof File && PART.test(name)) {
+      // A first copy of an original: with no whole file behind it, it can never be the photo.
+      try {
+        f.delete();
+      } catch {}
+      continue;
+    }
     const replaced = REPLACEMENT.exec(name);
     if (replaced && f instanceof File) {
       const target = replaced[1];
       try {
-        if (PAGE.test(target) && !names.has(target)) {
-          // The app died mid-move, after the page was deleted, so the replacement is whole.
+        if (!names.has(target)) {
+          // The app died mid-move, after the old file was deleted, so the replacement is whole:
+          // put it back, page or original.
           f.rename(target);
           name = target;
         } else {
-          // With its page still there, the page write was cut short. An original is only a copy of
-          // its page, so a cut-short write, or one whose move never happened, is safe to drop:
-          // keepOriginal copies the page again when the original is missing.
+          // With its file still there, the write was cut short, so the replacement goes.
           f.delete();
         }
       } catch {}

@@ -363,13 +363,14 @@ it('puts back the untouched photo for Original', async () => {
   expect(mockFiles.get(PAGE)).toEqual(photo);
 }, 30000);
 
-it('leaves a page it cannot read as it is, and cleans the rest', async () => {
+it('leaves a page it cannot read as it is, cleans the rest, and counts the failure', async () => {
   const broken = new Uint8Array([1, 2, 3]);
   mockFiles.set('file:///doc/scans/1/p1.jpg', broken);
   mockFiles.set('file:///doc/scans/1/p2.jpg', photographedPage());
 
-  await cleanPages(['file:///doc/scans/1/p1.jpg', 'file:///doc/scans/1/p2.jpg']);
+  const failed = await cleanPages(['file:///doc/scans/1/p1.jpg', 'file:///doc/scans/1/p2.jpg']);
 
+  expect(failed).toBe(1);
   expect(mockFiles.get('file:///doc/scans/1/p1.jpg')).toBe(broken);
   expect(luma(mockFiles.get('file:///doc/scans/1/p2.jpg')!, 30, 400)).toBeGreaterThan(245);
 }, 30000);
