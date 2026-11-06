@@ -4,7 +4,7 @@
 /// <reference types="jest" />
 import { BlurStyle, ImageFormat, Skia } from '@shopify/react-native-skia';
 
-import { cleanPages } from './clean';
+import { cleanPages, defaultFilter, setDefaultFilter } from './clean';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
 const mockFiles = new Map<string, Uint8Array>();
@@ -267,6 +267,29 @@ it('keeps bold letters, frame lines, bands and boxes that a tight crop cuts into
   for (const x of [10, 300, 500]) expect(luma(page, x, H - 12)).toBeLessThan(160); // footer band
   expect(luma(page, 30, 18)).toBeLessThan(80); // box
 }, 30000);
+
+it('defaults to Clean Normal and keeps a chosen filter across launches', () => {
+  expect(defaultFilter()).toEqual({ kind: 'clean', strength: 1 });
+
+  setDefaultFilter({ kind: 'gray', strength: 0 });
+  expect(defaultFilter()).toEqual({ kind: 'gray', strength: 0 });
+
+  setDefaultFilter({ kind: 'clean', strength: 2 });
+  expect(defaultFilter()).toEqual({ kind: 'clean', strength: 2 });
+});
+
+it('turns an old clean-up-off file into Original once, then deletes it', () => {
+  mockFiles.set('file:///doc/clean-up-off', new Uint8Array());
+
+  expect(defaultFilter()).toEqual({ kind: 'original', strength: 1 });
+  expect(mockFiles.has('file:///doc/clean-up-off')).toBe(false);
+  expect(defaultFilter()).toEqual({ kind: 'original', strength: 1 });
+});
+
+it('ignores an unreadable filter file', () => {
+  mockFiles.set('file:///doc/filter', Uint8Array.from('{"kind":"sepia","strength":1}', (c) => c.charCodeAt(0)));
+  expect(defaultFilter()).toEqual({ kind: 'clean', strength: 1 });
+});
 
 // Pencil, or faded print: a line of letter-sized marks. The default marks are at about 92% of the
 // paper's brightness.

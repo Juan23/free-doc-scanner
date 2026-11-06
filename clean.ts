@@ -8,25 +8,52 @@ import { copyPage, keepOriginal, originalOf, readPage, replacePage } from './sca
 /** How to treat a page: leave it as photographed, clean it, or clean it to grey. Light, Normal and Strong set how much clean-up keeps. */
 export type Filter = { kind: 'original' | 'clean' | 'gray'; strength: 0 | 1 | 2 };
 
-const NORMAL: Filter = { kind: 'clean', strength: 1 };
-
 // `cleanEffect`'s white point per strength: a pixel at this share of the paper's brightness turns white.
 const WHITE_POINT = [0.95, 0.85, 0.8];
 // What `inkEffect` counts as writing per strength: a mark at this share of the paper's brightness
 // or darker. Light keeps faint pencil; Strong treats more faint marks as dirt.
 const INK_THRESHOLD = [0.97, 0.9, 0.87];
 
-// Clean-up is on unless this file exists.
+const NORMAL: Filter = { kind: 'clean', strength: 1 };
+const ORIGINAL: Filter = { kind: 'original', strength: 1 };
+
+// The filter for new scans, as JSON. Versions before the filter choices turned clean-up off with
+// this file instead; it is read once and deleted.
+const filterFile = () => new File(Paths.document, 'filter');
 const offFile = () => new File(Paths.document, 'clean-up-off');
 
-export const cleanUpOn = () => !offFile().exists;
+function parseFilter(text: string): Filter | null {
+  try {
+    const f = JSON.parse(text);
+    const kinds = ['original', 'clean', 'gray'];
+    if (kinds.includes(f.kind) && [0, 1, 2].includes(f.strength)) return f;
+  } catch {}
+  return null;
+}
+
+/** The filter for new scans: Clean, Normal unless another was chosen. */
+export function defaultFilter(): Filter {
+  try {
+    const f = filterFile();
+    if (f.exists) {
+      const filter = parseFilter(f.textSync());
+      if (filter) return filter;
+    }
+  } catch {}
+  try {
+    if (offFile().exists) {
+      setDefaultFilter(ORIGINAL);
+      offFile().delete();
+      return ORIGINAL;
+    }
+  } catch {}
+  return NORMAL;
+}
 
 /** Remembers the choice across launches. Never throws: at worst the choice resets at next launch. */
-export function setCleanUp(on: boolean): void {
+export function setDefaultFilter(filter: Filter): void {
   try {
-    const f = offFile();
-    if (on && f.exists) f.delete();
-    if (!on && !f.exists) f.create();
+    filterFile().writeSync(JSON.stringify(filter));
   } catch {}
 }
 

@@ -16,13 +16,12 @@ import {
   Platform,
   Pressable,
   StyleSheet,
-  Switch,
   Text,
   useWindowDimensions,
   View,
 } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { cleanPages, cleanUpOn, setCleanUp } from './clean';
+import { cleanPages, defaultFilter, setDefaultFilter, type Filter } from './clean';
 import { cropPage, findPage, isConvex, type FoundPage, type Point, type Quad } from './crop';
 import { clearScannerCache, pagesToSave, saveJpegs, savePdf } from './save';
 import { addPages, createScan, deleteScan, listScans, type Scan } from './scans';
@@ -63,7 +62,7 @@ function Root() {
   const [open, setOpen] = useState<Scan | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
-  const [cleanUp, setCleanUpState] = useState(cleanUpOn);
+  const [filter, setFilterState] = useState<Filter>(defaultFilter);
   const [onCapturedPages, setOnCapturedPages] = useState<((pages: string[]) => Promise<void>) | null>(null);
   // Pages picked in Select mode, or null outside it.
   const [picked, setPicked] = useState<string[] | null>(null);
@@ -171,7 +170,13 @@ function Root() {
   async function finishNewest(scan: Scan, count: number) {
     const pages = scan.pages.slice(-count);
     await uprightPages(pages);
-    if (cleanUp) await cleanPages(pages);
+    await cleanPages(pages, defaultFilter());
+  }
+
+  // Remembers the choice for new scans; the Detail screen uses it only until a scan's own is picked.
+  function chooseFilter(chosen: Filter) {
+    setFilterState(chosen);
+    setDefaultFilter(chosen);
   }
 
   const scanNew = () =>
@@ -257,11 +262,8 @@ function Root() {
           scans={scans}
           busy={busy}
           shown={shown}
-          cleanUp={cleanUp}
-          onCleanUp={(on) => {
-            setCleanUpState(on);
-            setCleanUp(on);
-          }}
+          filter={filter}
+          onFilter={chooseFilter}
           onScan={scanNew}
           onOpen={(s) => { setMessage(''); setPicked(null); setOpen(s); }}
         />
@@ -275,8 +277,8 @@ function Home(props: {
   scans: Scan[];
   busy: boolean;
   shown: (page: string) => string;
-  cleanUp: boolean;
-  onCleanUp: (on: boolean) => void;
+  filter: Filter;
+  onFilter: (filter: Filter) => void;
   onScan: () => void;
   onOpen: (s: Scan) => void;
 }) {
@@ -333,28 +335,11 @@ function Home(props: {
       {body}
       {available && (
         <View style={styles.scanBar}>
-          <Pressable
-            accessibilityRole="switch"
-            accessibilityLabel="Clean up pages"
-            accessibilityHint="Whitens paper and removes shadows and dirt from new scans. Turn off for photos."
-            accessibilityState={{ checked: props.cleanUp, disabled: props.busy }}
-            disabled={props.busy}
-            onPress={() => props.onCleanUp(!props.cleanUp)}
-            style={[styles.cleanRow, props.busy && styles.disabled]}>
-            <View style={styles.rowText}>
-              <Text style={styles.rowName}>Clean up pages</Text>
-              <Text style={styles.rowSub}>Whitens paper, removes shadows and dirt. Turn off for photos.</Text>
-            </View>
-            <Switch
-              accessible={false}
-              importantForAccessibility="no"
-              disabled={props.busy}
-              value={props.cleanUp}
-              onValueChange={props.onCleanUp}
-              trackColor={{ true: C.accent }}
-              thumbColor="#fff"
-            />
-          </Pressable>
+          <View style={styles.filterBlock}>
+            <Text style={styles.rowName}>Filter for new scans</Text>
+            <Text style={styles.rowSub}>Clean whitens paper and removes shadows and dirt. Original keeps the photos.</Text>
+            <FilterChoices filter={props.filter} onChange={props.onFilter} disabled={props.busy} />
+          </View>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Scan"
@@ -371,6 +356,62 @@ function Home(props: {
         <View style={styles.scanBar}>
           <Text style={styles.barTitle}>Scanner not available</Text>
           <Text style={styles.messageText}>{unavailableText}</Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
+const FILTER_KINDS: { kind: Filter['kind']; label: string }[] = [
+  { kind: 'original', label: 'Original' },
+  { kind: 'clean', label: 'Clean' },
+  { kind: 'gray', label: 'Grayscale' },
+];
+
+const FILTER_STRENGTHS: { strength: Filter['strength']; label: string }[] = [
+  { strength: 0, label: 'Light' },
+  { strength: 1, label: 'Normal' },
+  { strength: 2, label: 'Strong' },
+];
+
+/** Original / Clean / Grayscale, and Light / Normal / Strong for the two clean-ups. */
+function FilterChoices(props: { filter: Filter; onChange: (filter: Filter) => void; disabled?: boolean }) {
+  const { filter, onChange, disabled } = props;
+  const choice = (checked: boolean) => [styles.choice, checked && styles.choiceOn, disabled && styles.disabled];
+  return (
+    <View style={styles.filterChoices}>
+      <View style={styles.choices} accessibilityRole="radiogroup" accessibilityLabel="Filter">
+        {FILTER_KINDS.map(({ kind, label }) => (
+          <Pressable
+            key={kind}
+            accessibilityRole="radio"
+            accessibilityLabel={label}
+            accessibilityState={{ checked: filter.kind === kind, disabled }}
+            disabled={disabled}
+            onPress={() => onChange({ ...filter, kind })}
+            style={choice(filter.kind === kind)}>
+            <Text style={[styles.choiceText, filter.kind === kind && styles.choiceTextOn]} maxFontSizeMultiplier={1.5}>
+              {label}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+      {filter.kind !== 'original' && (
+        <View style={styles.choices} accessibilityRole="radiogroup" accessibilityLabel="Clean-up strength">
+          {FILTER_STRENGTHS.map(({ strength, label }) => (
+            <Pressable
+              key={label}
+              accessibilityRole="radio"
+              accessibilityLabel={label}
+              accessibilityState={{ checked: filter.strength === strength, disabled }}
+              disabled={disabled}
+              onPress={() => onChange({ ...filter, strength })}
+              style={choice(filter.strength === strength)}>
+              <Text style={[styles.choiceText, filter.strength === strength && styles.choiceTextOn]} maxFontSizeMultiplier={1.5}>
+                {label}
+              </Text>
+            </Pressable>
+          ))}
         </View>
       )}
     </View>
@@ -958,7 +999,23 @@ const styles = StyleSheet.create({
   rowSub: { fontSize: 14, lineHeight: 20, color: C.muted },
   chevronBox: { width: 20, alignItems: 'center' },
   scanBar: { paddingHorizontal: 20, paddingTop: 12 },
-  cleanRow: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 44, marginBottom: 12 },
+  filterBlock: { marginBottom: 12, gap: 8 },
+  filterChoices: { gap: 8 },
+  choices: { flexDirection: 'row', gap: 8 },
+  choice: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: C.hairline,
+    backgroundColor: C.tile,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+  },
+  choiceOn: { borderColor: C.accent, backgroundColor: C.accent },
+  choiceText: { fontSize: 15, fontWeight: '600', color: C.text },
+  choiceTextOn: { color: '#fff' },
   scanButton: {
     minHeight: 56,
     paddingVertical: 8,
