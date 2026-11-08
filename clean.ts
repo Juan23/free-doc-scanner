@@ -255,9 +255,11 @@ function pastEdges(page: Uint8Array, fine: Uint8Array, w: number, h: number): Ui
 }
 
 /**
- * A new image `width` pixels wide, as tall as the photo's shape makes it. Writes no file. The caller
- * disposes the result; everything else made here is freed. The paper, ink and past-edge analysis
- * runs on the same small copy at any width, so a preview and the page stored from the photo agree.
+ * `image` is the page's full untouched photo, not a thumbnail: the paper and ink are measured on a
+ * small copy of it. A new image `width` pixels wide, as tall as the photo's shape makes it. Writes
+ * no file. The caller disposes the result; everything else made here is freed. The paper, ink and
+ * past-edge analysis runs on the same small copy at any width, so a preview and the page stored from
+ * the photo agree.
  */
 export function filterImage(image: SkImage, filter: Filter, width: number = image.width()): SkImage {
   const w = image.width();
