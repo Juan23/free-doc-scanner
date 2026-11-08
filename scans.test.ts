@@ -272,3 +272,8 @@ it('deleteScan lets a delete error reach the caller', () => {
   mockFs.failDelete = true;
   expect(() => deleteScan({ id: '5', name: 'S', pages: [] })).toThrow('delete failed');
 });
+
+it('listScans ignores a page filter record', () => {
+  putScan('5', ['p1.jpg', 'f1.json']);
+  expect(listScans()[0].pages).toEqual([`${ROOT}/5/p1.jpg`]);
+});
