@@ -59,14 +59,14 @@ export async function savePdf(pages: string[], name: string): Promise<'saved' | 
   return 'saved';
 }
 
-/** Saves the pages, in order, as `<name> p1.jpg`, `<name> p2.jpg`… to Photos / Gallery. */
+/** Saves the pages, in order, to Photos / Gallery as `<name> <page file name>`: `<name> p3.jpg` for `.../p3.jpg`. */
 export async function saveJpegs(pages: string[], name: string): Promise<'saved' | 'denied'> {
   const { granted } = await requestPermissionsAsync(true);
   if (!granted) return 'denied';
   // Temps live in the scanner's folder so clearScannerCache sweeps them after a kill.
   const dir = new Directory(Paths.cache, 'DocumentScanner');
   dir.create({ idempotent: true });
-  const temps = pages.map((_, i) => new File(dir, `${name} p${i + 1}.jpg`));
+  const temps = pages.map((page) => new File(dir, `${name} ${page.slice(page.lastIndexOf('/') + 1)}`));
   try {
     for (const [i, tmp] of temps.entries()) {
       if (tmp.exists) tmp.delete();

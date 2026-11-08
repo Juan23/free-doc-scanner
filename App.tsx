@@ -277,8 +277,7 @@ function Root() {
           onAdd={addToOpen}
           onRotate={rotate}
           onFilterPage={(page, filter) => filterPages([page], filter)}
-          onFilterPicked={(pages, filter) => filterPages(pages, filter, true)}
-          onUseOnAll={(filter) => open && filterPages(open.pages, filter, true)}
+          onFilterPages={(pages, filter) => filterPages(pages, filter, true)}
           onSave={save}
         />
       ) : (
@@ -423,8 +422,7 @@ function Detail(props: {
   onAdd: () => void;
   onRotate: (page: string) => void;
   onFilterPage: (page: string, filter: Filter) => void;
-  onFilterPicked: (pages: string[], filter: Filter) => void;
-  onUseOnAll: (filter: Filter) => void;
+  onFilterPages: (pages: string[], filter: Filter) => void;
   onSave: (kind: 'pdf' | 'jpeg') => void;
 }) {
   const { width } = useWindowDimensions();
@@ -435,7 +433,7 @@ function Detail(props: {
   const [pagerHeight, setPagerHeight] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const [strengthsOpen, setStrengthsOpen] = useState(false);
-  // Over the grid while selecting. Closing keeps `panel`, so nothing changes while the Modal fades out.
+  // Over the grid while selecting. Closing keeps `panel`, so the fade-out never shows the white rows.
   const [sheetOpen, setSheetOpen] = useState(false);
   const [panel, setPanel] = useState<'actions' | 'filter'>('actions');
   const pendingSave = useRef<'pdf' | 'jpeg' | null>(null);
@@ -787,7 +785,7 @@ function Detail(props: {
                 accessibilityLabel={`Use this page's filter on all ${scan.pages.length} pages`}
                 accessibilityState={{ disabled: busy }}
                 disabled={busy}
-                onPress={() => props.onUseOnAll(recorded)}
+                onPress={() => props.onFilterPages(scan.pages, recorded)}
                 style={[styles.useOnAll, disabled]}>
                 <Text style={styles.useOnAllText} maxFontSizeMultiplier={1.5}>
                   Use on all {scan.pages.length} pages
@@ -841,7 +839,7 @@ function Detail(props: {
               older={olderPage}
               strengthsOpen={strengthsOpen}
               onStrengths={setStrengthsOpen}
-              onFilter={(filter) => props.onFilterPicked(pickedPages, filter)}
+              onFilter={(filter) => props.onFilterPages(pickedPages, filter)}
             />
             <Pressable
               accessibilityRole="button"
