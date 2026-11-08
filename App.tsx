@@ -24,7 +24,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 import { cleanPages, defaultFilter, setDefaultFilter, type Filter } from './clean';
 import { cropPage, findPage, isConvex, type FoundPage, type Point, type Quad } from './crop';
 import { clearScannerCache, pagesToSave, saveJpegs, savePdf } from './save';
-import { addPages, anyOriginalMissing, createScan, deleteScan, listScans, type Scan } from './scans';
+import { addPages, anyOriginalMissing, createScan, deleteScan, heldPhoto, listScans, type Scan } from './scans';
 import { rotatePage, uprightPages } from './upright';
 
 const C = {
@@ -466,6 +466,7 @@ function Detail(props: {
   const insets = useSafeAreaInsets();
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [current, setCurrent] = useState(0);
+  const [holding, setHolding] = useState(false);
   const [pagerHeight, setPagerHeight] = useState(0);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filter, setFilter] = useState<Filter>(defaultFilter);
@@ -482,6 +483,10 @@ function Detail(props: {
     [filterOpen, scan.pages, picked],
   );
   const disabled = busy && styles.disabled;
+  const closePreview = () => {
+    setPreviewIndex(null);
+    setHolding(false);
+  };
   return (
     <View style={[styles.flex, { paddingTop: insets.top + 8, paddingBottom: bottomPad(insets.bottom) }]}>
       <View style={styles.nav}>
@@ -657,19 +662,29 @@ function Detail(props: {
         visible={previewIndex !== null}
         animationType="fade"
         statusBarTranslucent
-        onRequestClose={() => setPreviewIndex(null)}>
+        onRequestClose={closePreview}>
         <StatusBar style="light" />
         <View style={[styles.preview, { paddingTop: insets.top + 8, paddingBottom: bottomPad(insets.bottom) }]}>
           <View style={styles.nav}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Back to pages"
+              onPress={closePreview}
+              style={styles.back}>
+              <Chevron color="#fff" left />
+              <Text style={styles.previewAction} maxFontSizeMultiplier={1.5}>Back</Text>
+            </Pressable>
             <Text style={styles.previewCount} accessibilityLiveRegion="polite" maxFontSizeMultiplier={1.5}>
-              {current + 1} of {scan.pages.length}
+              Page {current + 1} of {scan.pages.length}
             </Text>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Close preview"
-              onPress={() => setPreviewIndex(null)}
-              style={styles.navButton}>
-              <Text style={styles.previewClose} maxFontSizeMultiplier={1.5}>Close</Text>
+              accessibilityLabel={`Rotate page ${current + 1}`}
+              accessibilityState={{ disabled: busy }}
+              disabled={busy}
+              onPress={() => props.onRotate(scan.pages[current])}
+              style={[styles.navButton, busy && styles.disabled]}>
+              <Text style={styles.previewAction} maxFontSizeMultiplier={1.5}>Rotate</Text>
             </Pressable>
           </View>
           <FlatList
@@ -683,18 +698,42 @@ function Detail(props: {
             showsHorizontalScrollIndicator={false}
             keyExtractor={(uri) => uri}
             initialScrollIndex={previewIndex ?? 0}
+            extraData={[props.shown, holding]}
             getItemLayout={(_, i) => ({ length: width, offset: width * i, index: i })}
-            onMomentumScrollEnd={(e) => setCurrent(Math.round(e.nativeEvent.contentOffset.x / width))}
+            onMomentumScrollEnd={(e) => {
+              setCurrent(Math.round(e.nativeEvent.contentOffset.x / width));
+              setHolding(false);
+            }}
             renderItem={({ item, index }) => (
-              <Image
-                source={{ uri: props.shown(item) }}
-                accessible
-                accessibilityLabel={`Page ${index + 1} of ${scan.pages.length}`}
-                style={{ width, height: pagerHeight }}
-                resizeMode="contain"
-              />
+              <Pressable
+                accessibilityHint="Hold to show the untouched photo"
+                onLongPress={() => setHolding(true)}
+                onPressOut={() => setHolding(false)}
+                style={{ width, height: pagerHeight }}>
+                <Image
+                  source={{
+                    uri:
+                      index === current && holding
+                        ? heldPhoto(item) + props.shown(item).slice(item.length)
+                        : props.shown(item),
+                  }}
+                  accessible
+                  accessibilityLabel={`Page ${index + 1} of ${scan.pages.length}`}
+                  style={{ width, height: pagerHeight }}
+                  resizeMode="contain"
+                />
+              </Pressable>
             )}
           />
+          <View style={styles.previewDone}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Done"
+              onPress={closePreview}
+              style={[styles.action, styles.primary]}>
+              <Text style={styles.primaryText} maxFontSizeMultiplier={1.5}>Done</Text>
+            </Pressable>
+          </View>
         </View>
       </Modal>
       <Modal
@@ -1167,8 +1206,9 @@ const styles = StyleSheet.create({
   backText: { fontSize: 17, fontWeight: '500', color: C.accent },
   navCount: { flexShrink: 1, paddingHorizontal: 8, fontSize: 17, fontWeight: '600', color: C.text },
   preview: { flex: 1, backgroundColor: C.text },
-  previewCount: { flexShrink: 1, paddingHorizontal: 20, fontSize: 17, fontWeight: '600', color: '#fff' },
-  previewClose: { fontSize: 16, fontWeight: '500', color: '#fff' },
+  previewCount: { flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '600', color: '#fff' },
+  previewAction: { fontSize: 16, fontWeight: '500', color: '#fff' },
+  previewDone: { flexDirection: 'row', paddingHorizontal: 20, paddingTop: 12 },
   navRight: { flexDirection: 'row', alignItems: 'center' },
   navButton: { minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
   selectText: { fontSize: 16, fontWeight: '500', color: C.accent },

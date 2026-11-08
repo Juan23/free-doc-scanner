@@ -1,5 +1,5 @@
 /// <reference types="jest" />
-import { addPages, anyOriginalMissing, createScan, deleteScan, keepOriginal, listScans } from './scans';
+import { addPages, anyOriginalMissing, createScan, deleteScan, heldPhoto, keepOriginal, listScans } from './scans';
 import { scanName } from './save';
 
 // In-memory file system: uri -> directory marker or file text. Moves finish on a later tick.
@@ -205,6 +205,15 @@ it('anyOriginalMissing reports a page with no untouched photo, and only then', (
   expect(anyOriginalMissing(pages)).toBe(true);
   put(`${ROOT}/5/o1.jpg`, 'img-o1.jpg');
   expect(anyOriginalMissing(pages)).toBe(false);
+});
+
+it('heldPhoto shows the stored untouched photo, and the page when it has none', () => {
+  putScan('5', ['p1.jpg', 'p2.jpg', 'o2.jpg']);
+
+  expect(heldPhoto(`${ROOT}/5/p1.jpg`)).toBe(`${ROOT}/5/p1.jpg`);
+  expect(heldPhoto(`${ROOT}/5/p2.jpg`)).toBe(`${ROOT}/5/o2.jpg`);
+  // A uri that is no page keeps itself.
+  expect(heldPhoto('file:///cache/photo.jpg')).toBe('file:///cache/photo.jpg');
 });
 
 it('keepOriginal copies the page to o once and never overwrites it', async () => {
