@@ -36,7 +36,7 @@ const C = {
   hairline: '#E7E9ED',
   accent: '#2457E6',
   accentSoft: '#EAF0FE',
-  tile: '#F7F8FA',
+  tile: '#F2F3F5',
   dashed: '#B9C0CB',
   chevron: '#9AA1AD',
   danger: '#D92D20',
@@ -810,7 +810,7 @@ function Detail(props: {
           onPress={() => setMenuOpen(false)}
           style={StyleSheet.absoluteFill}
         />
-        <View accessibilityViewIsModal style={[styles.menu, { top: insets.top + 8 + 44 }]}>
+        <View style={[styles.menu, { top: insets.top + 8 + 44 }]}>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Delete scan"
@@ -819,7 +819,7 @@ function Detail(props: {
               props.onDelete();
             }}
             style={styles.menuItem}>
-            <Text style={styles.menuText} maxFontSizeMultiplier={1.5}>Delete scan</Text>
+            <Text style={styles.menuText} maxFontSizeMultiplier={1.5}>Delete</Text>
           </Pressable>
         </View>
       </Modal>
@@ -1183,7 +1183,7 @@ const styles = StyleSheet.create({
   gridList: { paddingHorizontal: 20, paddingTop: 8 },
   homeRow: { gap: 14, marginBottom: 20 },
   card: { gap: 8 },
-  tile: { height: 196, borderRadius: 16, backgroundColor: '#F2F3F5', alignItems: 'center', justifyContent: 'center' },
+  tile: { height: 196, borderRadius: 16, backgroundColor: C.tile, alignItems: 'center', justifyContent: 'center' },
   tilePages: { width: 112, height: 150 },
   tilePage: {
     width: 112,
@@ -1316,7 +1316,7 @@ const styles = StyleSheet.create({
   detailTitle: { fontSize: 24, lineHeight: 30, fontWeight: '700', letterSpacing: -0.24, color: C.text },
   gridContent: { paddingHorizontal: 20 },
   gridRow: { gap: 16, marginBottom: 16 },
-  // Top-left, like Google Photos, leaving the other corners free.
+  // Top-left, like Google Photos.
   pickMark: {
     position: 'absolute',
     top: 6,
@@ -1358,13 +1358,13 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: C.hairline,
   },
-  pageTile: { borderRadius: 14, backgroundColor: '#F2F3F5', alignItems: 'center', justifyContent: 'center' },
-  pageTilePicked: { borderWidth: 3, borderColor: C.accent },
+  pageTile: { borderRadius: 14, borderWidth: 3, borderColor: 'transparent', backgroundColor: C.tile, alignItems: 'center', justifyContent: 'center' },
+  pageTilePicked: { borderColor: C.accent },
   pageImage: { width: '79%', height: '79%' },
   numChip: {
     position: 'absolute',
-    left: 10,
-    bottom: 10,
+    left: 7,
+    bottom: 7,
     minWidth: 24,
     minHeight: 24,
     paddingHorizontal: 6,
