@@ -255,6 +255,25 @@ function pastEdges(page: Uint8Array, fine: Uint8Array, w: number, h: number): Ui
 }
 
 /**
+ * A new `outW` x `outH` copy of `image`, shrunk mipmapped so a thin stroke is averaged in, not
+ * skipped. Drawn as a shader: drawImageRectOptions samples without the mipmaps (measured in
+ * CanvasKit: 1 to 3 px strokes on 1600 to 4032 px wide photos vanished from the 500 px copy).
+ * The caller disposes the result.
+ */
+export function shrunkCopy(image: SkImage, outW: number, outH: number): SkImage {
+  const surface = Skia.Surface.Make(outW, outH)!;
+  const shader = image.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, MipmapMode.Linear, Skia.Matrix().scale(outW / image.width(), outH / image.height()));
+  const paint = Skia.Paint();
+  paint.setShader(shader);
+  surface.getCanvas().drawPaint(paint);
+  const copy = surface.makeImageSnapshot();
+  shader.dispose();
+  paint.dispose();
+  surface.dispose();
+  return copy;
+}
+
+/**
  * `image` is the page's full untouched photo, not a thumbnail: the paper and ink are measured on a
  * small copy of it. A new image `width` pixels wide, as tall as the photo's shape makes it. Writes
  * no file. The caller disposes the result; everything else made here is freed. The paper, ink and
@@ -268,16 +287,7 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
   const outH = Math.max(1, Math.round((outW * h) / w));
 
   if (filter.kind === 'original') {
-    const surface = Skia.Surface.Make(outW, outH)!;
-    const shader = image.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, MipmapMode.Linear, Skia.Matrix().scale(outW / w, outH / h));
-    const paint = Skia.Paint();
-    paint.setShader(shader);
-    surface.getCanvas().drawPaint(paint);
-    const copy = surface.makeImageSnapshot();
-    shader.dispose();
-    paint.dispose();
-    surface.dispose();
-    return copy;
+    return shrunkCopy(image, outW, outH);
   }
 
   const scale = Math.min(1, SMALL_WIDTH / w);
@@ -289,9 +299,7 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
 
   const surface = Skia.Surface.Make(sw, sh)!;
   const canvas = surface.getCanvas();
-  // Mipmapped, so shrinking averages thin strokes in instead of skipping them.
-  canvas.drawImageRectOptions(image, Skia.XYWHRect(0, 0, w, h), Skia.XYWHRect(0, 0, sw, sh), FilterMode.Linear, MipmapMode.Linear);
-  const smallPage = surface.makeImageSnapshot();
+  const smallPage = shrunkCopy(image, sw, sh);
 
   const wipeInk = Skia.Paint();
   wipeInk.setImageFilter(Skia.ImageFilter.MakeBlur(8, 8, TileMode.Clamp, Skia.ImageFilter.MakeDilate(6, 6, null)));
