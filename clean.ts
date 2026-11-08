@@ -269,8 +269,13 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
 
   if (filter.kind === 'original') {
     const surface = Skia.Surface.Make(outW, outH)!;
-    surface.getCanvas().drawImageRectOptions(image, Skia.XYWHRect(0, 0, w, h), Skia.XYWHRect(0, 0, outW, outH), FilterMode.Linear, MipmapMode.Linear);
+    const shader = image.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, MipmapMode.Linear, Skia.Matrix().scale(outW / w, outH / h));
+    const paint = Skia.Paint();
+    paint.setShader(shader);
+    surface.getCanvas().drawPaint(paint);
     const copy = surface.makeImageSnapshot();
+    shader.dispose();
+    paint.dispose();
     surface.dispose();
     return copy;
   }
