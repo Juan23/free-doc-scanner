@@ -43,6 +43,8 @@ const C = {
 
 const bottomPad = (inset: number) => Math.max(inset + 12, 16);
 
+const PILL_H = 60;
+
 const pagesLabel = (n: number) => `${n} ${n === 1 ? 'page' : 'pages'}`;
 
 const unavailableText = 'This iPhone can’t run the built-in document scanner.';
@@ -65,7 +67,6 @@ function Root() {
   const [open, setOpen] = useState<Scan | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
-  const [filter, setFilterState] = useState<Filter>(defaultFilter);
   const [onCapturedPages, setOnCapturedPages] = useState<((pages: string[]) => Promise<void>) | null>(null);
   // Pages picked in Select mode, or null outside it.
   const [picked, setPicked] = useState<string[] | null>(null);
@@ -178,12 +179,6 @@ function Root() {
     await cleanPages(pages, defaultFilter());
   }
 
-  // Remembers the choice for new scans.
-  function chooseFilter(chosen: Filter) {
-    setFilterState(chosen);
-    setDefaultFilter(chosen);
-  }
-
   const scanNew = () =>
     scanPages(async (pages) => {
       setMessage('');
@@ -221,7 +216,7 @@ function Root() {
       const changed = pages.length - failed;
       if (showCount && changed > 0) showToast(`${changed} ${changed === 1 ? 'page' : 'pages'} changed`);
       if (failed) throw new Error(failed === 1 ? 'One page could not be changed.' : `${failed} pages could not be changed.`);
-      chooseFilter(filter);
+      setDefaultFilter(filter);
     }, 'Could not change filter');
 
   // Applies to the picked pages, or every page when none are picked.
@@ -293,8 +288,6 @@ function Root() {
           scans={scans}
           busy={busy}
           shown={shown}
-          filter={filter}
-          onFilter={chooseFilter}
           onScan={scanNew}
           onOpen={(s) => { setMessage(''); setPicked(null); setOpen(s); }}
         />
@@ -308,17 +301,23 @@ function Home(props: {
   scans: Scan[];
   busy: boolean;
   shown: (page: string) => string;
-  filter: Filter;
-  onFilter: (filter: Filter) => void;
   onScan: () => void;
   onOpen: (s: Scan) => void;
 }) {
   const available = scannerAvailable();
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
+  const card = (width - 40 - 14) / 2;
+  const pillRoom = PILL_H + bottomPad(insets.bottom);
   const header = (
     <View style={styles.homeHeader}>
-      <Text style={styles.title} accessibilityRole="header">Scans</Text>
-      <Text style={styles.subtitle}>Kept on this phone only</Text>
+      <Text style={styles.homeTitle} accessibilityRole="header">Scans</Text>
+      {props.scans.length > 0 && (
+        <View style={styles.privacy}>
+          <LockIcon />
+          <Text style={styles.privacyText}>On this phone only</Text>
+        </View>
+      )}
     </View>
   );
   let body;
@@ -327,17 +326,21 @@ function Home(props: {
   } else if (props.scans.length === 0) {
     body = (
       <Message
-        icon={<EmptyArt />}
+        large
+        bottom={pillRoom + 16}
+        icon={<FirstRunArt />}
         title="No scans yet"
-        text="Scan a document and it shows up here, ready to save as a PDF or JPEG."
+        text="Photograph a page and it turns into a clean scan you can save as a PDF or JPEG."
       />
     );
   } else {
     body = (
       <FlatList
         style={styles.flex}
-        contentContainerStyle={styles.listContent}
+        contentContainerStyle={[styles.gridList, { paddingBottom: available ? pillRoom + 24 : 12 }]}
         data={props.scans}
+        numColumns={2}
+        columnWrapperStyle={styles.homeRow}
         keyExtractor={(s) => s.id}
         renderItem={({ item }) => (
           <Pressable
@@ -346,38 +349,37 @@ function Home(props: {
             accessibilityState={{ disabled: props.busy }}
             disabled={props.busy}
             onPress={() => props.onOpen(item)}
-            style={[styles.row, props.busy && styles.disabled]}>
-            <Image source={{ uri: props.shown(item.pages[0]) }} style={styles.rowThumb} resizeMode="cover" />
-            <View style={styles.rowText}>
-              <Text style={styles.rowName}>{item.name}</Text>
-              <Text style={styles.rowSub}>{pagesLabel(item.pages.length)}</Text>
+            style={[styles.card, { width: card }, props.busy && styles.disabled]}>
+            <View style={styles.tile}>
+              <View style={styles.tilePages}>
+                {item.pages.length > 1 && <View style={[styles.tilePage, styles.tileBehind]} />}
+                <Image source={{ uri: props.shown(item.pages[0]) }} style={styles.tilePage} resizeMode="cover" />
+              </View>
             </View>
-            <View style={styles.chevronBox}>
-              <Chevron color={C.chevron} />
+            <View>
+              <Text style={styles.cardName}>{item.name}</Text>
+              <Text style={styles.cardSub}>{pagesLabel(item.pages.length)}</Text>
             </View>
           </Pressable>
         )}
       />
     );
   }
+  const grid = available && props.scans.length > 0;
   return (
-    <View style={[styles.flex, { paddingTop: insets.top + 16, paddingBottom: bottomPad(insets.bottom) }]}>
+    <View style={[styles.flex, { paddingTop: insets.top + 16 }, !available && { paddingBottom: bottomPad(insets.bottom) }]}>
       {header}
       {body}
+      {grid && <View pointerEvents="none" style={[styles.fade, { height: pillRoom + 44 }]} />}
       {available && (
-        <View style={styles.scanBar}>
-          <View style={styles.filterBlock}>
-            <Text style={styles.rowName}>Filter for new scans</Text>
-            <Text style={styles.rowSub}>Clean whitens paper and removes shadows and dirt. Original keeps the photos.</Text>
-            <FilterChoices filter={props.filter} onChange={props.onFilter} disabled={props.busy} />
-          </View>
+        <View pointerEvents="box-none" style={[styles.pillWrap, { bottom: bottomPad(insets.bottom) }]}>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Scan"
             accessibilityState={{ disabled: props.busy }}
             disabled={props.busy}
             onPress={props.onScan}
-            style={[styles.scanButton, props.busy && styles.disabled]}>
+            style={[styles.pill, props.busy && styles.disabled]}>
             <ScanIcon />
             <Text style={styles.scanButtonText} maxFontSizeMultiplier={1.5}>Scan</Text>
           </Pressable>
@@ -1154,14 +1156,14 @@ function PageEditor(props: { photo: Photo; onChange: (corners: Quad) => void }) 
   );
 }
 
-function Message(props: { icon: React.ReactNode; title: string; text: string }) {
+function Message(props: { icon: React.ReactNode; title: string; text: string; large?: boolean; bottom?: number }) {
   return (
-    <View style={styles.message}>
+    <View style={[styles.message, props.bottom ? { paddingBottom: props.bottom } : null]}>
       <View importantForAccessibility="no-hide-descendants" accessibilityElementsHidden>
         {props.icon}
       </View>
-      <Text style={styles.messageTitle}>{props.title}</Text>
-      <Text style={styles.messageText}>{props.text}</Text>
+      <Text style={[styles.messageTitle, props.large && styles.messageTitleLarge]}>{props.title}</Text>
+      <Text style={[styles.messageText, props.large && styles.messageTextLarge]}>{props.text}</Text>
     </View>
   );
 }
@@ -1203,15 +1205,25 @@ function Corners(props: { size: number; arm: number; color: string; w: number; b
 
 const ScanIcon = () => <Corners size={22} arm={9} color="#fff" w={2} bar />;
 
-function EmptyArt() {
+function FirstRunArt() {
   return (
     <View style={styles.art}>
-      <Corners size={68} arm={22} color={C.accent} w={4} />
-      <View style={styles.artPage}>
-        {[18, 24, 24, 14].map((w, i) => (
-          <View key={i} style={[styles.artLine, { width: w }]} />
-        ))}
-      </View>
+      {[-8, 6].map((deg, i) => (
+        <View key={deg} style={[styles.artPage, { transform: [{ rotate: `${deg}deg` }], marginLeft: i ? 16 : -16 }]}>
+          {[44, 58, 58, 36].map((w, j) => (
+            <View key={j} style={[styles.artLine, { width: w }]} />
+          ))}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function LockIcon() {
+  return (
+    <View style={styles.lock}>
+      <View style={styles.lockShackle} />
+      <View style={styles.lockBody} />
     </View>
   );
 }
@@ -1272,33 +1284,40 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   screen: { flex: 1, backgroundColor: '#fff' },
   disabled: { opacity: 0.4 },
-  homeHeader: { paddingHorizontal: 20, paddingBottom: 8 },
-  title: { fontSize: 32, lineHeight: 40, fontWeight: '700', letterSpacing: -0.64, color: C.text },
+  homeHeader: { paddingHorizontal: 20, paddingBottom: 12 },
+  homeTitle: { fontSize: 34, lineHeight: 41, fontWeight: '700', letterSpacing: -0.5, color: C.text },
   subtitle: { marginTop: 4, fontSize: 14, lineHeight: 20, color: C.muted },
-  listContent: { paddingHorizontal: 20 },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-    minHeight: 64,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: C.hairline,
+  privacy: { marginTop: 2, flexDirection: 'row', alignItems: 'center', gap: 6 },
+  privacyText: { fontSize: 13, lineHeight: 18, color: C.muted },
+  lock: { width: 10, height: 13, alignItems: 'center' },
+  lockShackle: {
+    width: 7,
+    height: 7,
+    borderWidth: 1.5,
+    borderBottomWidth: 0,
+    borderColor: C.muted,
+    borderTopLeftRadius: 4,
+    borderTopRightRadius: 4,
   },
-  rowThumb: {
-    width: 44,
-    height: 58,
-    borderRadius: 6,
-    borderWidth: 1,
+  lockBody: { width: 10, height: 7, marginTop: -1, borderRadius: 2, backgroundColor: C.muted },
+  gridList: { paddingHorizontal: 20, paddingTop: 8 },
+  homeRow: { gap: 14, marginBottom: 20 },
+  card: { gap: 8 },
+  tile: { height: 196, borderRadius: 16, backgroundColor: '#F2F3F5', alignItems: 'center', justifyContent: 'center' },
+  tilePages: { width: 112, height: 150 },
+  tilePage: {
+    width: 112,
+    height: 150,
+    borderRadius: 3,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: C.hairline,
     backgroundColor: '#fff',
   },
-  rowText: { flex: 1, minWidth: 0, gap: 2 },
-  rowName: { fontSize: 16, lineHeight: 22, fontWeight: '500', color: C.text },
+  tileBehind: { position: 'absolute', top: 5, left: 5 },
+  cardName: { fontSize: 13, lineHeight: 18, fontWeight: '600', color: C.text },
+  cardSub: { fontSize: 13, lineHeight: 18, color: C.muted },
   rowSub: { fontSize: 14, lineHeight: 20, color: C.muted },
-  chevronBox: { width: 20, alignItems: 'center' },
   scanBar: { paddingHorizontal: 20, paddingTop: 12 },
-  filterBlock: { marginBottom: 12, gap: 8 },
   filterChoices: { gap: 8 },
   choices: { flexDirection: 'row', gap: 8 },
   choice: {
@@ -1315,15 +1334,24 @@ const styles = StyleSheet.create({
   choiceOn: { borderColor: C.accent, backgroundColor: C.accent },
   choiceText: { fontSize: 15, fontWeight: '600', color: C.text },
   choiceTextOn: { color: '#fff' },
-  scanButton: {
-    minHeight: 56,
-    paddingVertical: 8,
-    borderRadius: 16,
+  pillWrap: { position: 'absolute', left: 0, right: 0, alignItems: 'center' },
+  pill: {
+    minHeight: PILL_H,
+    paddingHorizontal: 34,
+    borderRadius: PILL_H / 2,
     backgroundColor: C.accent,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 10,
+    boxShadow: '0 8px 24px rgba(36, 87, 230, 0.35)',
+  },
+  fade: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    experimental_backgroundImage: 'linear-gradient(to bottom, rgba(255, 255, 255, 0), #fff 45%)',
   },
   scanButtonText: { fontSize: 17, fontWeight: '600', color: '#fff' },
   message: {
@@ -1333,22 +1361,26 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingHorizontal: 40,
   },
+  messageTitleLarge: { fontSize: 22, lineHeight: 28, fontWeight: '700' },
+  messageTextLarge: { fontSize: 16, lineHeight: 23 },
   messageTitle: { marginTop: 8, fontSize: 20, lineHeight: 26, fontWeight: '600', color: C.text, textAlign: 'center' },
   messageText: { fontSize: 15, lineHeight: 22, color: C.muted, textAlign: 'center' },
   barTitle: { fontSize: 15, lineHeight: 22, fontWeight: '600', color: C.muted, textAlign: 'center' },
-  art: { width: 96, height: 96, alignItems: 'center', justifyContent: 'center' },
+  art: { width: 150, height: 150, alignItems: 'center', justifyContent: 'center' },
   artPage: {
     position: 'absolute',
-    width: 40,
-    height: 52,
-    borderRadius: 5,
-    borderWidth: 2,
-    borderColor: '#C9CED6',
-    paddingTop: 10,
-    paddingLeft: 6,
-    gap: 6,
+    width: 86,
+    height: 114,
+    borderRadius: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: C.dashed,
+    backgroundColor: '#fff',
+    boxShadow: '0 2px 8px rgba(21, 23, 28, 0.12)',
+    paddingTop: 18,
+    paddingLeft: 12,
+    gap: 9,
   },
-  artLine: { height: 3, borderRadius: 2, backgroundColor: '#D5D9DF' },
+  artLine: { height: 4, borderRadius: 2, backgroundColor: '#D5D9DF' },
   info: {
     width: 72,
     height: 72,
