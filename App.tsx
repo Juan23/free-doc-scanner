@@ -706,6 +706,7 @@ function Detail(props: {
             }}
             renderItem={({ item, index }) => (
               <Pressable
+                accessibilityLabel={`Page ${index + 1} of ${scan.pages.length}`}
                 accessibilityHint="Hold to show the untouched photo"
                 onLongPress={() => setHolding(true)}
                 onPressOut={() => setHolding(false)}
@@ -717,8 +718,6 @@ function Detail(props: {
                         ? heldPhoto(item) + props.shown(item).slice(item.length)
                         : props.shown(item),
                   }}
-                  accessible
-                  accessibilityLabel={`Page ${index + 1} of ${scan.pages.length}`}
                   style={{ width, height: pagerHeight }}
                   resizeMode="contain"
                 />
