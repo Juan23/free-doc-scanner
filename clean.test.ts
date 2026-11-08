@@ -619,8 +619,7 @@ describe('using one page\'s filter on every page', () => {
 });
 
 describe('thin strokes on a large photo', () => {
-  // Black 1 to 3 px strokes on white paper, at positions that fall at every phase of the shrink:
-  // horizontal ones in the top half, vertical ones in the bottom half.
+  // 1 to 3 px black strokes at every phase of the shrink: horizontal in the top half, vertical in the bottom.
   function strokedPhoto(w: number) {
     const h = (w * 3) / 4;
     const surface = Skia.Surface.Make(w, h)!;
@@ -670,7 +669,7 @@ describe('thin strokes on a large photo', () => {
     const photo = strokedPhoto(w);
     const copy = shrunkCopy(photo.image, 500, Math.ceil((photo.h * 500) / w));
     const all = residues(copy, photo);
-    // The area average is 1; a skipped stroke is 0 (measured on this draw: 0.5 to 1.5 at worst).
+    // The area average is 1; a skipped stroke is 0. Measured worst case: 0.5 to 1.5.
     expect(Math.min(...all)).toBeGreaterThan(0.4);
     expect(Math.max(...all)).toBeLessThan(2);
     copy.dispose();
@@ -696,9 +695,9 @@ describe('thin strokes on a large photo', () => {
     const photo = surface.makeImageSnapshot();
     const out = filterImage(photo, { kind: 'clean', strength: 0 });
     const px = out.readPixels(0, 0, { width: w, height: h, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul }) as Uint8Array;
-    // The darkest pixel across each stroke, in the middle of the page.
-    const darkest = ys.map((y) => Math.min(...[-2, -1, 0, 1, 2, 3, 4].map((d) => px[((y + d) * w + (w >> 1)) * 4])));
-    // Measured: every stroke 236 with the mipmapped copy; a spread of 74 with drawImageRectOptions.
+    const midColumn = w >> 1;
+    const darkest = ys.map((y) => Math.min(...[-2, -1, 0, 1, 2, 3, 4].map((d) => px[((y + d) * w + midColumn) * 4])));
+    // Measured: each stroke lands at 236 with the mipmapped copy.
     expect(Math.max(...darkest)).toBeLessThan(250);
     expect(Math.max(...darkest) - Math.min(...darkest)).toBeLessThan(10);
     out.dispose();

@@ -255,9 +255,8 @@ function pastEdges(page: Uint8Array, fine: Uint8Array, w: number, h: number): Ui
 }
 
 /**
- * A new `outW` x `outH` copy of `image`, shrunk mipmapped so a thin stroke is averaged in, not
- * skipped. Drawn as a shader: drawImageRectOptions samples without the mipmaps (measured in
- * CanvasKit: 1 to 3 px strokes on 1600 to 4032 px wide photos vanished from the 500 px copy).
+ * A new `outW` x `outH` copy of `image`, mipmapped so thin strokes are averaged in, not skipped.
+ * A shader, because drawImageRectOptions skipped 1 to 3 px strokes in 1600 to 4032 px photos at 500 px.
  * The caller disposes the result.
  */
 export function shrunkCopy(image: SkImage, outW: number, outH: number): SkImage {
@@ -343,7 +342,7 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
   const beyond = surface.makeImageSnapshot();
 
   const shrinking = outW < w;
-  // Only the final pass is drawn at the output size; a shrunk preview samples the photo mipmapped, as above.
+  // Only the final pass is drawn at the output size; a shrunk preview samples the photo mipmapped, as shrunkCopy does.
   const pageShader = clamp(
     image,
     shrinking ? FilterMode.Linear : FilterMode.Nearest,
