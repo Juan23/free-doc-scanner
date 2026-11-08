@@ -676,4 +676,34 @@ describe('thin strokes on a large photo', () => {
     copy.dispose();
     photo.image.dispose();
   });
+
+  it('treats identical faint strokes alike in the finished page of a 3024 px photo', () => {
+    // 2 px strokes of one grey on off-white paper, 30 to 34 px apart, so they land at every phase of the
+    // shrink. Clean at Light keeps faint marks only near writing, and that is found on the small copy.
+    const w = 3024;
+    const h = (w * 3) / 4;
+    const surface = Skia.Surface.Make(w, h)!;
+    const canvas = surface.getCanvas();
+    canvas.clear(Skia.Color('rgb(246,244,238)'));
+    const faint = Skia.Paint();
+    faint.setColor(Skia.Color('rgb(160,160,160)'));
+    faint.setAntiAlias(false);
+    const ys: number[] = [];
+    for (let i = 0, y = 100; y < h - 100; i++, y += 30 + ((i * 7) % 5)) {
+      ys.push(y);
+      canvas.drawRect(Skia.XYWHRect(w * 0.1, y, w * 0.8, 2), faint);
+    }
+    const photo = surface.makeImageSnapshot();
+    const out = filterImage(photo, { kind: 'clean', strength: 0 });
+    const px = out.readPixels(0, 0, { width: w, height: h, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul }) as Uint8Array;
+    // The darkest pixel across each stroke, in the middle of the page.
+    const darkest = ys.map((y) => Math.min(...[-2, -1, 0, 1, 2, 3, 4].map((d) => px[((y + d) * w + (w >> 1)) * 4])));
+    // Measured: every stroke 236 with the mipmapped copy; a spread of 74 with drawImageRectOptions.
+    expect(Math.max(...darkest)).toBeLessThan(250);
+    expect(Math.max(...darkest) - Math.min(...darkest)).toBeLessThan(10);
+    out.dispose();
+    photo.dispose();
+    faint.dispose();
+    surface.dispose();
+  }, 60000);
 });
