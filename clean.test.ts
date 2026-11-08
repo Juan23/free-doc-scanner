@@ -527,6 +527,31 @@ it('filters an older page with no original and no record, and records it', async
   expect(pageFilter(PAGE1)).toEqual({ kind: 'clean', strength: 1 });
 }, 30000);
 
+it('never overwrites a page whose address is not p<N>.jpg with its filter record', async () => {
+  const odd = 'file:///doc/scans/1/page.jpg';
+  mockFiles.set(odd, photographedPage());
+
+  await cleanPages([odd], { kind: 'clean', strength: 1 });
+
+  const page = decode(mockFiles.get(odd)!);
+  expect(page.width()).toBe(W);
+  page.dispose();
+  expect(pageFilter(odd)).toBeNull();
+}, 30000);
+
+it('stops previewing when cancelled, makes no further image and writes no file', async () => {
+  mockFiles.set(PAGE1, photographedPage());
+  const files = new Map(mockFiles);
+  let calls = 0;
+
+  // Asked before decoding, then once after each yield: true on the third means one image was made.
+  const previews = await filterPreviews(PAGE1, 150, () => ++calls >= 3);
+
+  expect(previews).toBeNull();
+  expect(calls).toBe(3);
+  expect(mockFiles).toEqual(files);
+}, 30000);
+
 it('previews Original, Clean and Grayscale Normal from the untouched photo, writing no file', async () => {
   const photo = photographedPage();
   mockFiles.set(PAGE1, photo);
@@ -534,7 +559,7 @@ it('previews Original, Clean and Grayscale Normal from the untouched photo, writ
   const files = new Map(mockFiles);
   const source = decode(photo);
 
-  const previews = await filterPreviews(PAGE1, 150);
+  const previews = (await filterPreviews(PAGE1, 150))!;
 
   try {
     expect(Object.values(previews).map((p) => [p.width(), p.height()])).toEqual([[150, 200], [150, 200], [150, 200]]);
@@ -558,7 +583,7 @@ it('previews Original, Clean and Grayscale Normal from the untouched photo, writ
 it('previews a page that has no original from the page itself', async () => {
   mockFiles.set(PAGE1, photographedPage());
 
-  const previews = await filterPreviews(PAGE1, 150);
+  const previews = (await filterPreviews(PAGE1, 150))!;
 
   expect(Object.keys(previews).sort()).toEqual(['clean', 'gray', 'original']);
   expect(Object.values(previews).map((p) => p.width())).toEqual([150, 150, 150]);

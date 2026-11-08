@@ -367,7 +367,11 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
 
 // The filter a page was last given, as JSON beside it: p3.jpg has f3.json. Pages from before this
 // have none.
-const filterRecord = (uri: string) => new File(uri.replace(/p(\d+)\.jpg$/, 'f$1.json'));
+const filterRecord = (uri: string) => {
+  const record = uri.replace(/p(\d+)\.jpg$/, 'f$1.json');
+  if (record === uri) throw new Error('not a stored page');
+  return new File(record);
+};
 
 /** The filter the page at `uri` was last given, or null when none is recorded. */
 export function pageFilter(uri: string): Filter | null {
@@ -383,15 +387,25 @@ const PREVIEW_FILTERS: Filter[] = [ORIGINAL, NORMAL, { kind: 'gray', strength: 1
 
 /**
  * Original, Clean and Grayscale at Normal, `width` pixels wide, from the page's untouched photo
- * (the page itself when it has none). Writes no file. The caller disposes the images.
+ * (the page itself when it has none). Writes no file. The caller disposes the images. Asks
+ * `cancelled` after each yield and, when it says so, frees what it made and returns null.
  */
-export async function filterPreviews(uri: string, width: number): Promise<Record<Filter['kind'], SkImage>> {
+export async function filterPreviews(
+  uri: string,
+  width: number,
+  cancelled: () => boolean = () => false,
+): Promise<Record<Filter['kind'], SkImage> | null> {
+  if (cancelled()) return null;
   const photo = await readPage(heldPhoto(uri));
   const previews: Partial<Record<Filter['kind'], SkImage>> = {};
   try {
     for (const filter of PREVIEW_FILTERS) {
       // Lets taps and slides through between the heavy steps.
       await new Promise((r) => setTimeout(r, 0));
+      if (cancelled()) {
+        for (const p of Object.values(previews)) p.dispose();
+        return null;
+      }
       previews[filter.kind] = filterImage(photo, filter, width);
     }
   } catch (e) {
