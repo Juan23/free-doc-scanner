@@ -255,10 +255,9 @@ function pastEdges(page: Uint8Array, fine: Uint8Array, w: number, h: number): Ui
 }
 
 /**
- * `image`, a page's untouched photo, with `filter` applied: a new image `width` pixels wide, as tall
- * as the photo's shape makes it. Writes no file. The caller disposes the result; everything else
- * made here is freed. The paper, ink and past-edge analysis runs on the same small copy at any
- * width, so a preview and the page stored from the photo agree.
+ * A new image `width` pixels wide, as tall as the photo's shape makes it. Writes no file. The caller
+ * disposes the result; everything else made here is freed. The paper, ink and past-edge analysis
+ * runs on the same small copy at any width, so a preview and the page stored from the photo agree.
  */
 export function filterImage(image: SkImage, filter: Filter, width: number = image.width()): SkImage {
   const w = image.width();
@@ -268,7 +267,6 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
 
   if (filter.kind === 'original') {
     const surface = Skia.Surface.Make(outW, outH)!;
-    // Mipmapped, so shrinking averages thin strokes in instead of skipping them.
     surface.getCanvas().drawImageRectOptions(image, Skia.XYWHRect(0, 0, w, h), Skia.XYWHRect(0, 0, outW, outH), FilterMode.Linear, MipmapMode.Linear);
     const copy = surface.makeImageSnapshot();
     surface.dispose();
@@ -329,13 +327,13 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
   canvas.drawImage(beyondMask, 0, 0, feather);
   const beyond = surface.makeImageSnapshot();
 
-  // Only the final pass is drawn at the output size. A shrunk preview samples the photo mipmapped,
-  // so thin strokes average in instead of skipping.
+  const shrinking = outW < w;
+  // Only the final pass is drawn at the output size; a shrunk preview samples the photo mipmapped, as above.
   const pageShader = clamp(
     image,
-    outW < w ? FilterMode.Linear : FilterMode.Nearest,
+    shrinking ? FilterMode.Linear : FilterMode.Nearest,
     Skia.Matrix().scale(outW / w, outH / h),
-    outW < w ? MipmapMode.Linear : MipmapMode.None,
+    shrinking ? MipmapMode.Linear : MipmapMode.None,
   );
   const paperShader = clamp(paper, FilterMode.Linear, toOut);
   const textShader = clamp(ink, FilterMode.Linear, toOut);

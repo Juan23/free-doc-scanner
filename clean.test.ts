@@ -435,19 +435,21 @@ it('previews the page that storing the same filter gives, shrunk', async () => {
   // keepOriginal stores these bytes untouched, so this is the photo a preview starts from.
   const photo = decode(mockFiles.get(PAGE)!);
   const previews: SkImage[] = [];
+  let cleanNormal: SkImage | undefined;
 
   try {
-    for (const filter of [{ kind: 'clean', strength: 1 }, { kind: 'gray', strength: 1 }] as Filter[]) {
+    for (const filter of KIND_STRENGTHS) {
       await cleanPages([PAGE], filter);
       const stored = shrunk(mockFiles.get(PAGE)!, 150);
       const preview = filterImage(photo, filter, 150);
       expect(meanDifference(preview, stored)).toBeLessThan(0.5);
       stored.dispose();
       previews.push(preview);
+      if (filter.kind === 'clean' && filter.strength === 1) cleanNormal = preview;
     }
     // A different filter differs far more than a preview does from its stored page.
     const untouched = filterImage(photo, { kind: 'original', strength: 1 }, 150);
-    expect(meanDifference(untouched, previews[0])).toBeGreaterThan(10);
+    expect(meanDifference(untouched, cleanNormal!)).toBeGreaterThan(10);
     untouched.dispose();
   } finally {
     photo.dispose();
