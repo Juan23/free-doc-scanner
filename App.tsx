@@ -1,4 +1,4 @@
-import { Canvas, Circle, Path } from '@shopify/react-native-skia';
+import { Canvas, Circle, Image as SkiaImage, Path, type SkImage } from '@shopify/react-native-skia';
 import { Camera, CameraView } from 'expo-camera';
 import { Directory, File, Paths } from 'expo-file-system';
 import { StatusBar } from 'expo-status-bar';
@@ -22,7 +22,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { cleanPages, defaultFilter, setDefaultFilter, type Filter } from './clean';
+import { cleanPages, defaultFilter, filterPreviews, pageFilter, setDefaultFilter, type Filter } from './clean';
 import { cropPage, findPage, isConvex, type FoundPage, type Point, type Quad } from './crop';
 import { clearScannerCache, pagesToSave, saveJpegs, savePdf } from './save';
 import { addPages, anyOriginalMissing, createScan, deleteScan, heldPhoto, listScans, type Scan } from './scans';
@@ -221,6 +221,15 @@ function Root() {
     }, 'Could not change filter');
   };
 
+  // The page changes at once; the last filter picked is the filter for new scans.
+  const filterPage = (page: string, filter: Filter) =>
+    guarded(async () => {
+      const failed = await cleanPages([page], filter);
+      touchPages([page]);
+      if (failed) throw new Error('One page could not be changed.');
+      chooseFilter(filter);
+    }, 'Could not change filter');
+
   const shown = (page: string) => (edits[page] ? `${page}?v=${edits[page]}` : page);
 
   function save(kind: 'pdf' | 'jpeg') {
@@ -277,6 +286,7 @@ function Root() {
           onAdd={addToOpen}
           onRotate={rotate}
           onApplyFilter={applyFilter}
+          onFilterPage={filterPage}
           onSave={save}
         />
       ) : (
@@ -384,6 +394,9 @@ function Home(props: {
   );
 }
 
+const THUMB_W = 66;
+const THUMB_H = 88;
+
 const FILTER_KINDS: { kind: Filter['kind']; label: string }[] = [
   { kind: 'original', label: 'Original' },
   { kind: 'clean', label: 'Clean' },
@@ -461,6 +474,7 @@ function Detail(props: {
   onAdd: () => void;
   onRotate: (page: string) => void;
   onApplyFilter: (filter: Filter) => void;
+  onFilterPage: (page: string, filter: Filter) => void;
   onSave: (kind: 'pdf' | 'jpeg') => void;
 }) {
   const { width } = useWindowDimensions();
@@ -471,8 +485,41 @@ function Detail(props: {
   const [pagerHeight, setPagerHeight] = useState(0);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filter, setFilter] = useState<Filter>(defaultFilter);
+  // The page whose strengths are shown, so turning to another page closes them.
+  const [strengthsFor, setStrengthsFor] = useState<string | null>(null);
+  // Thumbnails with the page edit they were made for; any other page or edit shows empty boxes.
+  const [made, setMade] = useState<{ key: string; images: SkImage[] }>({ key: '', images: [] });
   const cell = (width - 40 - 28) / 3;
   const { scan, busy, picked } = props;
+  const editing = editorIndex !== null;
+  const editedPage = scan.pages[current] as string | undefined;
+  // Changes with every edit of the page, so what is read below never outlives one.
+  const editedKey = editedPage && props.shown(editedPage);
+  const recorded = useMemo(
+    () => (editing && editedPage ? pageFilter(editedPage) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [editing, editedPage, editedKey],
+  );
+  const strengthsOpen = strengthsFor === editedPage;
+  const thumbs = made.key === editedKey ? made.images : [];
+  useEffect(() => {
+    if (!editing || !editedPage) return;
+    let stale = false;
+    // After the slide has settled, and dropped if the page changes meanwhile.
+    const timer = setTimeout(async () => {
+      try {
+        const images = await filterPreviews(editedPage, THUMB_W * 2);
+        if (stale) images.forEach((m) => m.dispose());
+        else setMade({ key: editedKey!, images });
+      } catch {}
+    }, 100);
+    return () => {
+      stale = true;
+      clearTimeout(timer);
+    };
+  }, [editing, editedPage, editedKey]);
+  // Runs when the images are replaced, and when the editor closes or unmounts.
+  useEffect(() => () => made.images.forEach((t) => t.dispose()), [made]);
   const available = scannerAvailable();
   const data: Cell[] = [
     ...scan.pages.map((uri, i) => ({ key: uri, uri, n: i + 1 })),
@@ -487,6 +534,7 @@ function Detail(props: {
   const closeEditor = () => {
     setEditorIndex(null);
     setHolding(false);
+    setMade({ key: '', images: [] });
   };
   return (
     <View style={[styles.flex, { paddingTop: insets.top + 8, paddingBottom: bottomPad(insets.bottom) }]}>
@@ -734,6 +782,63 @@ function Detail(props: {
               </Pressable>
             )}
           />
+          {editedPage && (
+            <View style={styles.strip}>
+              {strengthsOpen && recorded && recorded.kind !== 'original' && (
+                <View style={styles.strengths} accessibilityRole="radiogroup" accessibilityLabel="Clean-up strength">
+                  {FILTER_STRENGTHS.map(({ strength, label }) => {
+                    const checked = recorded.strength === strength;
+                    return (
+                      <Pressable
+                        key={label}
+                        accessibilityRole="radio"
+                        accessibilityLabel={label}
+                        accessibilityState={{ checked, disabled: busy }}
+                        disabled={busy}
+                        onPress={() => props.onFilterPage(editedPage, { kind: recorded.kind, strength })}
+                        style={[styles.strength, checked && styles.strengthOn, disabled]}>
+                        <Text style={[styles.strengthText, checked && styles.strengthTextOn]} maxFontSizeMultiplier={1.5}>
+                          {label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              )}
+              <View style={styles.thumbs} accessibilityRole="radiogroup" accessibilityLabel="Filter">
+                {FILTER_KINDS.map(({ kind, label }, i) => {
+                  const checked = recorded?.kind === kind;
+                  const strengthy = checked && kind !== 'original';
+                  return (
+                    <Pressable
+                      key={kind}
+                      accessibilityRole="radio"
+                      accessibilityLabel={label}
+                      accessibilityHint={strengthy ? 'Tap again to show or hide the strengths' : undefined}
+                      accessibilityState={{ checked, disabled: busy }}
+                      disabled={busy}
+                      onPress={() => {
+                        if (strengthy) setStrengthsFor(strengthsOpen ? null : editedPage);
+                        else if (!checked) {
+                          setStrengthsFor(null);
+                          props.onFilterPage(editedPage, { kind, strength: 1 });
+                        }
+                      }}
+                      style={[styles.thumb, disabled]}>
+                      <View style={[styles.thumbBox, checked && styles.thumbBoxOn]}>
+                        <Canvas style={styles.thumbCanvas}>
+                          {thumbs[i] && <SkiaImage image={thumbs[i]} x={0} y={0} width={THUMB_W} height={THUMB_H} fit="cover" />}
+                        </Canvas>
+                      </View>
+                      <Text style={[styles.thumbLabel, checked && styles.thumbLabelOn]} maxFontSizeMultiplier={1.5}>
+                        {label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+          )}
           <View style={styles.editorDone}>
             <Pressable
               accessibilityRole="button"
@@ -1218,6 +1323,19 @@ const styles = StyleSheet.create({
   editor: { flex: 1, backgroundColor: C.text },
   editorCount: { flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '600', color: '#fff' },
   editorAction: { fontSize: 16, fontWeight: '500', color: '#fff' },
+  strip: { paddingTop: 12, gap: 12 },
+  strengths: { flexDirection: 'row', alignSelf: 'center', backgroundColor: '#22252B', borderRadius: 12, padding: 3 },
+  strength: { height: 38, minWidth: 84, borderRadius: 10, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12 },
+  strengthOn: { backgroundColor: '#fff' },
+  strengthText: { fontSize: 15, color: '#C9CDD4' },
+  strengthTextOn: { fontWeight: '700', color: C.text },
+  thumbs: { flexDirection: 'row', justifyContent: 'center', gap: 18 },
+  thumb: { width: 84, alignItems: 'center', gap: 6 },
+  thumbBox: { padding: 3, borderRadius: 10, borderWidth: 2, borderColor: 'transparent' },
+  thumbBoxOn: { borderColor: '#fff' },
+  thumbCanvas: { width: THUMB_W, height: THUMB_H },
+  thumbLabel: { fontSize: 13, color: '#A9AFBA' },
+  thumbLabelOn: { fontWeight: '700', color: '#fff' },
   editorDone: { flexDirection: 'row', paddingHorizontal: 20, paddingTop: 12 },
   navRight: { flexDirection: 'row', alignItems: 'center' },
   navButton: { minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
