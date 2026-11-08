@@ -22,7 +22,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { cleanPages, defaultFilter, filterPreviews, pageFilter, setDefaultFilter, type Filter } from './clean';
+import { changedText, cleanPages, defaultFilter, filterPreviews, pageFilter, setDefaultFilter, type Filter } from './clean';
 import { cropPage, findPage, isConvex, type FoundPage, type Point, type Quad } from './crop';
 import { clearScannerCache, pagesToSave, saveJpegs, savePdf } from './save';
 import { addPages, anyOriginalMissing, createScan, deleteScan, heldPhoto, listScans, type Scan } from './scans';
@@ -212,10 +212,12 @@ function Root() {
     }, 'Could not rotate');
 
   // Pages that did change reload even when another failed. The filter is remembered for new scans only when every page changed.
-  const filterPages = (pages: string[], filter: Filter) =>
+  // `count` also shows how many pages changed (the editor's "Use on all pages"); other callers show nothing.
+  const filterPages = (pages: string[], filter: Filter, count = false) =>
     guarded(async () => {
       const failed = await cleanPages(pages, filter);
       touchPages(pages);
+      if (count && failed < pages.length) showToast(changedText(pages.length - failed));
       if (failed) throw new Error(failed === 1 ? 'One page could not be changed.' : `${failed} pages could not be changed.`);
       chooseFilter(filter);
     }, 'Could not change filter');
@@ -281,6 +283,7 @@ function Root() {
           onRotate={rotate}
           onApplyFilter={applyFilter}
           onFilterPage={(page, filter) => filterPages([page], filter)}
+          onUseOnAll={(filter) => open && filterPages(open.pages, filter, true)}
           onSave={save}
         />
       ) : (
@@ -470,6 +473,7 @@ function Detail(props: {
   onRotate: (page: string) => void;
   onApplyFilter: (filter: Filter) => void;
   onFilterPage: (page: string, filter: Filter) => void;
+  onUseOnAll: (filter: Filter) => void;
   onSave: (kind: 'pdf' | 'jpeg') => void;
 }) {
   const { width } = useWindowDimensions();
@@ -855,13 +859,39 @@ function Detail(props: {
             </View>
           )}
           <View style={styles.editorDone}>
+            {recorded && scan.pages.length > 1 && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Use this page's filter on all ${scan.pages.length} pages`}
+                accessibilityState={{ disabled: busy }}
+                disabled={busy}
+                onPress={() => props.onUseOnAll(recorded)}
+                style={[styles.useOnAll, disabled]}>
+                <Text style={styles.useOnAllText} maxFontSizeMultiplier={1.5}>
+                  Use on all {scan.pages.length} pages
+                </Text>
+              </Pressable>
+            )}
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Done"
               onPress={closeEditor}
-              style={[styles.action, styles.primary]}>
-              <Text style={styles.primaryText} maxFontSizeMultiplier={1.5}>Done</Text>
+              style={styles.doneButton}>
+              <Text style={styles.doneText} maxFontSizeMultiplier={1.5}>Done</Text>
             </Pressable>
+          </View>
+          {/* Over the page's top edge, so the pager and strip never move. The grid's toast sits behind this Modal. */}
+          <View
+            style={[styles.editorToastSlot, { top: insets.top + 8 + 52 }]}
+            pointerEvents="none"
+            accessibilityLiveRegion="polite"
+            collapsable={false}>
+            {!!props.message && (
+              <View style={[styles.toast, styles.editorToast]}>
+                <Check />
+                <Text style={styles.toastText}>{props.message}</Text>
+              </View>
+            )}
           </View>
         </View>
       </Modal>
@@ -1352,7 +1382,31 @@ const styles = StyleSheet.create({
   thumbCanvas: { width: THUMB_W, height: THUMB_H },
   thumbLabel: { fontSize: 13, color: '#A9AFBA' },
   thumbLabelOn: { fontWeight: '700', color: '#fff' },
-  editorDone: { flexDirection: 'row', paddingHorizontal: 20, paddingTop: 12 },
+  editorDone: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginTop: 12,
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#22252B',
+  },
+  useOnAll: { flexShrink: 1, minHeight: 48, justifyContent: 'center' },
+  useOnAllText: { fontSize: 15, color: '#C9CDD4' },
+  doneButton: {
+    marginLeft: 'auto',
+    minHeight: 44,
+    paddingHorizontal: 26,
+    borderRadius: 22,
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  doneText: { fontSize: 16, fontWeight: '600', color: C.text },
+  editorToastSlot: { position: 'absolute', left: 20, right: 20, alignItems: 'center' },
+  editorToast: { backgroundColor: '#2E323A', marginBottom: 0 },
   navRight: { flexDirection: 'row', alignItems: 'center' },
   navButton: { minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
   selectText: { fontSize: 16, fontWeight: '500', color: C.accent },

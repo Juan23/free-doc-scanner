@@ -6,7 +6,7 @@ import {
   AlphaType, BlurStyle, ColorType, FilterMode, ImageFormat, MipmapMode, Skia, type SkImage,
 } from '@shopify/react-native-skia';
 
-import { cleanPages, defaultFilter, filterImage, filterPreviews, pageFilter, setDefaultFilter, type Filter } from './clean';
+import { changedText, cleanPages, defaultFilter, filterImage, filterPreviews, pageFilter, setDefaultFilter, type Filter } from './clean';
 import { rotatePage } from './upright';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
@@ -589,3 +589,35 @@ it('previews a page that has no original from the page itself', async () => {
   for (const p of Object.values(previews)) p.dispose();
   expect([...mockFiles.keys()]).toEqual([PAGE1]);
 }, 30000);
+
+describe('using one page\'s filter on every page', () => {
+  const pages = [1, 2, 3].map((n) => `file:///doc/scans/1/p${n}.jpg`);
+  const grayStrong: Filter = { kind: 'gray', strength: 2 };
+
+  it('makes every page read and look like the edited page', async () => {
+    pages.forEach((p) => mockFiles.set(p, photographedPage()));
+    await cleanPages([pages[1]], grayStrong);
+
+    expect(await cleanPages(pages, pageFilter(pages[1])!)).toBe(0);
+
+    for (const p of pages) {
+      expect(pageFilter(p)).toEqual(grayStrong);
+      const [r, g, b] = pixel(mockFiles.get(p)!, 80, 208);
+      expect([r, g, b]).toEqual([r, r, r]);
+    }
+  }, 60000);
+
+  it('changes the other pages and returns the count when one fails', async () => {
+    mockFiles.set(pages[0], photographedPage());
+    mockFiles.set(pages[1], new Uint8Array([1, 2, 3]));
+    mockFiles.set(pages[2], photographedPage());
+
+    expect(await cleanPages(pages, grayStrong)).toBe(1);
+
+    expect([pageFilter(pages[0]), pageFilter(pages[1]), pageFilter(pages[2])]).toEqual([grayStrong, null, grayStrong]);
+  }, 60000);
+
+  it('words the count', () => {
+    expect([changedText(1), changedText(3)]).toEqual(['1 page changed', '3 pages changed']);
+  });
+});
