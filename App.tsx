@@ -435,8 +435,9 @@ function Detail(props: {
   const [pagerHeight, setPagerHeight] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const [strengthsOpen, setStrengthsOpen] = useState(false);
-  // Over the grid while selecting; only shown while `picked` is non-null, so a new Select never reopens it.
-  const [sheet, setSheet] = useState<'actions' | 'filter' | null>(null);
+  // Over the grid while selecting. Closing keeps `panel`, so nothing changes while the Modal fades out.
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [panel, setPanel] = useState<'actions' | 'filter'>('actions');
   const pendingSave = useRef<'pdf' | 'jpeg' | null>(null);
   // Thumbnails and the page they were made for; another page shows empty boxes until its own arrive.
   const [previews, setPreviews] = useState<{ page: string; images: Record<Filter['kind'], SkImage> | null }>({
@@ -448,7 +449,7 @@ function Detail(props: {
   const editing = editorIndex !== null;
   const editedPage = scan.pages[current] as string | undefined;
   const pickedPages = useMemo(() => scan.pages.filter((p) => picked?.includes(p)), [scan.pages, picked]);
-  const filtering = !!picked && sheet === 'filter';
+  const filtering = sheetOpen && panel === 'filter';
   // The pages the filter strip is about: the edited page, or the picked ones in the filter panel.
   const subject = editing ? (editedPage ? [editedPage] : []) : filtering ? pickedPages : [];
   const previewPage = subject[0] as string | undefined;
@@ -461,9 +462,9 @@ function Detail(props: {
   );
   // Pages scanned before untouched photos were kept have no photo for Original to bring back.
   const olderPage = useMemo(
-    () => (editing || filtering) && anyOriginalMissing(scan.pages),
+    () => (editing || filtering) && anyOriginalMissing(filtering ? pickedPages : scan.pages),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- re-reads on each edit (subjectKey), which the callback does not read
-    [editing, filtering, scan.pages, subjectKey],
+    [editing, filtering, scan.pages, pickedPages, subjectKey],
   );
   const thumbs = previews.page === previewPage ? previews.images : null;
   const turned = previewPage ? props.turns[previewPage] : 0;
@@ -491,15 +492,16 @@ function Detail(props: {
     ...(available && !picked ? [{ key: 'add' }] : []),
   ];
   const disabled = busy && styles.disabled;
-  const closeSheet = () => {
-    setSheet(null);
+  const releasePreviews = () => {
     setStrengthsOpen(false);
     setPreviews({ page: '', images: null });
   };
-  // Root.refresh can drop the picks while the sheet is open.
-  if (!picked && sheet) closeSheet();
+  const closeSheet = () => {
+    setSheetOpen(false);
+    releasePreviews();
+  };
   const saveFromSheet = (kind: 'pdf' | 'jpeg') => {
-    setSheet(null);
+    setSheetOpen(false);
     // The PDF folder picker is a native screen; iOS can't present it over a Modal that is still closing,
     // and only iOS has Modal's onDismiss.
     if (Platform.OS === 'ios') pendingSave.current = kind;
@@ -508,8 +510,7 @@ function Detail(props: {
   const closeEditor = () => {
     setEditorIndex(null);
     setHolding(false);
-    setStrengthsOpen(false);
-    setPreviews({ page: '', images: null });
+    releasePreviews();
   };
   return (
     <View style={[styles.flex, { paddingTop: insets.top + 8, paddingBottom: bottomPad(insets.bottom) }]}>
@@ -651,7 +652,10 @@ function Detail(props: {
               accessibilityLabel="Save or filter"
               accessibilityState={{ disabled: busy || !picked.length }}
               disabled={busy || !picked.length}
-              onPress={() => setSheet('actions')}
+              onPress={() => {
+                setPanel('actions');
+                setSheetOpen(true);
+              }}
               style={[styles.action, styles.primary, (busy || !picked.length) && styles.disabled]}>
               <Text style={styles.primaryText} maxFontSizeMultiplier={1.5}>Save or filter</Text>
             </Pressable>
@@ -801,7 +805,7 @@ function Detail(props: {
         </View>
       </Modal>
       <Modal
-        visible={!!picked && sheet !== null}
+        visible={sheetOpen}
         transparent
         animationType="fade"
         statusBarTranslucent
@@ -817,7 +821,7 @@ function Detail(props: {
           onPress={closeSheet}
           style={[StyleSheet.absoluteFill, styles.backdrop]}
         />
-        {sheet === 'filter' ? (
+        {panel === 'filter' ? (
           <View style={[styles.sheet, styles.sheetDark, { paddingBottom: bottomPad(insets.bottom) }]}>
             {/* Above the panel's top edge, so the heading and strip never move. */}
             <View
@@ -872,7 +876,7 @@ function Detail(props: {
               title="Filter these pages"
               subtitle="Original, Clean or Grayscale"
               busy={busy}
-              onPress={() => setSheet('filter')}
+              onPress={() => setPanel('filter')}
             />
             <Pressable
               accessibilityRole="button"
@@ -1645,7 +1649,7 @@ const styles = StyleSheet.create({
   sheetPill: { minHeight: 52, borderRadius: 26, alignItems: 'center', justifyContent: 'center', marginTop: 12 },
   sheetToastSlot: { top: -56 },
   sheetDone: { marginLeft: 20, marginRight: 20 },
-  sheetCancel: { backgroundColor: '#F2F3F5' },
+  sheetCancel: { backgroundColor: C.tile },
   sheetCancelText: { fontSize: 16, fontWeight: '600', color: C.text },
   capture: { flex: 1, backgroundColor: '#000' },
   captureHint: { paddingVertical: 12, paddingHorizontal: 20, fontSize: 15, lineHeight: 20, color: '#fff', textAlign: 'center' },

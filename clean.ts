@@ -390,7 +390,7 @@ export function pageFilter(uri: string): Filter | null {
   }
 }
 
-/** The filter every page in `uris` was last given, or null when they differ or any has none. */
+/** The filter every page in `uris` was last given; null when they differ, any has none, or the list is empty. */
 export function sharedFilter(uris: string[]): Filter | null {
   const [first, ...rest] = uris.map(pageFilter);
   return first && rest.every((f) => f && f.kind === first.kind && f.strength === first.strength) ? first : null;
