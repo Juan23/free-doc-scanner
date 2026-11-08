@@ -511,9 +511,9 @@ function Detail(props: {
     // After the slide has settled, and dropped if the page changes meanwhile.
     const timer = setTimeout(async () => {
       try {
-        const images = await filterPreviews(editedPage, THUMB_W * 2);
-        if (stale) Object.values(images).forEach((m) => m.dispose());
-        else setPreviews({ page: editedPage, images });
+        const images = await filterPreviews(editedPage, THUMB_W * 2, () => stale);
+        if (images && stale) Object.values(images).forEach((m) => m.dispose());
+        else if (images) setPreviews({ page: editedPage, images });
       } catch {}
     }, 100);
     return () => {
@@ -687,7 +687,10 @@ function Detail(props: {
             accessibilityLabel="Filter pages"
             accessibilityState={{ disabled: busy }}
             disabled={busy}
-            onPress={() => setFilterOpen(true)}
+            onPress={() => {
+              setFilter(defaultFilter());
+              setFilterOpen(true);
+            }}
             style={[styles.action, styles.secondary, disabled]}>
             <Text style={styles.secondaryText} maxFontSizeMultiplier={1.5}>Filter</Text>
           </Pressable>
@@ -800,7 +803,9 @@ function Detail(props: {
                         accessibilityLabel={label}
                         accessibilityState={{ checked, disabled: busy }}
                         disabled={busy}
-                        onPress={() => props.onFilterPage(editedPage, { kind: recorded.kind, strength })}
+                        onPress={() => {
+                          if (!checked) props.onFilterPage(editedPage, { kind: recorded.kind, strength });
+                        }}
                         style={[styles.strength, checked && styles.strengthOn, disabled]}>
                         <Text style={[styles.strengthText, checked && styles.strengthTextOn]} maxFontSizeMultiplier={1.5}>
                           {label}
