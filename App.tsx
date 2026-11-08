@@ -851,7 +851,11 @@ function Detail(props: {
                           {thumbs && <SkiaImage image={thumbs[kind]} x={0} y={0} width={THUMB_W} height={THUMB_H} fit="cover" />}
                         </Canvas>
                       </View>
-                      <Text style={[styles.thumbLabel, checked && styles.thumbLabelOn]} maxFontSizeMultiplier={1.5}>
+                      <Text
+                        style={[styles.thumbLabel, checked && styles.thumbLabelOn]}
+                        maxFontSizeMultiplier={1.5}
+                        numberOfLines={1}
+                        adjustsFontSizeToFit>
                         {label}
                       </Text>
                     </Pressable>
