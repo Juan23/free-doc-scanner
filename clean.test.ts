@@ -6,7 +6,8 @@ import {
   AlphaType, BlurStyle, ColorType, FilterMode, ImageFormat, MipmapMode, Skia, type SkImage,
 } from '@shopify/react-native-skia';
 
-import { cleanPages, defaultFilter, filterImage, setDefaultFilter, type Filter } from './clean';
+import { cleanPages, defaultFilter, filterImage, filterPreviews, pageFilter, setDefaultFilter, type Filter } from './clean';
+import { rotatePage } from './upright';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
 const mockFiles = new Map<string, Uint8Array>();
@@ -104,6 +105,7 @@ it('turns shadowed, tinted paper, specks and creases white and keeps ink dark, i
   await cleanPages(['file:///doc/scans/1/p1.jpg']);
 
   expect([...mockFiles.keys()].sort()).toEqual([
+    'file:///doc/scans/1/f1.json',
     'file:///doc/scans/1/o1.jpg',
     'file:///doc/scans/1/p1.jpg',
   ]);
@@ -455,4 +457,135 @@ it('previews the page that storing the same filter gives, shrunk', async () => {
     photo.dispose();
     for (const preview of previews) preview.dispose();
   }
+}, 30000);
+
+const PAGE1 = 'file:///doc/scans/1/p1.jpg';
+const SIDECAR1 = 'file:///doc/scans/1/f1.json';
+
+it('records each page\'s filter so pageFilter reads it back, at every kind and strength', async () => {
+  mockFiles.set(PAGE1, photographedPage());
+
+  for (const filter of KIND_STRENGTHS) {
+    await cleanPages([PAGE1], filter);
+    expect([filter, pageFilter(PAGE1)]).toEqual([filter, filter]);
+  }
+}, 60000);
+
+it('reads null for a page with no filter record or an unreadable one', () => {
+  mockFiles.set(PAGE1, photographedPage());
+  expect(pageFilter(PAGE1)).toBeNull();
+
+  for (const text of ['garbage', '{"kind":"sepia","strength":1}']) {
+    mockFiles.set(SIDECAR1, Uint8Array.from(text, (c) => c.charCodeAt(0)));
+    expect(pageFilter(PAGE1)).toBeNull();
+  }
+});
+
+it('keeps the earlier filter record and page when a page cannot be filtered', async () => {
+  const broken = new Uint8Array([1, 2, 3]);
+  mockFiles.set(PAGE1, broken);
+  mockFiles.set('file:///doc/scans/1/o1.jpg', broken);
+  mockFiles.set(SIDECAR1, Uint8Array.from('{"kind":"gray","strength":2}', (c) => c.charCodeAt(0)));
+
+  expect(await cleanPages([PAGE1], { kind: 'clean', strength: 0 })).toBe(1);
+
+  expect(pageFilter(PAGE1)).toEqual({ kind: 'gray', strength: 2 });
+  expect(mockFiles.get(PAGE1)).toBe(broken);
+});
+
+it('records the default filter a new scan gets', async () => {
+  mockFiles.set(PAGE1, photographedPage());
+  setDefaultFilter({ kind: 'gray', strength: 0 });
+
+  await cleanPages([PAGE1], defaultFilter());
+
+  expect(pageFilter(PAGE1)).toEqual({ kind: 'gray', strength: 0 });
+}, 30000);
+
+it('keeps a turn when the turned page is filtered, and its filter record', async () => {
+  mockFiles.set(PAGE1, photographedPage());
+  await cleanPages([PAGE1], { kind: 'gray', strength: 1 });
+
+  await rotatePage(PAGE1, 1);
+  await cleanPages([PAGE1], { kind: 'clean', strength: 2 });
+
+  const page = decode(mockFiles.get(PAGE1)!);
+  expect([page.width(), page.height()]).toEqual([H, W]);
+  // The ink bar (x 60-540, y 200-216) is dark after a clockwise turn at x = H - 216..H - 200, y = 60..540.
+  expect(luma(mockFiles.get(PAGE1)!, H - 208, 300)).toBeLessThan(50);
+  expect(luma(mockFiles.get(PAGE1)!, 100, 300)).toBeGreaterThan(245);
+  page.dispose();
+  expect(pageFilter(PAGE1)).toEqual({ kind: 'clean', strength: 2 });
+}, 60000);
+
+it('filters an older page with no original and no record, and records it', async () => {
+  mockFiles.set(PAGE1, photographedPage());
+  expect(pageFilter(PAGE1)).toBeNull();
+
+  expect(await cleanPages([PAGE1], { kind: 'clean', strength: 1 })).toBe(0);
+
+  expect(pageFilter(PAGE1)).toEqual({ kind: 'clean', strength: 1 });
+}, 30000);
+
+it('never overwrites a page whose address is not p<N>.jpg with its filter record', async () => {
+  const odd = 'file:///doc/scans/1/page.jpg';
+  const before = photographedPage();
+  mockFiles.set(odd, before);
+
+  expect(await cleanPages([odd], { kind: 'clean', strength: 1 })).toBe(1);
+
+  expect(mockFiles.get(odd)).toEqual(before);
+  expect(pageFilter(odd)).toBeNull();
+}, 30000);
+
+it('stops previewing when cancelled, makes no further image and writes no file', async () => {
+  mockFiles.set(PAGE1, photographedPage());
+  const files = new Map(mockFiles);
+  let calls = 0;
+
+  // Asked before decoding, then once after each yield: true on the third means one image was made.
+  const previews = await filterPreviews(PAGE1, 150, () => ++calls >= 3);
+
+  expect(previews).toBeNull();
+  expect(calls).toBe(3);
+  expect(mockFiles).toEqual(files);
+}, 30000);
+
+it('previews Original, Clean and Grayscale Normal from the untouched photo, writing no file', async () => {
+  const photo = photographedPage();
+  mockFiles.set(PAGE1, photo);
+  await cleanPages([PAGE1], { kind: 'gray', strength: 2 });
+  const files = new Map(mockFiles);
+  const source = decode(photo);
+
+  const previews = (await filterPreviews(PAGE1, 150))!;
+
+  try {
+    expect(Object.values(previews).map((p) => [p.width(), p.height()])).toEqual([[150, 200], [150, 200], [150, 200]]);
+    const expected = [
+      { kind: 'original', strength: 1 },
+      { kind: 'clean', strength: 1 },
+      { kind: 'gray', strength: 1 },
+    ] as const;
+    expected.forEach((filter) => {
+      const direct = filterImage(source, filter, 150);
+      expect(meanDifference(previews[filter.kind], direct)).toBeLessThan(0.5);
+      direct.dispose();
+    });
+    expect(mockFiles).toEqual(files);
+  } finally {
+    source.dispose();
+    for (const p of Object.values(previews)) p.dispose();
+  }
+}, 30000);
+
+it('previews a page that has no original from the page itself', async () => {
+  mockFiles.set(PAGE1, photographedPage());
+
+  const previews = (await filterPreviews(PAGE1, 150))!;
+
+  expect(Object.keys(previews).sort()).toEqual(['clean', 'gray', 'original']);
+  expect(Object.values(previews).map((p) => p.width())).toEqual([150, 150, 150]);
+  for (const p of Object.values(previews)) p.dispose();
+  expect([...mockFiles.keys()]).toEqual([PAGE1]);
 }, 30000);

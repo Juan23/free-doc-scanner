@@ -3,7 +3,7 @@ import {
 } from '@shopify/react-native-skia';
 import { File, Paths } from 'expo-file-system';
 
-import { copyPage, keepOriginal, originalOf, readPage, replacePage } from './scans';
+import { copyPage, heldPhoto, keepOriginal, originalOf, readPage, replacePage } from './scans';
 
 /** How to treat a page: leave it as photographed, clean it, or clean it to grey. Light, Normal and Strong set how much clean-up keeps. */
 export type Filter = { kind: 'original' | 'clean' | 'gray'; strength: 0 | 1 | 2 };
@@ -269,8 +269,13 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
 
   if (filter.kind === 'original') {
     const surface = Skia.Surface.Make(outW, outH)!;
-    surface.getCanvas().drawImageRectOptions(image, Skia.XYWHRect(0, 0, w, h), Skia.XYWHRect(0, 0, outW, outH), FilterMode.Linear, MipmapMode.Linear);
+    const shader = image.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, MipmapMode.Linear, Skia.Matrix().scale(outW / w, outH / h));
+    const paint = Skia.Paint();
+    paint.setShader(shader);
+    surface.getCanvas().drawPaint(paint);
     const copy = surface.makeImageSnapshot();
+    shader.dispose();
+    paint.dispose();
     surface.dispose();
     return copy;
   }
@@ -360,9 +365,61 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
   return snapshot;
 }
 
+// The filter a page was last given, as JSON beside it: p3.jpg has f3.json. Pages from before this
+// have none.
+const filterRecord = (uri: string) => {
+  const record = uri.replace(/p(\d+)\.jpg$/, 'f$1.json');
+  if (record === uri) throw new Error('not a stored page');
+  return new File(record);
+};
+
+/** The filter the page at `uri` was last given, or null when none is recorded. */
+export function pageFilter(uri: string): Filter | null {
+  try {
+    const f = filterRecord(uri);
+    return f.exists ? parseFilter(f.textSync()) : null;
+  } catch {
+    return null;
+  }
+}
+
+const PREVIEW_FILTERS: Filter[] = [ORIGINAL, NORMAL, { kind: 'gray', strength: 1 }];
+
+/**
+ * Original, Clean and Grayscale at Normal, `width` pixels wide, from the page's untouched photo
+ * (the page itself when it has none). Writes no file. The caller disposes the images. Asks
+ * `cancelled` after each yield and, when it says so, frees what it made and returns null.
+ */
+export async function filterPreviews(
+  uri: string,
+  width: number,
+  cancelled: () => boolean = () => false,
+): Promise<Record<Filter['kind'], SkImage> | null> {
+  if (cancelled()) return null;
+  const photo = await readPage(heldPhoto(uri));
+  const previews: Partial<Record<Filter['kind'], SkImage>> = {};
+  try {
+    for (const filter of PREVIEW_FILTERS) {
+      // Lets taps and slides through between the heavy steps.
+      await new Promise((r) => setTimeout(r, 0));
+      if (cancelled()) {
+        for (const p of Object.values(previews)) p.dispose();
+        return null;
+      }
+      previews[filter.kind] = filterImage(photo, filter, width);
+    }
+  } catch (e) {
+    for (const p of Object.values(previews)) p.dispose();
+    throw e;
+  } finally {
+    photo.dispose();
+  }
+  return previews as Record<Filter['kind'], SkImage>;
+}
+
 async function cleanPage(uri: string, filter: Filter): Promise<void> {
   // Every filter starts from the photo as it was before any cleaning, so changes never stack.
-  // shortcut: pages scanned before untouched photos were kept have no o<N>.jpg, so this copies their already-cleaned page; Original can't bring the photo back, and the filter sheet says so.
+  // shortcut: pages scanned before untouched photos were kept have no o<N>.jpg, so this copies their already-cleaned page; Original can't bring the photo back, and the filter sheet and page editor say so.
   await keepOriginal(uri);
   if (filter.kind === 'original') {
     await copyPage(originalOf(uri), uri);
@@ -391,7 +448,10 @@ export async function cleanPages(pageUris: string[], filter: Filter = NORMAL): P
   // One page at a time: each holds full-size bitmaps in memory.
   for (const uri of pageUris) {
     try {
+      // Before cleaning, so a page whose filter can't be recorded is left as it was.
+      const record = filterRecord(uri);
       await cleanPage(uri, filter);
+      record.writeSync(JSON.stringify(filter));
     } catch {
       failed++;
     }

@@ -1,4 +1,4 @@
-import { Canvas, Circle, Path } from '@shopify/react-native-skia';
+import { Canvas, Circle, Image as SkiaImage, Path, type SkImage } from '@shopify/react-native-skia';
 import { Camera, CameraView } from 'expo-camera';
 import { Directory, File, Paths } from 'expo-file-system';
 import { StatusBar } from 'expo-status-bar';
@@ -22,7 +22,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { cleanPages, defaultFilter, setDefaultFilter, type Filter } from './clean';
+import { cleanPages, defaultFilter, filterPreviews, pageFilter, setDefaultFilter, type Filter } from './clean';
 import { cropPage, findPage, isConvex, type FoundPage, type Point, type Quad } from './crop';
 import { clearScannerCache, pagesToSave, saveJpegs, savePdf } from './save';
 import { addPages, anyOriginalMissing, createScan, deleteScan, heldPhoto, listScans, type Scan } from './scans';
@@ -70,6 +70,8 @@ function Root() {
   // Edits per page (hand turns and filter changes), added to its URI as a query: Image keeps showing a page it already
   // loaded from the same URI, and both platforms read a file:// image by its path, ignoring the query.
   const [edits, setEdits] = useState<Record<string, number>>({});
+  // Turns per page; thumbnails come from the untouched photo, so only a turn changes them.
+  const [turns, setTurns] = useState<Record<string, number>>({});
   // State updates are async, so a second tap in the same frame would still see busy=false.
   const inFlight = useRef(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -205,21 +207,21 @@ function Root() {
   const rotate = (page: string) =>
     guarded(async () => {
       await rotatePage(page, 1);
+      setTurns((t) => ({ ...t, [page]: (t[page] ?? 0) + 1 }));
       touchPages([page]);
     }, 'Could not rotate');
 
-  // Applies to the picked pages, or every page when none are picked.
-  const applyFilter = (filter: Filter) => {
-    if (!open) return;
-    const scan = open;
+  // Pages that did change reload even when another failed. The filter is remembered for new scans only when every page changed.
+  const filterPages = (pages: string[], filter: Filter) =>
     guarded(async () => {
-      const pages = pagesToSave(scan.pages, picked ?? []);
       const failed = await cleanPages(pages, filter);
-      // Pages that did change must reload even when another failed.
       touchPages(pages);
       if (failed) throw new Error(failed === 1 ? 'One page could not be changed.' : `${failed} pages could not be changed.`);
+      chooseFilter(filter);
     }, 'Could not change filter');
-  };
+
+  // Applies to the picked pages, or every page when none are picked.
+  const applyFilter = (filter: Filter) => open && filterPages(pagesToSave(open.pages, picked ?? []), filter);
 
   const shown = (page: string) => (edits[page] ? `${page}?v=${edits[page]}` : page);
 
@@ -272,11 +274,13 @@ function Root() {
           picked={picked}
           onPick={setPicked}
           shown={shown}
+          turns={turns}
           onBack={() => setOpen(null)}
           onDelete={confirmDelete}
           onAdd={addToOpen}
           onRotate={rotate}
           onApplyFilter={applyFilter}
+          onFilterPage={(page, filter) => filterPages([page], filter)}
           onSave={save}
         />
       ) : (
@@ -384,6 +388,9 @@ function Home(props: {
   );
 }
 
+const THUMB_W = 66;
+const THUMB_H = 88;
+
 const FILTER_KINDS: { kind: Filter['kind']; label: string }[] = [
   { kind: 'original', label: 'Original' },
   { kind: 'clean', label: 'Clean' },
@@ -456,11 +463,13 @@ function Detail(props: {
   picked: string[] | null;
   onPick: (pages: string[] | null) => void;
   shown: (page: string) => string;
+  turns: Record<string, number>;
   onBack: () => void;
   onDelete: () => void;
   onAdd: () => void;
   onRotate: (page: string) => void;
   onApplyFilter: (filter: Filter) => void;
+  onFilterPage: (page: string, filter: Filter) => void;
   onSave: (kind: 'pdf' | 'jpeg') => void;
 }) {
   const { width } = useWindowDimensions();
@@ -471,8 +480,49 @@ function Detail(props: {
   const [pagerHeight, setPagerHeight] = useState(0);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filter, setFilter] = useState<Filter>(defaultFilter);
+  const [strengthsOpen, setStrengthsOpen] = useState(false);
+  // Thumbnails and the page they were made for; another page shows empty boxes until its own arrive.
+  const [previews, setPreviews] = useState<{ page: string; images: Record<Filter['kind'], SkImage> | null }>({
+    page: '',
+    images: null,
+  });
   const cell = (width - 40 - 28) / 3;
   const { scan, busy, picked } = props;
+  const editing = editorIndex !== null;
+  const editedPage = scan.pages[current] as string | undefined;
+  // Changes with every edit of the page, so what is read below never outlives one.
+  const editedKey = editedPage && props.shown(editedPage);
+  const recorded = useMemo(
+    () => (editing && editedPage ? pageFilter(editedPage) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-reads on each edit (editedKey), which the callback does not read
+    [editing, editedPage, editedKey],
+  );
+  // Pages scanned before untouched photos were kept have no photo for Original to bring back.
+  const olderPage = useMemo(
+    () => !!editing && !!editedPage && !recorded && anyOriginalMissing([editedPage]),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [editing, editedPage, editedKey, recorded],
+  );
+  const thumbs = previews.page === editedPage ? previews.images : null;
+  const turned = editedPage ? props.turns[editedPage] : 0;
+  useEffect(() => {
+    if (!editing || !editedPage) return;
+    let stale = false;
+    // After the slide has settled, and dropped if the page changes meanwhile.
+    const timer = setTimeout(async () => {
+      try {
+        const images = await filterPreviews(editedPage, THUMB_W * 2, () => stale);
+        if (images && stale) Object.values(images).forEach((m) => m.dispose());
+        else if (images) setPreviews({ page: editedPage, images });
+      } catch {}
+    }, 100);
+    return () => {
+      stale = true;
+      clearTimeout(timer);
+    };
+  }, [editing, editedPage, turned]);
+  // Runs when the images are replaced, and when the editor closes or unmounts.
+  useEffect(() => () => Object.values(previews.images ?? {}).forEach((t) => t.dispose()), [previews]);
   const available = scannerAvailable();
   const data: Cell[] = [
     ...scan.pages.map((uri, i) => ({ key: uri, uri, n: i + 1 })),
@@ -487,6 +537,8 @@ function Detail(props: {
   const closeEditor = () => {
     setEditorIndex(null);
     setHolding(false);
+    setStrengthsOpen(false);
+    setPreviews({ page: '', images: null });
   };
   return (
     <View style={[styles.flex, { paddingTop: insets.top + 8, paddingBottom: bottomPad(insets.bottom) }]}>
@@ -635,7 +687,10 @@ function Detail(props: {
             accessibilityLabel="Filter pages"
             accessibilityState={{ disabled: busy }}
             disabled={busy}
-            onPress={() => setFilterOpen(true)}
+            onPress={() => {
+              setFilter(defaultFilter());
+              setFilterOpen(true);
+            }}
             style={[styles.action, styles.secondary, disabled]}>
             <Text style={styles.secondaryText} maxFontSizeMultiplier={1.5}>Filter</Text>
           </Pressable>
@@ -708,6 +763,7 @@ function Detail(props: {
               const page = I18nManager.isRTL ? scan.pages.length - 1 - slid : slid;
               if (page !== current) {
                 setCurrent(page);
+                setStrengthsOpen(false);
                 setHolding(false);
                 // Android reads the count's live region itself; iOS needs an explicit announcement.
                 if (Platform.OS === 'ios') AccessibilityInfo.announceForAccessibility(`Page ${page + 1} of ${scan.pages.length}`);
@@ -734,6 +790,70 @@ function Detail(props: {
               </Pressable>
             )}
           />
+          {editedPage && (
+            <View style={styles.strip}>
+              {strengthsOpen && recorded && recorded.kind !== 'original' && (
+                <View style={styles.strengths} accessibilityRole="radiogroup" accessibilityLabel="Clean-up strength">
+                  {FILTER_STRENGTHS.map(({ strength, label }) => {
+                    const checked = recorded.strength === strength;
+                    return (
+                      <Pressable
+                        key={label}
+                        accessibilityRole="radio"
+                        accessibilityLabel={label}
+                        accessibilityState={{ checked, disabled: busy }}
+                        disabled={busy}
+                        onPress={() => {
+                          if (!checked) props.onFilterPage(editedPage, { kind: recorded.kind, strength });
+                        }}
+                        style={[styles.strength, checked && styles.strengthOn, disabled]}>
+                        <Text style={[styles.strengthText, checked && styles.strengthTextOn]} maxFontSizeMultiplier={1.5}>
+                          {label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              )}
+              <View style={styles.thumbs} accessibilityRole="radiogroup" accessibilityLabel="Filter">
+                {FILTER_KINDS.map(({ kind, label }) => {
+                  const checked = recorded?.kind === kind;
+                  const hasStrengths = checked && kind !== 'original';
+                  return (
+                    <Pressable
+                      key={kind}
+                      accessibilityRole="radio"
+                      accessibilityLabel={label}
+                      accessibilityHint={hasStrengths ? 'Tap again to show or hide the strengths' : undefined}
+                      accessibilityState={{ checked, disabled: busy }}
+                      disabled={busy}
+                      onPress={() => {
+                        if (hasStrengths) setStrengthsOpen(!strengthsOpen);
+                        else if (!checked) {
+                          setStrengthsOpen(false);
+                          props.onFilterPage(editedPage, { kind, strength: 1 });
+                        }
+                      }}
+                      style={[styles.thumb, disabled]}>
+                      <View style={[styles.thumbBox, checked && styles.thumbBoxOn]}>
+                        <Canvas style={styles.thumbCanvas}>
+                          {thumbs && <SkiaImage image={thumbs[kind]} x={0} y={0} width={THUMB_W} height={THUMB_H} fit="cover" />}
+                        </Canvas>
+                      </View>
+                      <Text style={[styles.thumbLabel, checked && styles.thumbLabelOn]} maxFontSizeMultiplier={1.5}>
+                        {label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              {olderPage && (
+                <Text style={styles.stripNote} maxFontSizeMultiplier={1.5}>
+                  Pages scanned before this version keep their clean-up.
+                </Text>
+              )}
+            </View>
+          )}
           <View style={styles.editorDone}>
             <Pressable
               accessibilityRole="button"
@@ -1218,6 +1338,20 @@ const styles = StyleSheet.create({
   editor: { flex: 1, backgroundColor: C.text },
   editorCount: { flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '600', color: '#fff' },
   editorAction: { fontSize: 16, fontWeight: '500', color: '#fff' },
+  strip: { paddingTop: 12, gap: 12 },
+  strengths: { flexDirection: 'row', alignSelf: 'center', backgroundColor: '#22252B', borderRadius: 12, padding: 3 },
+  strength: { height: 38, minWidth: 84, borderRadius: 10, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12 },
+  strengthOn: { backgroundColor: '#fff' },
+  strengthText: { fontSize: 15, color: '#C9CDD4' },
+  strengthTextOn: { fontWeight: '700', color: C.text },
+  stripNote: { textAlign: 'center', fontSize: 13, color: '#A9AFBA', marginTop: 8 },
+  thumbs: { flexDirection: 'row', justifyContent: 'center', gap: 18 },
+  thumb: { width: 84, alignItems: 'center', gap: 6 },
+  thumbBox: { padding: 3, borderRadius: 10, borderWidth: 2, borderColor: 'transparent' },
+  thumbBoxOn: { borderColor: '#fff' },
+  thumbCanvas: { width: THUMB_W, height: THUMB_H },
+  thumbLabel: { fontSize: 13, color: '#A9AFBA' },
+  thumbLabelOn: { fontWeight: '700', color: '#fff' },
   editorDone: { flexDirection: 'row', paddingHorizontal: 20, paddingTop: 12 },
   navRight: { flexDirection: 'row', alignItems: 'center' },
   navButton: { minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },

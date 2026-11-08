@@ -106,7 +106,7 @@ function pagesIn(dir: Directory): { n: number; name: string }[] {
   return pages.sort((a, b) => a.n - b.n);
 }
 
-// Nothing is stored beyond the pages: the name comes from the folder's creation time.
+// No index: the name comes from the folder's creation time and the pages from the files in it (originals and filter records sit beside them).
 const toScan = (dir: Directory): Scan => ({
   id: dir.name,
   name: scanName(new Date(Number(dir.name))),
