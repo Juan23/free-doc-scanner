@@ -6,7 +6,7 @@ import {
   AlphaType, BlurStyle, ColorType, ImageFormat, Skia, type SkImage,
 } from '@shopify/react-native-skia';
 
-import { cleanPages, defaultFilter, filterImage, filterPreviews, pageFilter, setDefaultFilter, shrunkCopy, type Filter } from './clean';
+import { cleanPages, defaultFilter, filterImage, filterPreviews, pageFilter, setDefaultFilter, sharedFilter, shrunkCopy, type Filter } from './clean';
 import { rotatePage } from './upright';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
@@ -469,6 +469,22 @@ it('reads null for a page with no filter record or an unreadable one', () => {
     mockFiles.set(SIDECAR1, Uint8Array.from(text, (c) => c.charCodeAt(0)));
     expect(pageFilter(PAGE1)).toBeNull();
   }
+});
+
+it('reads the filter every given page shares, and null when they differ or one has none', () => {
+  const record = (n: number, text: string) =>
+    mockFiles.set(`file:///doc/scans/1/f${n}.json`, Uint8Array.from(text, (c) => c.charCodeAt(0)));
+  const pages = [1, 2, 3].map((n) => `file:///doc/scans/1/p${n}.jpg`);
+  record(1, '{"kind":"gray","strength":2}');
+  record(2, '{"kind":"gray","strength":2}');
+  expect(sharedFilter(pages.slice(0, 2))).toEqual({ kind: 'gray', strength: 2 });
+
+  record(2, '{"kind":"gray","strength":1}');
+  expect(sharedFilter(pages.slice(0, 2))).toBeNull();
+
+  record(2, '{"kind":"gray","strength":2}');
+  expect(sharedFilter(pages)).toBeNull();
+  expect(sharedFilter([])).toBeNull();
 });
 
 it('keeps the earlier filter record and page when a page cannot be filtered', async () => {

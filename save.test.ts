@@ -179,15 +179,15 @@ it('returns cancelled when only the message says so (minified Android release)',
 
 it('on iOS saves pages in order as p1..pN, each after its copy finished', async () => {
   (requestPermissionsAsync as jest.Mock).mockResolvedValue({ granted: true });
-  mockFs.written.set('file:///a.jpg', new Uint8Array([1]));
-  mockFs.written.set('file:///b.jpg', new Uint8Array([2]));
+  mockFs.written.set('file:///p1.jpg', new Uint8Array([1]));
+  mockFs.written.set('file:///p2.jpg', new Uint8Array([2]));
   const finishedAtCreate: boolean[] = [];
   const contents: Uint8Array[] = [];
   (Asset.create as jest.Mock).mockImplementation(async (uri: string) => {
     finishedAtCreate.push(mockFs.finished.has(uri));
     contents.push(mockFs.written.get(uri)!);
   });
-  expect(await saveJpegs(['file:///a.jpg', 'file:///b.jpg'], 'Scan X')).toBe('saved');
+  expect(await saveJpegs(['file:///p1.jpg', 'file:///p2.jpg'], 'Scan X')).toBe('saved');
   expect((Asset.create as jest.Mock).mock.calls.map((c) => c[0])).toEqual([
     'file:///cache/DocumentScanner/Scan X p1.jpg',
     'file:///cache/DocumentScanner/Scan X p2.jpg',
@@ -203,15 +203,15 @@ it('on iOS saves pages in order as p1..pN, each after its copy finished', async 
 it('on Android puts all pages in one album, in order, after the copies finished', async () => {
   Platform.OS = 'android';
   (requestPermissionsAsync as jest.Mock).mockResolvedValue({ granted: true });
-  mockFs.written.set('file:///a.jpg', new Uint8Array([1]));
-  mockFs.written.set('file:///b.jpg', new Uint8Array([2]));
+  mockFs.written.set('file:///p1.jpg', new Uint8Array([1]));
+  mockFs.written.set('file:///p2.jpg', new Uint8Array([2]));
   let finishedAtCreate: boolean[] = [];
   let contents: (Uint8Array | undefined)[] = [];
   (Album.create as jest.Mock).mockImplementation(async (_name: string, uris: string[]) => {
     finishedAtCreate = uris.map((u) => mockFs.finished.has(u));
     contents = uris.map((u) => mockFs.written.get(u));
   });
-  expect(await saveJpegs(['file:///a.jpg', 'file:///b.jpg'], 'Scan X')).toBe('saved');
+  expect(await saveJpegs(['file:///p1.jpg', 'file:///p2.jpg'], 'Scan X')).toBe('saved');
   expect(Album.create).toHaveBeenCalledWith('Free Doc Scanner', [
     'file:///cache/DocumentScanner/Scan X p1.jpg',
     'file:///cache/DocumentScanner/Scan X p2.jpg',
@@ -221,9 +221,20 @@ it('on Android puts all pages in one album, in order, after the copies finished'
   expect(Asset.create).not.toHaveBeenCalled();
 });
 
+it('names each saved page from its own file name, not its place among the picks', async () => {
+  (requestPermissionsAsync as jest.Mock).mockResolvedValue({ granted: true });
+  mockFs.written.set('file:///scan/p1.jpg', new Uint8Array([1]));
+  mockFs.written.set('file:///scan/p3.jpg', new Uint8Array([3]));
+  expect(await saveJpegs(['file:///scan/p1.jpg', 'file:///scan/p3.jpg'], 'Scan X')).toBe('saved');
+  expect((Asset.create as jest.Mock).mock.calls.map((c) => c[0])).toEqual([
+    'file:///cache/DocumentScanner/Scan X p1.jpg',
+    'file:///cache/DocumentScanner/Scan X p3.jpg',
+  ]);
+});
+
 it('returns denied without permission', async () => {
   (requestPermissionsAsync as jest.Mock).mockResolvedValue({ granted: false });
-  expect(await saveJpegs(['file:///a.jpg'], 'Scan X')).toBe('denied');
+  expect(await saveJpegs(['file:///p1.jpg'], 'Scan X')).toBe('denied');
   expect(Asset.create).not.toHaveBeenCalled();
 });
 

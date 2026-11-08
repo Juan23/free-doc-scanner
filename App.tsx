@@ -24,7 +24,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { cleanPages, defaultFilter, filterPreviews, pageFilter, setDefaultFilter, type Filter } from './clean';
+import { cleanPages, defaultFilter, filterPreviews, setDefaultFilter, sharedFilter, type Filter } from './clean';
 import { cropPage, findPage, isConvex, type FoundPage, type Point, type Quad } from './crop';
 import { clearScannerCache, pagesToSave, saveJpegs, savePdf } from './save';
 import { addPages, anyOriginalMissing, createScan, deleteScan, heldPhoto, listScans, type Scan } from './scans';
@@ -277,7 +277,7 @@ function Root() {
           onAdd={addToOpen}
           onRotate={rotate}
           onFilterPage={(page, filter) => filterPages([page], filter)}
-          onUseOnAll={(filter) => open && filterPages(open.pages, filter, true)}
+          onFilterPages={(pages, filter) => filterPages(pages, filter, true)}
           onSave={save}
         />
       ) : (
@@ -422,7 +422,7 @@ function Detail(props: {
   onAdd: () => void;
   onRotate: (page: string) => void;
   onFilterPage: (page: string, filter: Filter) => void;
-  onUseOnAll: (filter: Filter) => void;
+  onFilterPages: (pages: string[], filter: Filter) => void;
   onSave: (kind: 'pdf' | 'jpeg') => void;
 }) {
   const { width } = useWindowDimensions();
@@ -433,6 +433,10 @@ function Detail(props: {
   const [pagerHeight, setPagerHeight] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const [strengthsOpen, setStrengthsOpen] = useState(false);
+  // Over the grid while selecting. Closing keeps `panel`, so the fade-out never shows the white rows.
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [panel, setPanel] = useState<'actions' | 'filter'>('actions');
+  const pendingSave = useRef<'pdf' | 'jpeg' | null>(null);
   // Thumbnails and the page they were made for; another page shows empty boxes until its own arrive.
   const [previews, setPreviews] = useState<{ page: string; images: Record<Filter['kind'], SkImage> | null }>({
     page: '',
@@ -442,38 +446,43 @@ function Detail(props: {
   const { scan, busy, picked } = props;
   const editing = editorIndex !== null;
   const editedPage = scan.pages[current] as string | undefined;
-  // Changes with every edit of the page, so what is read below never outlives one.
-  const editedKey = editedPage && props.shown(editedPage);
+  const pickedPages = useMemo(() => scan.pages.filter((p) => picked?.includes(p)), [scan.pages, picked]);
+  const filtering = sheetOpen && panel === 'filter';
+  // The pages the filter strip is about: the edited page, or the picked ones in the filter panel.
+  const subject = editing ? (editedPage ? [editedPage] : []) : filtering ? pickedPages : [];
+  const previewPage = subject[0] as string | undefined;
+  // Changes with every edit of the subject, so what is read below never outlives one.
+  const subjectKey = subject.map(props.shown).join('|');
   const recorded = useMemo(
-    () => (editing && editedPage ? pageFilter(editedPage) : null),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-reads on each edit (editedKey), which the callback does not read
-    [editing, editedPage, editedKey],
+    () => sharedFilter(subject),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-reads on each edit (subjectKey), which the callback does not read
+    [subjectKey],
   );
   // Pages scanned before untouched photos were kept have no photo for Original to bring back.
   const olderPage = useMemo(
-    () => editing && anyOriginalMissing(scan.pages),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-reads on each edit (editedKey), which the callback does not read
-    [editing, scan.pages, editedKey],
+    () => (editing || filtering) && anyOriginalMissing(filtering ? pickedPages : scan.pages),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-reads on each edit (subjectKey), which the callback does not read
+    [editing, filtering, scan.pages, pickedPages, subjectKey],
   );
-  const thumbs = previews.page === editedPage ? previews.images : null;
-  const turned = editedPage ? props.turns[editedPage] : 0;
+  const thumbs = previews.page === previewPage ? previews.images : null;
+  const turned = previewPage ? props.turns[previewPage] : 0;
   useEffect(() => {
-    if (!editing || !editedPage) return;
+    if (!previewPage) return;
     let stale = false;
     // After the slide has settled, and dropped if the page changes meanwhile.
     const timer = setTimeout(async () => {
       try {
-        const images = await filterPreviews(editedPage, THUMB_W * 2, () => stale);
+        const images = await filterPreviews(previewPage, THUMB_W * 2, () => stale);
         if (images && stale) Object.values(images).forEach((m) => m.dispose());
-        else if (images) setPreviews({ page: editedPage, images });
+        else if (images) setPreviews({ page: previewPage, images });
       } catch {}
     }, 100);
     return () => {
       stale = true;
       clearTimeout(timer);
     };
-  }, [editing, editedPage, turned]);
-  // Runs when the images are replaced, and when the editor closes or unmounts.
+  }, [previewPage, turned]);
+  // Runs when the images are replaced, and when the editor or filter panel closes or unmounts.
   useEffect(() => () => Object.values(previews.images ?? {}).forEach((t) => t.dispose()), [previews]);
   const available = scannerAvailable();
   const data: Cell[] = [
@@ -481,58 +490,93 @@ function Detail(props: {
     ...(available && !picked ? [{ key: 'add' }] : []),
   ];
   const disabled = busy && styles.disabled;
+  const releasePreviews = () => {
+    setStrengthsOpen(false);
+    setPreviews({ page: '', images: null });
+  };
+  const closeSheet = () => {
+    setSheetOpen(false);
+    releasePreviews();
+  };
+  const saveFromSheet = (kind: 'pdf' | 'jpeg') => {
+    setSheetOpen(false);
+    // The PDF folder picker is a native screen; iOS can't present it over a Modal that is still closing,
+    // and only iOS has Modal's onDismiss.
+    if (Platform.OS === 'ios') pendingSave.current = kind;
+    else props.onSave(kind);
+  };
   const closeEditor = () => {
     setEditorIndex(null);
     setHolding(false);
-    setStrengthsOpen(false);
-    setPreviews({ page: '', images: null });
+    releasePreviews();
   };
   return (
     <View style={[styles.flex, { paddingTop: insets.top + 8, paddingBottom: bottomPad(insets.bottom) }]}>
       <View style={styles.nav}>
         {picked ? (
-          <Text style={styles.navCount} maxFontSizeMultiplier={1.5}>
-            {picked.length ? `${picked.length} of ${scan.pages.length} selected` : 'Pick pages to save'}
-          </Text>
+          <>
+            <View style={styles.navSide}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Cancel selecting"
+                accessibilityState={{ disabled: busy }}
+                disabled={busy}
+                onPress={() => props.onPick(null)}
+                style={[styles.navButton, disabled]}>
+                <Text style={styles.selectText} maxFontSizeMultiplier={1.5}>Cancel</Text>
+              </Pressable>
+            </View>
+            <Text style={styles.navCount} maxFontSizeMultiplier={1.5}>{picked.length} selected</Text>
+            <View style={[styles.navSide, styles.navSideEnd]}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Select all pages"
+                accessibilityState={{ disabled: busy }}
+                disabled={busy}
+                onPress={() => props.onPick(scan.pages)}
+                style={[styles.navButton, disabled]}>
+                <Text style={styles.selectText} maxFontSizeMultiplier={1.5}>All</Text>
+              </Pressable>
+            </View>
+          </>
         ) : (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Back to Scans"
-            accessibilityState={{ disabled: busy }}
-            disabled={busy}
-            onPress={props.onBack}
-            style={[styles.back, disabled]}>
-            <Chevron color={C.accent} left />
-            <Text style={styles.backText} maxFontSizeMultiplier={1.5}>Scans</Text>
-          </Pressable>
-        )}
-        <View style={styles.navRight}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={picked ? 'Cancel selecting' : 'Select pages'}
-            accessibilityState={{ disabled: busy }}
-            disabled={busy}
-            onPress={() => props.onPick(picked ? null : [])}
-            style={[styles.navButton, disabled]}>
-            <Text style={styles.selectText} maxFontSizeMultiplier={1.5}>{picked ? 'Cancel' : 'Select'}</Text>
-          </Pressable>
-          {/* Hidden while selecting, so it can't be mistaken for deleting the picked pages. */}
-          {!picked && (
+          <>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="More"
+              accessibilityLabel="Back to Scans"
               accessibilityState={{ disabled: busy }}
               disabled={busy}
-              onPress={() => setMenuOpen(true)}
-              style={[styles.navButton, disabled]}>
-              <View style={styles.dots}>
-                {[0, 1, 2].map((i) => (
-                  <View key={i} style={styles.dot} />
-                ))}
-              </View>
+              onPress={props.onBack}
+              style={[styles.back, disabled]}>
+              <Chevron color={C.accent} left />
+              <Text style={styles.backText} maxFontSizeMultiplier={1.5}>Scans</Text>
             </Pressable>
-          )}
-        </View>
+            <View style={styles.navRight}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Select pages"
+                accessibilityState={{ disabled: busy }}
+                disabled={busy}
+                onPress={() => props.onPick([])}
+                style={[styles.navButton, disabled]}>
+                <Text style={styles.selectText} maxFontSizeMultiplier={1.5}>Select</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="More"
+                accessibilityState={{ disabled: busy }}
+                disabled={busy}
+                onPress={() => setMenuOpen(true)}
+                style={[styles.navButton, disabled]}>
+                <View style={styles.dots}>
+                  {[0, 1, 2].map((i) => (
+                    <View key={i} style={styles.dot} />
+                  ))}
+                </View>
+              </Pressable>
+            </View>
+          </>
+        )}
       </View>
       <FlatList
         style={styles.flex}
@@ -600,24 +644,41 @@ function Detail(props: {
           <Text style={styles.hint} maxFontSizeMultiplier={1.5}>Tap a page to filter or rotate it</Text>
         )}
         <View style={styles.saveBar}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Save PDF"
-            accessibilityState={{ disabled: busy }}
-            disabled={busy}
-            onPress={() => props.onSave('pdf')}
-            style={[styles.action, styles.primary, disabled]}>
-            <Text style={styles.primaryText} maxFontSizeMultiplier={1.5}>Save PDF</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Save JPEG"
-            accessibilityState={{ disabled: busy }}
-            disabled={busy}
-            onPress={() => props.onSave('jpeg')}
-            style={[styles.action, styles.secondary, disabled]}>
-            <Text style={styles.secondaryText} maxFontSizeMultiplier={1.5}>Save JPEG</Text>
-          </Pressable>
+          {picked ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Save or filter"
+              accessibilityState={{ disabled: busy || !picked.length }}
+              disabled={busy || !picked.length}
+              onPress={() => {
+                setPanel('actions');
+                setSheetOpen(true);
+              }}
+              style={[styles.action, styles.primary, (busy || !picked.length) && styles.disabled]}>
+              <Text style={styles.primaryText} maxFontSizeMultiplier={1.5}>Save or filter</Text>
+            </Pressable>
+          ) : (
+            <>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Save PDF"
+                accessibilityState={{ disabled: busy }}
+                disabled={busy}
+                onPress={() => props.onSave('pdf')}
+                style={[styles.action, styles.primary, disabled]}>
+                <Text style={styles.primaryText} maxFontSizeMultiplier={1.5}>Save PDF</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Save JPEG"
+                accessibilityState={{ disabled: busy }}
+                disabled={busy}
+                onPress={() => props.onSave('jpeg')}
+                style={[styles.action, styles.secondary, disabled]}>
+                <Text style={styles.secondaryText} maxFontSizeMultiplier={1.5}>Save JPEG</Text>
+              </Pressable>
+            </>
+          )}
         </View>
       </View>
       <Modal
@@ -707,72 +768,15 @@ function Detail(props: {
             </View>
           </View>
           {editedPage && (
-            <View style={styles.strip}>
-              {strengthsOpen && recorded && recorded.kind !== 'original' && (
-                <View style={styles.strengths} accessibilityRole="radiogroup" accessibilityLabel="Clean-up strength">
-                  {FILTER_STRENGTHS.map(({ strength, label }) => {
-                    const checked = recorded.strength === strength;
-                    return (
-                      <Pressable
-                        key={label}
-                        accessibilityRole="radio"
-                        accessibilityLabel={label}
-                        accessibilityState={{ checked, disabled: busy }}
-                        disabled={busy}
-                        onPress={() => {
-                          if (!checked) props.onFilterPage(editedPage, { kind: recorded.kind, strength });
-                        }}
-                        style={[styles.strength, checked && styles.strengthOn, disabled]}>
-                        <Text style={[styles.strengthText, checked && styles.strengthTextOn]} maxFontSizeMultiplier={1.5}>
-                          {label}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-              )}
-              <View style={styles.thumbs} accessibilityRole="radiogroup" accessibilityLabel="Filter">
-                {FILTER_KINDS.map(({ kind, label }) => {
-                  const checked = recorded?.kind === kind;
-                  const hasStrengths = checked && kind !== 'original';
-                  return (
-                    <Pressable
-                      key={kind}
-                      accessibilityRole="radio"
-                      accessibilityLabel={label}
-                      accessibilityHint={hasStrengths ? 'Tap again to show or hide the strengths' : undefined}
-                      accessibilityState={{ checked, disabled: busy }}
-                      disabled={busy}
-                      onPress={() => {
-                        if (hasStrengths) setStrengthsOpen(!strengthsOpen);
-                        else if (!checked) {
-                          setStrengthsOpen(false);
-                          props.onFilterPage(editedPage, { kind, strength: 1 });
-                        }
-                      }}
-                      style={[styles.thumb, disabled]}>
-                      <View style={[styles.thumbBox, checked && styles.thumbBoxOn]}>
-                        <Canvas style={styles.thumbCanvas}>
-                          {thumbs && <SkiaImage image={thumbs[kind]} x={0} y={0} width={THUMB_W} height={THUMB_H} fit="cover" />}
-                        </Canvas>
-                      </View>
-                      <Text
-                        style={[styles.thumbLabel, checked && styles.thumbLabelOn]}
-                        maxFontSizeMultiplier={1.5}
-                        numberOfLines={1}
-                        adjustsFontSizeToFit>
-                        {label}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-              {olderPage && (
-                <Text style={styles.stripNote} maxFontSizeMultiplier={1.5}>
-                  Pages scanned before this version keep their clean-up.
-                </Text>
-              )}
-            </View>
+            <FilterStrip
+              thumbs={thumbs}
+              recorded={recorded}
+              busy={busy}
+              older={olderPage}
+              strengthsOpen={strengthsOpen}
+              onStrengths={setStrengthsOpen}
+              onFilter={(filter) => props.onFilterPage(editedPage, filter)}
+            />
           )}
           <View style={styles.editorDone}>
             {recorded && scan.pages.length > 1 && (
@@ -781,7 +785,7 @@ function Detail(props: {
                 accessibilityLabel={`Use this page's filter on all ${scan.pages.length} pages`}
                 accessibilityState={{ disabled: busy }}
                 disabled={busy}
-                onPress={() => props.onUseOnAll(recorded)}
+                onPress={() => props.onFilterPages(scan.pages, recorded)}
                 style={[styles.useOnAll, disabled]}>
                 <Text style={styles.useOnAllText} maxFontSizeMultiplier={1.5}>
                   Use on all {scan.pages.length} pages
@@ -797,6 +801,90 @@ function Detail(props: {
             </Pressable>
           </View>
         </View>
+      </Modal>
+      <Modal
+        visible={sheetOpen}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={closeSheet}
+        onDismiss={() => {
+          const kind = pendingSave.current;
+          pendingSave.current = null;
+          if (kind) props.onSave(kind);
+        }}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Close"
+          onPress={closeSheet}
+          style={[StyleSheet.absoluteFill, styles.backdrop]}
+        />
+        {panel === 'filter' ? (
+          <View style={[styles.sheet, styles.sheetDark, { paddingBottom: bottomPad(insets.bottom) }]}>
+            {/* Above the panel's top edge, so the heading and strip never move. */}
+            <View
+              style={[styles.editorToastSlot, styles.sheetToastSlot]}
+              pointerEvents="none"
+              accessibilityLiveRegion="polite"
+              collapsable={false}>
+              {!!props.message && <Toast message={props.message} style={styles.editorToast} />}
+            </View>
+            <Text style={styles.sheetHeading} accessibilityRole="header" maxFontSizeMultiplier={1.5}>
+              Filter {pagesLabel(pickedPages.length)}
+            </Text>
+            <FilterStrip
+              thumbs={thumbs}
+              recorded={recorded}
+              busy={busy}
+              older={olderPage}
+              strengthsOpen={strengthsOpen}
+              onStrengths={setStrengthsOpen}
+              onFilter={(filter) => props.onFilterPages(pickedPages, filter)}
+            />
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Done"
+              onPress={closeSheet}
+              style={[styles.doneButton, styles.sheetPill, styles.sheetDone]}>
+              <Text style={styles.doneText} maxFontSizeMultiplier={1.5}>Done</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <View style={[styles.sheet, { paddingBottom: bottomPad(insets.bottom) }]}>
+            <View style={styles.grabber} />
+            <Text style={styles.sheetTitle} accessibilityRole="header" maxFontSizeMultiplier={1.5}>
+              {pagesLabel(pickedPages.length)}
+            </Text>
+            <SheetRow
+              icon="pdf"
+              title="Save as PDF"
+              subtitle={`One file with ${pickedPages.length === 2 ? 'both pages' : pagesLabel(pickedPages.length)}`}
+              busy={busy}
+              onPress={() => saveFromSheet('pdf')}
+            />
+            <SheetRow
+              icon="jpeg"
+              title="Save as JPEG"
+              subtitle={`${pickedPages.length} ${pickedPages.length === 1 ? 'image' : 'images'} to Photos`}
+              busy={busy}
+              onPress={() => saveFromSheet('jpeg')}
+            />
+            <SheetRow
+              icon="filter"
+              title="Filter these pages"
+              subtitle="Original, Clean or Grayscale"
+              busy={busy}
+              onPress={() => setPanel('filter')}
+            />
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Cancel"
+              onPress={closeSheet}
+              style={[styles.sheetPill, styles.sheetCancel]}>
+              <Text style={styles.sheetCancelText} maxFontSizeMultiplier={1.5}>Cancel</Text>
+            </Pressable>
+          </View>
+        )}
       </Modal>
       <Modal
         visible={menuOpen}
@@ -824,6 +912,124 @@ function Detail(props: {
         </View>
       </Modal>
     </View>
+  );
+}
+
+// The filter strip of the page editor and of the Select sheet's filter panel; both sit on a dark background.
+function FilterStrip(props: {
+  thumbs: Record<Filter['kind'], SkImage> | null;
+  recorded: Filter | null;
+  busy: boolean;
+  older: boolean;
+  strengthsOpen: boolean;
+  onStrengths: (open: boolean) => void;
+  onFilter: (filter: Filter) => void;
+}) {
+  const { recorded, busy, thumbs } = props;
+  const disabled = busy && styles.disabled;
+  return (
+    <View style={styles.strip}>
+      {props.strengthsOpen && recorded && recorded.kind !== 'original' && (
+        <View style={styles.strengths} accessibilityRole="radiogroup" accessibilityLabel="Clean-up strength">
+          {FILTER_STRENGTHS.map(({ strength, label }) => {
+            const checked = recorded.strength === strength;
+            return (
+              <Pressable
+                key={label}
+                accessibilityRole="radio"
+                accessibilityLabel={label}
+                accessibilityState={{ checked, disabled: busy }}
+                disabled={busy}
+                onPress={() => {
+                  if (!checked) props.onFilter({ kind: recorded.kind, strength });
+                }}
+                style={[styles.strength, checked && styles.strengthOn, disabled]}>
+                <Text style={[styles.strengthText, checked && styles.strengthTextOn]} maxFontSizeMultiplier={1.5}>
+                  {label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      )}
+      <View style={styles.thumbs} accessibilityRole="radiogroup" accessibilityLabel="Filter">
+        {FILTER_KINDS.map(({ kind, label }) => {
+          const checked = recorded?.kind === kind;
+          const hasStrengths = checked && kind !== 'original';
+          return (
+            <Pressable
+              key={kind}
+              accessibilityRole="radio"
+              accessibilityLabel={label}
+              accessibilityHint={hasStrengths ? 'Tap again to show or hide the strengths' : undefined}
+              accessibilityState={{ checked, disabled: busy }}
+              disabled={busy}
+              onPress={() => {
+                if (hasStrengths) props.onStrengths(!props.strengthsOpen);
+                else if (!checked) {
+                  props.onStrengths(false);
+                  props.onFilter({ kind, strength: 1 });
+                }
+              }}
+              style={[styles.thumb, disabled]}>
+              <View style={[styles.thumbBox, checked && styles.thumbBoxOn]}>
+                <Canvas style={styles.thumbCanvas}>
+                  {thumbs && <SkiaImage image={thumbs[kind]} x={0} y={0} width={THUMB_W} height={THUMB_H} fit="cover" />}
+                </Canvas>
+              </View>
+              <Text
+                style={[styles.thumbLabel, checked && styles.thumbLabelOn]}
+                maxFontSizeMultiplier={1.5}
+                numberOfLines={1}
+                adjustsFontSizeToFit>
+                {label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      {props.older && (
+        <Text style={styles.stripNote} maxFontSizeMultiplier={1.5}>
+          Pages scanned before this version keep their clean-up.
+        </Text>
+      )}
+    </View>
+  );
+}
+
+function SheetRow(props: { icon: 'pdf' | 'jpeg' | 'filter'; title: string; subtitle: string; busy: boolean; onPress: () => void }) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={props.title}
+      accessibilityState={{ disabled: props.busy }}
+      disabled={props.busy}
+      onPress={props.onPress}
+      style={[styles.sheetRow, props.busy && styles.disabled]}>
+      <View style={styles.sheetIcon}>
+        {props.icon === 'pdf' && (
+          <View style={styles.iconDoc}>
+            <View style={styles.iconLine} />
+            <View style={styles.iconLine} />
+          </View>
+        )}
+        {props.icon === 'jpeg' && (
+          <View style={styles.iconPhoto}>
+            <View style={styles.iconSun} />
+          </View>
+        )}
+        {props.icon === 'filter' && (
+          <View style={styles.iconRings}>
+            <View style={styles.iconRing} />
+            <View style={[styles.iconRing, styles.iconRingBack]} />
+          </View>
+        )}
+      </View>
+      <View style={styles.flex}>
+        <Text style={styles.sheetRowTitle} maxFontSizeMultiplier={1.5}>{props.title}</Text>
+        <Text style={styles.sheetRowSub} maxFontSizeMultiplier={1.5}>{props.subtitle}</Text>
+      </View>
+    </Pressable>
   );
 }
 
@@ -1266,7 +1472,10 @@ const styles = StyleSheet.create({
   },
   back: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 8 },
   backText: { fontSize: 17, fontWeight: '500', color: C.accent },
-  navCount: { flexShrink: 1, paddingHorizontal: 8, fontSize: 17, fontWeight: '600', color: C.text },
+  navCount: { flexShrink: 0, textAlign: 'center', fontSize: 17, fontWeight: '600', color: C.text },
+  // Equal sides keep the count centred whatever the buttons' widths.
+  navSide: { flex: 1, flexDirection: 'row' },
+  navSideEnd: { justifyContent: 'flex-end' },
   editor: { flex: 1, backgroundColor: C.text },
   editorCount: { flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '600', color: '#fff' },
   editorAction: { fontSize: 16, fontWeight: '500', color: '#fff' },
@@ -1316,21 +1525,20 @@ const styles = StyleSheet.create({
   detailTitle: { fontSize: 24, lineHeight: 30, fontWeight: '700', letterSpacing: -0.24, color: C.text },
   gridContent: { paddingHorizontal: 20 },
   gridRow: { gap: 16, marginBottom: 16 },
-  // Top-left, like Google Photos.
   pickMark: {
     position: 'absolute',
     top: 6,
-    left: 6,
+    right: 6,
     width: 26,
     height: 26,
     borderRadius: 13,
-    borderWidth: 1.5,
-    borderColor: C.chevron,
-    backgroundColor: 'rgba(255,255,255,0.9)',
+    borderWidth: 2,
+    borderColor: '#fff',
+    backgroundColor: 'rgba(21,23,28,.25)',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  pickMarkOn: { borderColor: C.accent, backgroundColor: C.accent },
+  pickMarkOn: { backgroundColor: C.accent },
   addTile: {
     borderWidth: 1.5,
     borderStyle: 'dashed',
@@ -1403,6 +1611,44 @@ const styles = StyleSheet.create({
   secondary: { backgroundColor: C.accentSoft },
   primaryText: { fontSize: 17, fontWeight: '600', color: '#fff', textAlign: 'center' },
   secondaryText: { fontSize: 17, fontWeight: '600', color: C.accent, textAlign: 'center' },
+  backdrop: { backgroundColor: 'rgba(21,23,28,.42)' },
+  sheet: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: 20,
+    borderTopLeftRadius: 26,
+    borderTopRightRadius: 26,
+    backgroundColor: '#fff',
+  },
+  sheetDark: { backgroundColor: C.text, paddingHorizontal: 0, paddingTop: 20 },
+  grabber: { alignSelf: 'center', width: 36, height: 5, borderRadius: 3, marginTop: 8, backgroundColor: '#D5D9DF' },
+  sheetTitle: { paddingTop: 16, paddingBottom: 8, fontSize: 17, fontWeight: '700', color: C.text },
+  sheetHeading: { textAlign: 'center', fontSize: 17, fontWeight: '600', color: '#fff' },
+  sheetRow: {
+    height: 64,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: C.hairline,
+  },
+  sheetIcon: { width: 40, height: 40, borderRadius: 12, backgroundColor: C.accentSoft, alignItems: 'center', justifyContent: 'center' },
+  sheetRowTitle: { fontSize: 16, fontWeight: '700', color: C.text },
+  sheetRowSub: { fontSize: 13, color: C.muted },
+  iconDoc: { width: 16, height: 20, borderRadius: 3, borderWidth: 2, borderColor: C.accent, justifyContent: 'center', gap: 3, paddingHorizontal: 2 },
+  iconLine: { height: 2, borderRadius: 1, backgroundColor: C.accent },
+  iconPhoto: { width: 21, height: 16, borderRadius: 3, borderWidth: 2, borderColor: C.accent, alignItems: 'center', justifyContent: 'center' },
+  iconSun: { width: 5, height: 5, borderRadius: 3, backgroundColor: C.accent },
+  iconRings: { flexDirection: 'row' },
+  iconRing: { width: 14, height: 14, borderRadius: 7, borderWidth: 2, borderColor: C.accent },
+  iconRingBack: { marginLeft: -6 },
+  sheetPill: { minHeight: 52, borderRadius: 26, alignItems: 'center', justifyContent: 'center', marginTop: 12 },
+  sheetToastSlot: { top: -56 },
+  sheetDone: { marginLeft: 20, marginRight: 20 },
+  sheetCancel: { backgroundColor: C.tile },
+  sheetCancelText: { fontSize: 16, fontWeight: '600', color: C.text },
   capture: { flex: 1, backgroundColor: '#000' },
   captureHint: { paddingVertical: 12, paddingHorizontal: 20, fontSize: 15, lineHeight: 20, color: '#fff', textAlign: 'center' },
   captureBar: {
