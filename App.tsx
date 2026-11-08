@@ -505,9 +505,9 @@ function Detail(props: {
   );
   // Pages scanned before untouched photos were kept have no photo for Original to bring back.
   const olderPage = useMemo(
-    () => !!editing && !!editedPage && !recorded && anyOriginalMissing([editedPage]),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [editing, editedPage, editedKey, recorded],
+    () => editing && anyOriginalMissing(scan.pages),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-reads on each edit (editedKey), which the callback does not read
+    [editing, scan.pages, editedKey],
   );
   const thumbs = previews.page === editedPage ? previews.images : null;
   const turned = editedPage ? props.turns[editedPage] : 0;
@@ -887,7 +887,6 @@ function Detail(props: {
               <Text style={styles.doneText} maxFontSizeMultiplier={1.5}>Done</Text>
             </Pressable>
           </View>
-          {/* Over the page's top edge, so the pager and strip never move. The grid's toast sits behind this Modal. */}
         </View>
       </Modal>
       <Modal
