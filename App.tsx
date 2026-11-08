@@ -39,6 +39,7 @@ const C = {
   tile: '#F7F8FA',
   dashed: '#B9C0CB',
   chevron: '#9AA1AD',
+  danger: '#D92D20',
 };
 
 const bottomPad = (inset: number) => Math.max(inset + 12, 16);
@@ -219,9 +220,6 @@ function Root() {
       setDefaultFilter(filter);
     }, 'Could not change filter');
 
-  // Applies to the picked pages, or every page when none are picked.
-  const applyFilter = (filter: Filter) => open && filterPages(pagesToSave(open.pages, picked ?? []), filter);
-
   const shown = (page: string) => (edits[page] ? `${page}?v=${edits[page]}` : page);
 
   function save(kind: 'pdf' | 'jpeg') {
@@ -278,7 +276,6 @@ function Root() {
           onDelete={confirmDelete}
           onAdd={addToOpen}
           onRotate={rotate}
-          onApplyFilter={applyFilter}
           onFilterPage={(page, filter) => filterPages([page], filter)}
           onUseOnAll={(filter) => open && filterPages(open.pages, filter, true)}
           onSave={save}
@@ -410,57 +407,6 @@ const FILTER_STRENGTHS: { strength: Filter['strength']; label: string }[] = [
   { strength: 2, label: 'Strong' },
 ];
 
-/** One radio button of a filter choice. */
-function Choice(props: { label: string; checked: boolean; disabled?: boolean; onPress: () => void }) {
-  const { label, checked, disabled } = props;
-  return (
-    <Pressable
-      accessibilityRole="radio"
-      accessibilityLabel={label}
-      accessibilityState={{ checked, disabled }}
-      disabled={disabled}
-      onPress={props.onPress}
-      style={[styles.choice, checked && styles.choiceOn, disabled && styles.disabled]}>
-      <Text style={[styles.choiceText, checked && styles.choiceTextOn]} maxFontSizeMultiplier={1.5}>
-        {label}
-      </Text>
-    </Pressable>
-  );
-}
-
-/** Original / Clean / Grayscale, and Light / Normal / Strong for the two clean-ups. */
-function FilterChoices(props: { filter: Filter; onChange: (filter: Filter) => void; disabled?: boolean }) {
-  const { filter, onChange, disabled } = props;
-  return (
-    <View style={styles.filterChoices}>
-      <View style={styles.choices} accessibilityRole="radiogroup" accessibilityLabel="Filter">
-        {FILTER_KINDS.map(({ kind, label }) => (
-          <Choice
-            key={kind}
-            label={label}
-            checked={filter.kind === kind}
-            disabled={disabled}
-            onPress={() => onChange({ ...filter, kind })}
-          />
-        ))}
-      </View>
-      {filter.kind !== 'original' && (
-        <View style={styles.choices} accessibilityRole="radiogroup" accessibilityLabel="Clean-up strength">
-          {FILTER_STRENGTHS.map(({ strength, label }) => (
-            <Choice
-              key={label}
-              label={label}
-              checked={filter.strength === strength}
-              disabled={disabled}
-              onPress={() => onChange({ ...filter, strength })}
-            />
-          ))}
-        </View>
-      )}
-    </View>
-  );
-}
-
 type Cell = { key: string; uri?: string; n?: number };
 
 function Detail(props: {
@@ -475,7 +421,6 @@ function Detail(props: {
   onDelete: () => void;
   onAdd: () => void;
   onRotate: (page: string) => void;
-  onApplyFilter: (filter: Filter) => void;
   onFilterPage: (page: string, filter: Filter) => void;
   onUseOnAll: (filter: Filter) => void;
   onSave: (kind: 'pdf' | 'jpeg') => void;
@@ -486,15 +431,14 @@ function Detail(props: {
   const [current, setCurrent] = useState(0);
   const [holding, setHolding] = useState(false);
   const [pagerHeight, setPagerHeight] = useState(0);
-  const [filterOpen, setFilterOpen] = useState(false);
-  const [filter, setFilter] = useState<Filter>(defaultFilter);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [strengthsOpen, setStrengthsOpen] = useState(false);
   // Thumbnails and the page they were made for; another page shows empty boxes until its own arrive.
   const [previews, setPreviews] = useState<{ page: string; images: Record<Filter['kind'], SkImage> | null }>({
     page: '',
     images: null,
   });
-  const cell = (width - 40 - 28) / 3;
+  const cell = (width - 40 - 16) / 2;
   const { scan, busy, picked } = props;
   const editing = editorIndex !== null;
   const editedPage = scan.pages[current] as string | undefined;
@@ -536,11 +480,6 @@ function Detail(props: {
     ...scan.pages.map((uri, i) => ({ key: uri, uri, n: i + 1 })),
     ...(available && !picked ? [{ key: 'add' }] : []),
   ];
-  // Pages scanned before untouched photos were kept have no photo to put back.
-  const hasMissingPhoto = useMemo(
-    () => filterOpen && anyOriginalMissing(pagesToSave(scan.pages, picked ?? [])),
-    [filterOpen, scan.pages, picked],
-  );
   const disabled = busy && styles.disabled;
   const closeEditor = () => {
     setEditorIndex(null);
@@ -581,12 +520,16 @@ function Detail(props: {
           {!picked && (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Delete scan"
+              accessibilityLabel="More"
               accessibilityState={{ disabled: busy }}
               disabled={busy}
-              onPress={props.onDelete}
+              onPress={() => setMenuOpen(true)}
               style={[styles.navButton, disabled]}>
-              <Text style={styles.deleteText} maxFontSizeMultiplier={1.5}>Delete</Text>
+              <View style={styles.dots}>
+                {[0, 1, 2].map((i) => (
+                  <View key={i} style={styles.dot} />
+                ))}
+              </View>
             </Pressable>
           )}
         </View>
@@ -594,7 +537,7 @@ function Detail(props: {
       <FlatList
         style={styles.flex}
         data={data}
-        numColumns={3}
+        numColumns={2}
         keyExtractor={(c) => c.key}
         contentContainerStyle={styles.gridContent}
         columnWrapperStyle={styles.gridRow}
@@ -606,61 +549,30 @@ function Detail(props: {
         }
         renderItem={({ item }) => {
           const { uri } = item;
+          const size = { width: cell, height: (cell * 4) / 3 };
           if (uri) {
             const on = !!picked?.includes(uri);
-            const image = (
-              <Image
-                source={{ uri: props.shown(uri) }}
-                accessible={!picked}
-                accessibilityLabel={`Page ${item.n}`}
-                style={[styles.page, { width: cell, height: (cell * 4) / 3 }, on && styles.pagePicked]}
-                resizeMode="contain"
-              />
-            );
-            // The cell stays a View so a corner button can sit beside the picking Pressable, not inside it.
             return (
-              <View style={[styles.cell, { width: cell }]}>
-                {picked ? (
-                  <Pressable
-                    accessibilityRole="checkbox"
-                    accessibilityLabel={`Page ${item.n}`}
-                    accessibilityState={{ checked: on, disabled: busy }}
-                    disabled={busy}
-                    onPress={() => props.onPick(on ? picked.filter((p) => p !== uri) : [...picked, uri])}
-                    style={disabled}>
-                    {image}
-                    <View style={[styles.pickMark, on && styles.pickMarkOn]}>{on && <Check />}</View>
-                  </Pressable>
-                ) : (
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`Edit page ${item.n}`}
-                    accessibilityState={{ disabled: busy }}
-                    disabled={busy}
-                    onPress={() => {
-                      const i = item.n! - 1;
-                      setCurrent(i);
-                      setEditorIndex(i);
-                    }}
-                    style={disabled}>
-                    {image}
-                  </Pressable>
-                )}
-                <View style={styles.pageBar}>
-                  <Text style={styles.pageNum} importantForAccessibility="no" accessible={false} maxFontSizeMultiplier={1.5}>
+              <Pressable
+                accessibilityRole={picked ? 'checkbox' : 'button'}
+                accessibilityLabel={picked ? `Page ${item.n}` : `Edit page ${item.n}`}
+                accessibilityState={picked ? { checked: on, disabled: busy } : { disabled: busy }}
+                disabled={busy}
+                onPress={() => {
+                  if (picked) return props.onPick(on ? picked.filter((p) => p !== uri) : [...picked, uri]);
+                  const i = item.n! - 1;
+                  setCurrent(i);
+                  setEditorIndex(i);
+                }}
+                style={[styles.pageTile, size, on && styles.pageTilePicked, disabled]}>
+                <Image source={{ uri: props.shown(uri) }} style={styles.pageImage} resizeMode="contain" />
+                <View style={styles.numChip}>
+                  <Text style={styles.numText} importantForAccessibility="no" accessible={false} maxFontSizeMultiplier={1.5}>
                     {item.n}
                   </Text>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`Rotate page ${item.n}`}
-                    accessibilityState={{ disabled: busy }}
-                    disabled={busy}
-                    onPress={() => props.onRotate(uri)}
-                    style={[styles.rotate, disabled]}>
-                    <Text style={styles.rotateText} maxFontSizeMultiplier={1.5}>Rotate</Text>
-                  </Pressable>
                 </View>
-              </View>
+                {picked && <View style={[styles.pickMark, on && styles.pickMarkOn]}>{on && <Check />}</View>}
+              </Pressable>
             );
           }
           return (
@@ -670,7 +582,7 @@ function Detail(props: {
               accessibilityState={{ disabled: busy }}
               disabled={busy}
               onPress={props.onAdd}
-              style={[styles.addTile, { width: cell, minHeight: (cell * 4) / 3 }, disabled]}>
+              style={[styles.addTile, size, disabled]}>
               <View style={styles.plus}>
                 <View style={[styles.plusBar, styles.plusH]} />
                 <View style={[styles.plusBar, styles.plusV]} />
@@ -684,19 +596,10 @@ function Detail(props: {
         <View accessibilityLiveRegion="polite" collapsable={false}>
           {!!props.message && <Toast message={props.message} />}
         </View>
-        <View style={styles.actions}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Filter pages"
-            accessibilityState={{ disabled: busy }}
-            disabled={busy}
-            onPress={() => {
-              setFilter(defaultFilter());
-              setFilterOpen(true);
-            }}
-            style={[styles.action, styles.secondary, disabled]}>
-            <Text style={styles.secondaryText} maxFontSizeMultiplier={1.5}>Filter</Text>
-          </Pressable>
+        {!picked && (
+          <Text style={styles.hint} maxFontSizeMultiplier={1.5}>Tap a page to filter or rotate it</Text>
+        )}
+        <View style={styles.saveBar}>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Save PDF"
@@ -896,51 +799,28 @@ function Detail(props: {
         </View>
       </Modal>
       <Modal
-        visible={filterOpen}
+        visible={menuOpen}
         transparent
         animationType="fade"
         statusBarTranslucent
-        onRequestClose={() => setFilterOpen(false)}>
-        <View style={styles.sheetBackdrop}>
+        onRequestClose={() => setMenuOpen(false)}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Close menu"
+          onPress={() => setMenuOpen(false)}
+          style={StyleSheet.absoluteFill}
+        />
+        <View accessibilityViewIsModal style={[styles.menu, { top: insets.top + 8 + 44 }]}>
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Close filter"
-            onPress={() => setFilterOpen(false)}
-            style={StyleSheet.absoluteFill}
-          />
-          <View
-            accessibilityViewIsModal
-            style={[styles.sheet, { paddingBottom: bottomPad(insets.bottom) }]}>
-            <Text style={styles.sheetTitle} accessibilityRole="header">Filter</Text>
-            <Text style={styles.rowSub}>
-              {picked?.length ? 'Applies to the picked pages.' : 'Applies to every page.'}
-            </Text>
-            {hasMissingPhoto && (
-              <Text style={styles.rowSub}>Pages scanned before this version keep their clean-up.</Text>
-            )}
-            <FilterChoices filter={filter} onChange={setFilter} disabled={busy} />
-            <View style={styles.actions}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Cancel filter"
-                onPress={() => setFilterOpen(false)}
-                style={[styles.action, styles.secondary]}>
-                <Text style={styles.secondaryText} maxFontSizeMultiplier={1.5}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Apply filter"
-                accessibilityState={{ disabled: busy }}
-                disabled={busy}
-                onPress={() => {
-                  props.onApplyFilter(filter);
-                  setFilterOpen(false);
-                }}
-                style={[styles.action, styles.primary, disabled]}>
-                <Text style={styles.primaryText} maxFontSizeMultiplier={1.5}>Apply</Text>
-              </Pressable>
-            </View>
-          </View>
+            accessibilityLabel="Delete scan"
+            onPress={() => {
+              setMenuOpen(false);
+              props.onDelete();
+            }}
+            style={styles.menuItem}>
+            <Text style={styles.menuText} maxFontSizeMultiplier={1.5}>Delete scan</Text>
+          </Pressable>
         </View>
       </Modal>
     </View>
@@ -1316,24 +1196,7 @@ const styles = StyleSheet.create({
   tileBehind: { position: 'absolute', top: 5, left: 5 },
   cardName: { fontSize: 13, lineHeight: 18, fontWeight: '600', color: C.text },
   cardSub: { fontSize: 13, lineHeight: 18, color: C.muted },
-  rowSub: { fontSize: 14, lineHeight: 20, color: C.muted },
   scanBar: { paddingHorizontal: 20, paddingTop: 12 },
-  filterChoices: { gap: 8 },
-  choices: { flexDirection: 'row', gap: 8 },
-  choice: {
-    flex: 1,
-    minHeight: 44,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: C.hairline,
-    backgroundColor: C.tile,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 6,
-  },
-  choiceOn: { borderColor: C.accent, backgroundColor: C.accent },
-  choiceText: { fontSize: 15, fontWeight: '600', color: C.text },
-  choiceTextOn: { color: '#fff' },
   pillWrap: { position: 'absolute', left: 0, right: 0, alignItems: 'center' },
   pill: {
     minHeight: PILL_H,
@@ -1449,15 +1312,10 @@ const styles = StyleSheet.create({
   navRight: { flexDirection: 'row', alignItems: 'center' },
   navButton: { minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
   selectText: { fontSize: 16, fontWeight: '500', color: C.accent },
-  deleteText: { fontSize: 16, fontWeight: '500', color: C.muted },
   detailHeader: { paddingTop: 12, paddingBottom: 20 },
   detailTitle: { fontSize: 24, lineHeight: 30, fontWeight: '700', letterSpacing: -0.24, color: C.text },
   gridContent: { paddingHorizontal: 20 },
-  gridRow: { gap: 14, marginBottom: 14 },
-  cell: { alignItems: 'center' },
-  pageBar: { alignSelf: 'stretch', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  page: { borderWidth: 1, borderColor: C.hairline, borderRadius: 8, backgroundColor: '#fff' },
-  pagePicked: { borderWidth: 2, borderColor: C.accent },
+  gridRow: { gap: 16, marginBottom: 16 },
   // Top-left, like Google Photos, leaving the other corners free.
   pickMark: {
     position: 'absolute',
@@ -1473,15 +1331,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   pickMarkOn: { borderColor: C.accent, backgroundColor: C.accent },
-  pageNum: { fontSize: 13, lineHeight: 18, color: C.muted, paddingLeft: 4 },
-  rotate: { minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 },
-  rotateText: { fontSize: 14, fontWeight: '600', color: C.accent },
   addTile: {
     borderWidth: 1.5,
     borderStyle: 'dashed',
     borderColor: C.dashed,
-    borderRadius: 8,
-    backgroundColor: C.tile,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
@@ -1493,7 +1347,46 @@ const styles = StyleSheet.create({
   plusH: { width: 14, height: 2 },
   plusV: { width: 2, height: 14 },
   addText: { fontSize: 14, fontWeight: '600', color: C.accent, textAlign: 'center' },
-  bottom: { paddingHorizontal: 20, paddingTop: 12, alignItems: 'center' },
+  bottom: { alignItems: 'center' },
+  hint: { paddingHorizontal: 20, paddingBottom: 12, fontSize: 13, lineHeight: 18, color: C.muted, textAlign: 'center' },
+  saveBar: {
+    width: '100%',
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: C.hairline,
+  },
+  pageTile: { borderRadius: 14, backgroundColor: '#F2F3F5', alignItems: 'center', justifyContent: 'center' },
+  pageTilePicked: { borderWidth: 3, borderColor: C.accent },
+  pageImage: { width: '79%', height: '79%' },
+  numChip: {
+    position: 'absolute',
+    left: 10,
+    bottom: 10,
+    minWidth: 24,
+    minHeight: 24,
+    paddingHorizontal: 6,
+    borderRadius: 12,
+    backgroundColor: 'rgba(21,23,28,.72)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  numText: { fontSize: 13, fontWeight: '600', color: '#fff' },
+  dots: { flexDirection: 'row', gap: 3 },
+  dot: { width: 4, height: 4, borderRadius: 2, backgroundColor: C.accent },
+  menu: {
+    position: 'absolute',
+    right: 12,
+    minWidth: 160,
+    borderRadius: 14,
+    backgroundColor: '#fff',
+    boxShadow: '0 4px 16px rgba(21,23,28,0.18)',
+    overflow: 'hidden',
+  },
+  menuItem: { minHeight: 44, paddingHorizontal: 16, justifyContent: 'center' },
+  menuText: { fontSize: 16, fontWeight: '500', color: C.danger },
   toast: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1505,18 +1398,7 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   toastText: { fontSize: 15, lineHeight: 20, fontWeight: '500', color: '#fff' },
-  sheetBackdrop: { flex: 1, backgroundColor: 'rgba(21,23,28,0.45)', justifyContent: 'flex-end' },
-  sheet: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingHorizontal: 20,
-    paddingTop: 20,
-    gap: 12,
-  },
-  sheetTitle: { fontSize: 22, lineHeight: 28, fontWeight: '700', color: C.text },
-  actions: { width: '100%', flexDirection: 'row', gap: 12 },
-  action: { flex: 1, minHeight: 54, paddingVertical: 8, paddingHorizontal: 4, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  action: { flex: 1, minHeight: 52, paddingVertical: 8, paddingHorizontal: 4, borderRadius: 26, alignItems: 'center', justifyContent: 'center' },
   primary: { backgroundColor: C.accent },
   secondary: { backgroundColor: C.accentSoft },
   primaryText: { fontSize: 17, fontWeight: '600', color: '#fff', textAlign: 'center' },
