@@ -370,7 +370,7 @@ function Home(props: {
     <View style={[styles.flex, { paddingTop: insets.top + 16 }, !available && { paddingBottom: bottomPad(insets.bottom) }]}>
       {header}
       {body}
-      {grid && <View pointerEvents="none" style={styles.fade} />}
+      {grid && <View pointerEvents="none" style={[styles.fade, { height: pillRoom + 44 }]} />}
       {available && (
         <View pointerEvents="box-none" style={[styles.pillWrap, { bottom: bottomPad(insets.bottom) }]}>
           <Pressable
@@ -1314,7 +1314,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   tileBehind: { position: 'absolute', top: 5, left: 5 },
-  cardName: { fontSize: 14, lineHeight: 20, fontWeight: '600', color: C.text },
+  cardName: { fontSize: 13, lineHeight: 18, fontWeight: '600', color: C.text },
   cardSub: { fontSize: 13, lineHeight: 18, color: C.muted },
   rowSub: { fontSize: 14, lineHeight: 20, color: C.muted },
   scanBar: { paddingHorizontal: 20, paddingTop: 12 },
@@ -1351,7 +1351,6 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    height: 150,
     experimental_backgroundImage: 'linear-gradient(to bottom, rgba(255, 255, 255, 0), #fff 45%)',
   },
   scanButtonText: { fontSize: 17, fontWeight: '600', color: '#fff' },
