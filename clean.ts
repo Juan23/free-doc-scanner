@@ -426,7 +426,7 @@ export async function filterPreviews(
 
 async function cleanPage(uri: string, filter: Filter): Promise<void> {
   // Every filter starts from the photo as it was before any cleaning, so changes never stack.
-  // shortcut: pages scanned before untouched photos were kept have no o<N>.jpg, so this copies their already-cleaned page; Original can't bring the photo back, and the filter sheet and page editor say so.
+  // shortcut: pages scanned before untouched photos were kept have no o<N>.jpg, so this copies their already-cleaned page; Original can't bring the photo back, and the page editor says so.
   await keepOriginal(uri);
   if (filter.kind === 'original') {
     await copyPage(originalOf(uri), uri);
