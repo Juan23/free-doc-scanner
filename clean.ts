@@ -448,8 +448,10 @@ export async function cleanPages(pageUris: string[], filter: Filter = NORMAL): P
   // One page at a time: each holds full-size bitmaps in memory.
   for (const uri of pageUris) {
     try {
+      // Before cleaning, so a page whose filter can't be recorded is left as it was.
+      const record = filterRecord(uri);
       await cleanPage(uri, filter);
-      filterRecord(uri).writeSync(JSON.stringify(filter));
+      record.writeSync(JSON.stringify(filter));
     } catch {
       failed++;
     }

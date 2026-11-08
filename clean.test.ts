@@ -529,13 +529,12 @@ it('filters an older page with no original and no record, and records it', async
 
 it('never overwrites a page whose address is not p<N>.jpg with its filter record', async () => {
   const odd = 'file:///doc/scans/1/page.jpg';
-  mockFiles.set(odd, photographedPage());
+  const before = photographedPage();
+  mockFiles.set(odd, before);
 
-  await cleanPages([odd], { kind: 'clean', strength: 1 });
+  expect(await cleanPages([odd], { kind: 'clean', strength: 1 })).toBe(1);
 
-  const page = decode(mockFiles.get(odd)!);
-  expect(page.width()).toBe(W);
-  page.dispose();
+  expect(mockFiles.get(odd)).toEqual(before);
   expect(pageFilter(odd)).toBeNull();
 }, 30000);
 
