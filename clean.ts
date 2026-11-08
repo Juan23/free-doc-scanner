@@ -254,23 +254,33 @@ function pastEdges(page: Uint8Array, fine: Uint8Array, w: number, h: number): Ui
   return out;
 }
 
-async function cleanPage(uri: string, filter: Filter): Promise<void> {
-  // Every filter starts from the photo as it was before any cleaning, so changes never stack.
-  // shortcut: pages scanned before untouched photos were kept have no o<N>.jpg, so this copies their already-cleaned page; Original can't bring the photo back, and the filter sheet says so.
-  await keepOriginal(uri);
-  if (filter.kind === 'original') {
-    await copyPage(originalOf(uri), uri);
-    return;
-  }
-  const image = await readPage(originalOf(uri));
+/**
+ * `image`, a page's untouched photo, with `filter` applied: a new image `width` pixels wide, as tall
+ * as the photo's shape makes it. Writes no file. The caller disposes the result; everything else
+ * made here is freed. The paper, ink and past-edge analysis runs on the same small copy at any
+ * width, so a preview and the page stored from the photo agree.
+ */
+export function filterImage(image: SkImage, filter: Filter, width: number = image.width()): SkImage {
   const w = image.width();
   const h = image.height();
+  const outW = Math.max(1, Math.round(width));
+  const outH = Math.max(1, Math.round((outW * h) / w));
+
+  if (filter.kind === 'original') {
+    const surface = Skia.Surface.Make(outW, outH)!;
+    // Mipmapped, so shrinking averages thin strokes in instead of skipping them.
+    surface.getCanvas().drawImageRectOptions(image, Skia.XYWHRect(0, 0, w, h), Skia.XYWHRect(0, 0, outW, outH), FilterMode.Linear, MipmapMode.Linear);
+    const copy = surface.makeImageSnapshot();
+    surface.dispose();
+    return copy;
+  }
+
   const scale = Math.min(1, SMALL_WIDTH / w);
   const sw = Math.ceil(w * scale);
   const sh = Math.ceil(h * scale);
-  const toFull = Skia.Matrix().scale(w / sw, h / sh);
-  const clamp = (img: SkImage, mode: FilterMode, matrix?: SkMatrix) =>
-    img.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, mode, MipmapMode.None, matrix);
+  const toOut = Skia.Matrix().scale(outW / sw, outH / sh);
+  const clamp = (img: SkImage, mode: FilterMode, matrix?: SkMatrix, mipmap = MipmapMode.None) =>
+    img.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, mode, mipmap, matrix);
 
   const surface = Skia.Surface.Make(sw, sh)!;
   const canvas = surface.getCanvas();
@@ -319,31 +329,55 @@ async function cleanPage(uri: string, filter: Filter): Promise<void> {
   canvas.drawImage(beyondMask, 0, 0, feather);
   const beyond = surface.makeImageSnapshot();
 
-  const pageShader = clamp(image, FilterMode.Nearest);
-  const paperShader = clamp(paper, FilterMode.Linear, toFull);
-  const textShader = clamp(ink, FilterMode.Linear, toFull);
-  const beyondShader = clamp(beyond, FilterMode.Linear, toFull);
+  // Only the final pass is drawn at the output size. A shrunk preview samples the photo mipmapped,
+  // so thin strokes average in instead of skipping.
+  const pageShader = clamp(
+    image,
+    outW < w ? FilterMode.Linear : FilterMode.Nearest,
+    Skia.Matrix().scale(outW / w, outH / h),
+    outW < w ? MipmapMode.Linear : MipmapMode.None,
+  );
+  const paperShader = clamp(paper, FilterMode.Linear, toOut);
+  const textShader = clamp(ink, FilterMode.Linear, toOut);
+  const beyondShader = clamp(beyond, FilterMode.Linear, toOut);
   const cleanShader = cleanEffect.makeShaderWithChildren(
     [KEEP[filter.strength].whitePoint, filter.kind === 'gray' ? 1 : 0],
     [pageShader, paperShader, textShader, beyondShader],
   );
-  const out = Skia.Surface.Make(w, h)!;
+  const out = Skia.Surface.Make(outW, outH)!;
   const paint = Skia.Paint();
   paint.setShader(cleanShader);
   out.getCanvas().drawPaint(paint);
   const snapshot = out.makeImageSnapshot();
   // A page holds about 100 MB of bitmaps: free them now, not whenever the garbage collector runs.
   for (const o of [
-    image, surface, smallPage, wipeInk, coarse, wipeText, fine, coarseShader, fineShader, pickShader,
+    surface, smallPage, wipeInk, coarse, wipeText, fine, coarseShader, fineShader, pickShader,
     pickPaper, paper, smallPageShader, inkShader, spreadInk, ink, beyondData, beyondMask, feather, beyond,
     pageShader, paperShader, textShader, beyondShader, cleanShader, out, paint,
   ]) {
     o.dispose();
   }
+  return snapshot;
+}
+
+async function cleanPage(uri: string, filter: Filter): Promise<void> {
+  // Every filter starts from the photo as it was before any cleaning, so changes never stack.
+  // shortcut: pages scanned before untouched photos were kept have no o<N>.jpg, so this copies their already-cleaned page; Original can't bring the photo back, and the filter sheet says so.
+  await keepOriginal(uri);
+  if (filter.kind === 'original') {
+    await copyPage(originalOf(uri), uri);
+    return;
+  }
+  const image = await readPage(originalOf(uri));
   try {
-    await replacePage(uri, snapshot);
+    const filtered = filterImage(image, filter);
+    try {
+      await replacePage(uri, filtered);
+    } finally {
+      filtered.dispose();
+    }
   } finally {
-    snapshot.dispose();
+    image.dispose();
   }
 }
 

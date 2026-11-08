@@ -2,9 +2,11 @@
  * @jest-environment @shopify/react-native-skia/jestEnv.js
  */
 /// <reference types="jest" />
-import { BlurStyle, ImageFormat, Skia } from '@shopify/react-native-skia';
+import {
+  AlphaType, BlurStyle, ColorType, FilterMode, ImageFormat, MipmapMode, Skia, type SkImage,
+} from '@shopify/react-native-skia';
 
-import { cleanPages, defaultFilter, setDefaultFilter } from './clean';
+import { cleanPages, defaultFilter, filterImage, setDefaultFilter, type Filter } from './clean';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
 const mockFiles = new Map<string, Uint8Array>();
@@ -373,4 +375,82 @@ it('leaves a page it cannot read as it is, cleans the rest, and counts the failu
   expect(failed).toBe(1);
   expect(mockFiles.get('file:///doc/scans/1/p1.jpg')).toBe(broken);
   expect(luma(mockFiles.get('file:///doc/scans/1/p2.jpg')!, 30, 400)).toBeGreaterThan(245);
+}, 30000);
+
+function decode(bytes: Uint8Array): SkImage {
+  return Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(bytes))!;
+}
+
+// An encoded page drawn small the way a preview of it would be.
+function shrunk(bytes: Uint8Array, width: number): SkImage {
+  const image = decode(bytes);
+  const height = Math.round((width * image.height()) / image.width());
+  const surface = Skia.Surface.Make(width, height)!;
+  surface.getCanvas().drawImageRectOptions(
+    image,
+    Skia.XYWHRect(0, 0, image.width(), image.height()),
+    Skia.XYWHRect(0, 0, width, height),
+    FilterMode.Linear,
+    MipmapMode.Linear,
+  );
+  image.dispose();
+  const out = surface.makeImageSnapshot();
+  surface.dispose();
+  return out;
+}
+
+// The mean difference per colour channel, 0-255.
+function meanDifference(a: SkImage, b: SkImage): number {
+  const pixels = { width: a.width(), height: a.height(), colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul };
+  const pa = a.readPixels(0, 0, pixels) as Uint8Array;
+  const pb = b.readPixels(0, 0, pixels) as Uint8Array;
+  let sum = 0;
+  for (let i = 0; i < pa.length; i += 4) {
+    sum += Math.abs(pa[i] - pb[i]) + Math.abs(pa[i + 1] - pb[i + 1]) + Math.abs(pa[i + 2] - pb[i + 2]);
+  }
+  return sum / ((pa.length / 4) * 3);
+}
+
+const KIND_STRENGTHS: Filter[] = (['original', 'clean', 'gray'] as const).flatMap((kind) =>
+  ([0, 1, 2] as const).map((strength) => ({ kind, strength })));
+
+it('makes a small filtered copy at every kind and strength without writing a file', () => {
+  const photo = decode(photographedPage());
+
+  try {
+    for (const filter of KIND_STRENGTHS) {
+      const preview = filterImage(photo, filter, 150);
+      expect([filter, preview.width(), preview.height()]).toEqual([filter, 150, 200]);
+      preview.dispose();
+    }
+  } finally {
+    photo.dispose();
+  }
+  expect(mockFiles.size).toBe(0);
+}, 30000);
+
+it('previews the page that storing the same filter gives, shrunk', async () => {
+  const PAGE = 'file:///doc/scans/1/p1.jpg';
+  mockFiles.set(PAGE, photographedPage());
+  // keepOriginal stores these bytes untouched, so this is the photo a preview starts from.
+  const photo = decode(mockFiles.get(PAGE)!);
+  const previews: SkImage[] = [];
+
+  try {
+    for (const filter of [{ kind: 'clean', strength: 1 }, { kind: 'gray', strength: 1 }] as Filter[]) {
+      await cleanPages([PAGE], filter);
+      const stored = shrunk(mockFiles.get(PAGE)!, 150);
+      const preview = filterImage(photo, filter, 150);
+      expect(meanDifference(preview, stored)).toBeLessThan(0.5);
+      stored.dispose();
+      previews.push(preview);
+    }
+    // A different filter differs far more than a preview does from its stored page.
+    const untouched = filterImage(photo, { kind: 'original', strength: 1 }, 150);
+    expect(meanDifference(untouched, previews[0])).toBeGreaterThan(10);
+    untouched.dispose();
+  } finally {
+    photo.dispose();
+    for (const preview of previews) preview.dispose();
+  }
 }, 30000);
