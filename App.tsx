@@ -9,6 +9,7 @@ import {
   Alert,
   BackHandler,
   FlatList,
+  I18nManager,
   Image,
   Linking,
   Modal,
@@ -24,7 +25,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 import { cleanPages, defaultFilter, setDefaultFilter, type Filter } from './clean';
 import { cropPage, findPage, isConvex, type FoundPage, type Point, type Quad } from './crop';
 import { clearScannerCache, pagesToSave, saveJpegs, savePdf } from './save';
-import { addPages, anyOriginalMissing, createScan, deleteScan, listScans, type Scan } from './scans';
+import { addPages, anyOriginalMissing, createScan, deleteScan, heldPhoto, listScans, type Scan } from './scans';
 import { rotatePage, uprightPages } from './upright';
 
 const C = {
@@ -464,8 +465,9 @@ function Detail(props: {
 }) {
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const [editorIndex, setEditorIndex] = useState<number | null>(null);
   const [current, setCurrent] = useState(0);
+  const [holding, setHolding] = useState(false);
   const [pagerHeight, setPagerHeight] = useState(0);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filter, setFilter] = useState<Filter>(defaultFilter);
@@ -482,6 +484,10 @@ function Detail(props: {
     [filterOpen, scan.pages, picked],
   );
   const disabled = busy && styles.disabled;
+  const closeEditor = () => {
+    setEditorIndex(null);
+    setHolding(false);
+  };
   return (
     <View style={[styles.flex, { paddingTop: insets.top + 8, paddingBottom: bottomPad(insets.bottom) }]}>
       <View style={styles.nav}>
@@ -568,13 +574,13 @@ function Detail(props: {
                 ) : (
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityLabel={`Preview page ${item.n}`}
+                    accessibilityLabel={`Edit page ${item.n}`}
                     accessibilityState={{ disabled: busy }}
                     disabled={busy}
                     onPress={() => {
                       const i = item.n! - 1;
                       setCurrent(i);
-                      setPreviewIndex(i);
+                      setEditorIndex(i);
                     }}
                     style={disabled}>
                     {image}
@@ -654,22 +660,32 @@ function Detail(props: {
         </View>
       </View>
       <Modal
-        visible={previewIndex !== null}
+        visible={editorIndex !== null}
         animationType="fade"
         statusBarTranslucent
-        onRequestClose={() => setPreviewIndex(null)}>
+        onRequestClose={closeEditor}>
         <StatusBar style="light" />
-        <View style={[styles.preview, { paddingTop: insets.top + 8, paddingBottom: bottomPad(insets.bottom) }]}>
+        <View style={[styles.editor, { paddingTop: insets.top + 8, paddingBottom: bottomPad(insets.bottom) }]}>
           <View style={styles.nav}>
-            <Text style={styles.previewCount} accessibilityLiveRegion="polite" maxFontSizeMultiplier={1.5}>
-              {current + 1} of {scan.pages.length}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Back to pages"
+              onPress={closeEditor}
+              style={styles.back}>
+              <Chevron color="#fff" left />
+              <Text style={styles.editorAction} maxFontSizeMultiplier={1.5}>Back</Text>
+            </Pressable>
+            <Text style={styles.editorCount} accessibilityLiveRegion="polite" maxFontSizeMultiplier={1.5}>
+              Page {current + 1} of {scan.pages.length}
             </Text>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Close preview"
-              onPress={() => setPreviewIndex(null)}
-              style={styles.navButton}>
-              <Text style={styles.previewClose} maxFontSizeMultiplier={1.5}>Close</Text>
+              accessibilityLabel={`Rotate page ${current + 1}`}
+              accessibilityState={{ disabled: busy }}
+              disabled={busy}
+              onPress={() => props.onRotate(scan.pages[current])}
+              style={[styles.navButton, disabled]}>
+              <Text style={styles.editorAction} maxFontSizeMultiplier={1.5}>Rotate</Text>
             </Pressable>
           </View>
           <FlatList
@@ -682,19 +698,51 @@ function Detail(props: {
             initialNumToRender={1}
             showsHorizontalScrollIndicator={false}
             keyExtractor={(uri) => uri}
-            initialScrollIndex={previewIndex ?? 0}
+            initialScrollIndex={editorIndex ?? 0}
             getItemLayout={(_, i) => ({ length: width, offset: width * i, index: i })}
-            onMomentumScrollEnd={(e) => setCurrent(Math.round(e.nativeEvent.contentOffset.x / width))}
+            scrollEventThrottle={16}
+            // Updated during the slide, not after it: Rotate turns this page and takes taps mid-slide.
+            onScroll={(e) => {
+              const slid = Math.round(e.nativeEvent.contentOffset.x / width);
+              // A horizontal list is mirrored on right-to-left phones, so page 1 sits at the far end.
+              const page = I18nManager.isRTL ? scan.pages.length - 1 - slid : slid;
+              if (page !== current) {
+                setCurrent(page);
+                setHolding(false);
+                // Android reads the count's live region itself; iOS needs an explicit announcement.
+                if (Platform.OS === 'ios') AccessibilityInfo.announceForAccessibility(`Page ${page + 1} of ${scan.pages.length}`);
+              }
+            }}
             renderItem={({ item, index }) => (
-              <Image
-                source={{ uri: props.shown(item) }}
-                accessible
+              <Pressable
+                accessibilityRole="image"
                 accessibilityLabel={`Page ${index + 1} of ${scan.pages.length}`}
-                style={{ width, height: pagerHeight }}
-                resizeMode="contain"
-              />
+                accessibilityHint="Hold to show the untouched photo"
+                onLongPress={() => setHolding(true)}
+                onPressOut={() => setHolding(false)}
+                style={{ width, height: pagerHeight }}>
+                <Image
+                  source={{
+                    uri:
+                      index === current && holding
+                        ? heldPhoto(item) + props.shown(item).slice(item.length)
+                        : props.shown(item),
+                  }}
+                  style={{ width, height: pagerHeight }}
+                  resizeMode="contain"
+                />
+              </Pressable>
             )}
           />
+          <View style={styles.editorDone}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Done"
+              onPress={closeEditor}
+              style={[styles.action, styles.primary]}>
+              <Text style={styles.primaryText} maxFontSizeMultiplier={1.5}>Done</Text>
+            </Pressable>
+          </View>
         </View>
       </Modal>
       <Modal
@@ -1039,7 +1087,8 @@ function Chevron(props: { color: string; left?: boolean }) {
         borderTopWidth: 2,
         borderRightWidth: 2,
         borderRadius: 1,
-        transform: [{ rotate: props.left ? '-135deg' : '45deg' }],
+        // Right-to-left phones swap the right border to the left, so the turn runs the other way.
+        transform: [{ rotate: `${(props.left ? -135 : 45) * (I18nManager.isRTL ? -1 : 1)}deg` }],
         marginLeft: props.left ? 4 : 0,
       }}
     />
@@ -1166,9 +1215,10 @@ const styles = StyleSheet.create({
   back: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 8 },
   backText: { fontSize: 17, fontWeight: '500', color: C.accent },
   navCount: { flexShrink: 1, paddingHorizontal: 8, fontSize: 17, fontWeight: '600', color: C.text },
-  preview: { flex: 1, backgroundColor: C.text },
-  previewCount: { flexShrink: 1, paddingHorizontal: 20, fontSize: 17, fontWeight: '600', color: '#fff' },
-  previewClose: { fontSize: 16, fontWeight: '500', color: '#fff' },
+  editor: { flex: 1, backgroundColor: C.text },
+  editorCount: { flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '600', color: '#fff' },
+  editorAction: { fontSize: 16, fontWeight: '500', color: '#fff' },
+  editorDone: { flexDirection: 'row', paddingHorizontal: 20, paddingTop: 12 },
   navRight: { flexDirection: 'row', alignItems: 'center' },
   navButton: { minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
   selectText: { fontSize: 16, fontWeight: '500', color: C.accent },

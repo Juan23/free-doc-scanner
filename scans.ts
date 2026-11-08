@@ -36,6 +36,12 @@ export function anyOriginalMissing(pages: string[]): boolean {
   });
 }
 
+/** The untouched photo of the page at `uri` when one is stored, else the page itself. */
+export function heldPhoto(uri: string): string {
+  const original = originalOf(uri);
+  return original !== uri && new File(original).exists ? original : uri;
+}
+
 /** Keeps the page at `uri` as its untouched original, once: an original already there stays. */
 export async function keepOriginal(uri: string): Promise<void> {
   const original = originalOf(uri);
