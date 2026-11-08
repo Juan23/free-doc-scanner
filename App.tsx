@@ -308,7 +308,6 @@ function Home(props: {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const card = (width - 40 - 14) / 2;
-  // Room the floating Scan pill takes at the bottom.
   const pillRoom = PILL_H + bottomPad(insets.bottom);
   const header = (
     <View style={styles.homeHeader}>
