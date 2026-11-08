@@ -698,11 +698,15 @@ function Detail(props: {
             showsHorizontalScrollIndicator={false}
             keyExtractor={(uri) => uri}
             initialScrollIndex={previewIndex ?? 0}
-            extraData={[props.shown, holding]}
             getItemLayout={(_, i) => ({ length: width, offset: width * i, index: i })}
-            onMomentumScrollEnd={(e) => {
-              setCurrent(Math.round(e.nativeEvent.contentOffset.x / width));
-              setHolding(false);
+            scrollEventThrottle={16}
+            // Updated during the slide, not after it: Rotate turns this page and takes taps mid-slide.
+            onScroll={(e) => {
+              const page = Math.round(e.nativeEvent.contentOffset.x / width);
+              if (page !== current) {
+                setCurrent(page);
+                setHolding(false);
+              }
             }}
             renderItem={({ item, index }) => (
               <Pressable
