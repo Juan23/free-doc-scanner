@@ -6,7 +6,7 @@ import {
   AlphaType, BlurStyle, ColorType, FilterMode, ImageFormat, MipmapMode, Skia, type SkImage,
 } from '@shopify/react-native-skia';
 
-import { changedText, cleanPages, defaultFilter, filterImage, filterPreviews, pageFilter, setDefaultFilter, type Filter } from './clean';
+import { cleanPages, defaultFilter, filterImage, filterPreviews, pageFilter, setDefaultFilter, type Filter } from './clean';
 import { rotatePage } from './upright';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
@@ -616,8 +616,4 @@ describe('using one page\'s filter on every page', () => {
 
     expect([pageFilter(pages[0]), pageFilter(pages[1]), pageFilter(pages[2])]).toEqual([grayStrong, null, grayStrong]);
   }, 60000);
-
-  it('words the count', () => {
-    expect([changedText(1), changedText(3)]).toEqual(['1 page changed', '3 pages changed']);
-  });
 });

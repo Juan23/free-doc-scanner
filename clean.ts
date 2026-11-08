@@ -438,9 +438,6 @@ async function cleanPage(uri: string, filter: Filter): Promise<void> {
   }
 }
 
-/** "1 page changed", "3 pages changed". */
-export const changedText = (n: number) => `${n} ${n === 1 ? 'page' : 'pages'} changed`;
-
 /**
  * Whitens the paper of stored page JPEGs (shadows, tint, grain, specks) and darkens the ink,
  * replacing each page. Original puts each page's untouched photo back. A page that can't be

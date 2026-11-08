@@ -16,13 +16,15 @@ import {
   type GestureResponderEvent,
   Platform,
   Pressable,
+  type StyleProp,
   StyleSheet,
   Text,
   useWindowDimensions,
+  type ViewStyle,
   View,
 } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { changedText, cleanPages, defaultFilter, filterPreviews, pageFilter, setDefaultFilter, type Filter } from './clean';
+import { cleanPages, defaultFilter, filterPreviews, pageFilter, setDefaultFilter, type Filter } from './clean';
 import { cropPage, findPage, isConvex, type FoundPage, type Point, type Quad } from './crop';
 import { clearScannerCache, pagesToSave, saveJpegs, savePdf } from './save';
 import { addPages, anyOriginalMissing, createScan, deleteScan, heldPhoto, listScans, type Scan } from './scans';
@@ -212,12 +214,12 @@ function Root() {
     }, 'Could not rotate');
 
   // Pages that did change reload even when another failed. The filter is remembered for new scans only when every page changed.
-  // `count` also shows how many pages changed (the editor's "Use on all pages"); other callers show nothing.
-  const filterPages = (pages: string[], filter: Filter, count = false) =>
+  const filterPages = (pages: string[], filter: Filter, showCount = false) =>
     guarded(async () => {
       const failed = await cleanPages(pages, filter);
       touchPages(pages);
-      if (count && failed < pages.length) showToast(changedText(pages.length - failed));
+      const changed = pages.length - failed;
+      if (showCount && changed > 0) showToast(`${changed} ${changed === 1 ? 'page' : 'pages'} changed`);
       if (failed) throw new Error(failed === 1 ? 'One page could not be changed.' : `${failed} pages could not be changed.`);
       chooseFilter(filter);
     }, 'Could not change filter');
@@ -678,12 +680,7 @@ function Detail(props: {
       />
       <View style={styles.bottom}>
         <View accessibilityLiveRegion="polite" collapsable={false}>
-          {!!props.message && (
-            <View style={styles.toast}>
-              <Check />
-              <Text style={styles.toastText}>{props.message}</Text>
-            </View>
-          )}
+          {!!props.message && <Toast message={props.message} />}
         </View>
         <View style={styles.actions}>
           <Pressable
@@ -747,53 +744,63 @@ function Detail(props: {
               <Text style={styles.editorAction} maxFontSizeMultiplier={1.5}>Rotate</Text>
             </Pressable>
           </View>
-          <FlatList
-            style={styles.flex}
-            onLayout={(e) => setPagerHeight(e.nativeEvent.layout.height)}
-            data={scan.pages}
-            horizontal
-            pagingEnabled
-            windowSize={3}
-            initialNumToRender={1}
-            showsHorizontalScrollIndicator={false}
-            keyExtractor={(uri) => uri}
-            initialScrollIndex={editorIndex ?? 0}
-            getItemLayout={(_, i) => ({ length: width, offset: width * i, index: i })}
-            scrollEventThrottle={16}
-            // Updated during the slide, not after it: Rotate turns this page and takes taps mid-slide.
-            onScroll={(e) => {
-              const slid = Math.round(e.nativeEvent.contentOffset.x / width);
-              // A horizontal list is mirrored on right-to-left phones, so page 1 sits at the far end.
-              const page = I18nManager.isRTL ? scan.pages.length - 1 - slid : slid;
-              if (page !== current) {
-                setCurrent(page);
-                setStrengthsOpen(false);
-                setHolding(false);
-                // Android reads the count's live region itself; iOS needs an explicit announcement.
-                if (Platform.OS === 'ios') AccessibilityInfo.announceForAccessibility(`Page ${page + 1} of ${scan.pages.length}`);
-              }
-            }}
-            renderItem={({ item, index }) => (
-              <Pressable
-                accessibilityRole="image"
-                accessibilityLabel={`Page ${index + 1} of ${scan.pages.length}`}
-                accessibilityHint="Hold to show the untouched photo"
-                onLongPress={() => setHolding(true)}
-                onPressOut={() => setHolding(false)}
-                style={{ width, height: pagerHeight }}>
-                <Image
-                  source={{
-                    uri:
-                      index === current && holding
-                        ? heldPhoto(item) + props.shown(item).slice(item.length)
-                        : props.shown(item),
-                  }}
-                  style={{ width, height: pagerHeight }}
-                  resizeMode="contain"
-                />
-              </Pressable>
-            )}
-          />
+          <View style={styles.flex}>
+            <FlatList
+              style={styles.flex}
+              onLayout={(e) => setPagerHeight(e.nativeEvent.layout.height)}
+              data={scan.pages}
+              horizontal
+              pagingEnabled
+              windowSize={3}
+              initialNumToRender={1}
+              showsHorizontalScrollIndicator={false}
+              keyExtractor={(uri) => uri}
+              initialScrollIndex={editorIndex ?? 0}
+              getItemLayout={(_, i) => ({ length: width, offset: width * i, index: i })}
+              scrollEventThrottle={16}
+              // Updated during the slide, not after it: Rotate turns this page and takes taps mid-slide.
+              onScroll={(e) => {
+                const slid = Math.round(e.nativeEvent.contentOffset.x / width);
+                // A horizontal list is mirrored on right-to-left phones, so page 1 sits at the far end.
+                const page = I18nManager.isRTL ? scan.pages.length - 1 - slid : slid;
+                if (page !== current) {
+                  setCurrent(page);
+                  setStrengthsOpen(false);
+                  setHolding(false);
+                  // Android reads the count's live region itself; iOS needs an explicit announcement.
+                  if (Platform.OS === 'ios') AccessibilityInfo.announceForAccessibility(`Page ${page + 1} of ${scan.pages.length}`);
+                }
+              }}
+              renderItem={({ item, index }) => (
+                <Pressable
+                  accessibilityRole="image"
+                  accessibilityLabel={`Page ${index + 1} of ${scan.pages.length}`}
+                  accessibilityHint="Hold to show the untouched photo"
+                  onLongPress={() => setHolding(true)}
+                  onPressOut={() => setHolding(false)}
+                  style={{ width, height: pagerHeight }}>
+                  <Image
+                    source={{
+                      uri:
+                        index === current && holding
+                          ? heldPhoto(item) + props.shown(item).slice(item.length)
+                          : props.shown(item),
+                    }}
+                    style={{ width, height: pagerHeight }}
+                    resizeMode="contain"
+                  />
+                </Pressable>
+              )}
+            />
+            {/* Over the pager's top edge, so the pager and strip never move. The grid's toast sits behind this Modal. */}
+            <View
+              style={styles.editorToastSlot}
+              pointerEvents="none"
+              accessibilityLiveRegion="polite"
+              collapsable={false}>
+              {!!props.message && <Toast message={props.message} style={styles.editorToast} />}
+            </View>
+          </View>
           {editedPage && (
             <View style={styles.strip}>
               {strengthsOpen && recorded && recorded.kind !== 'original' && (
@@ -881,18 +888,6 @@ function Detail(props: {
             </Pressable>
           </View>
           {/* Over the page's top edge, so the pager and strip never move. The grid's toast sits behind this Modal. */}
-          <View
-            style={[styles.editorToastSlot, { top: insets.top + 8 + 52 }]}
-            pointerEvents="none"
-            accessibilityLiveRegion="polite"
-            collapsable={false}>
-            {!!props.message && (
-              <View style={[styles.toast, styles.editorToast]}>
-                <Check />
-                <Text style={styles.toastText}>{props.message}</Text>
-              </View>
-            )}
-          </View>
         </View>
       </Modal>
       <Modal
@@ -1261,6 +1256,15 @@ function Check() {
   );
 }
 
+function Toast({ message, style }: { message: string; style?: StyleProp<ViewStyle> }) {
+  return (
+    <View style={[styles.toast, style]}>
+      <Check />
+      <Text style={styles.toastText}>{message}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   screen: { flex: 1, backgroundColor: '#fff' },
@@ -1405,7 +1409,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   doneText: { fontSize: 16, fontWeight: '600', color: C.text },
-  editorToastSlot: { position: 'absolute', left: 20, right: 20, alignItems: 'center' },
+  editorToastSlot: { position: 'absolute', top: 8, left: 20, right: 20, alignItems: 'center' },
   editorToast: { backgroundColor: '#2E323A', marginBottom: 0 },
   navRight: { flexDirection: 'row', alignItems: 'center' },
   navButton: { minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
