@@ -1087,7 +1087,8 @@ function Chevron(props: { color: string; left?: boolean }) {
         borderTopWidth: 2,
         borderRightWidth: 2,
         borderRadius: 1,
-        transform: [{ rotate: props.left ? '-135deg' : '45deg' }],
+        // Right-to-left phones swap the right border to the left, so the turn runs the other way.
+        transform: [{ rotate: `${(props.left ? -135 : 45) * (I18nManager.isRTL ? -1 : 1)}deg` }],
         marginLeft: props.left ? 4 : 0,
       }}
     />
