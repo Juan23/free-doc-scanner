@@ -70,6 +70,8 @@ function Root() {
   // Edits per page (hand turns and filter changes), added to its URI as a query: Image keeps showing a page it already
   // loaded from the same URI, and both platforms read a file:// image by its path, ignoring the query.
   const [edits, setEdits] = useState<Record<string, number>>({});
+  // Turns per page; thumbnails come from the untouched photo, so only a turn changes them.
+  const [turns, setTurns] = useState<Record<string, number>>({});
   // State updates are async, so a second tap in the same frame would still see busy=false.
   const inFlight = useRef(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -205,30 +207,21 @@ function Root() {
   const rotate = (page: string) =>
     guarded(async () => {
       await rotatePage(page, 1);
+      setTurns((t) => ({ ...t, [page]: (t[page] ?? 0) + 1 }));
       touchPages([page]);
     }, 'Could not rotate');
 
-  // Applies to the picked pages, or every page when none are picked.
-  const applyFilter = (filter: Filter) => {
-    if (!open) return;
-    const scan = open;
+  // Pages that did change reload even when another failed. The last filter picked is the filter for new scans.
+  const filterPages = (pages: string[], filter: Filter) =>
     guarded(async () => {
-      const pages = pagesToSave(scan.pages, picked ?? []);
       const failed = await cleanPages(pages, filter);
-      // Pages that did change must reload even when another failed.
       touchPages(pages);
       if (failed) throw new Error(failed === 1 ? 'One page could not be changed.' : `${failed} pages could not be changed.`);
-    }, 'Could not change filter');
-  };
-
-  // The page changes at once; the last filter picked is the filter for new scans.
-  const filterPage = (page: string, filter: Filter) =>
-    guarded(async () => {
-      const failed = await cleanPages([page], filter);
-      touchPages([page]);
-      if (failed) throw new Error('One page could not be changed.');
       chooseFilter(filter);
     }, 'Could not change filter');
+
+  // Applies to the picked pages, or every page when none are picked.
+  const applyFilter = (filter: Filter) => open && filterPages(pagesToSave(open.pages, picked ?? []), filter);
 
   const shown = (page: string) => (edits[page] ? `${page}?v=${edits[page]}` : page);
 
@@ -281,12 +274,13 @@ function Root() {
           picked={picked}
           onPick={setPicked}
           shown={shown}
+          turns={turns}
           onBack={() => setOpen(null)}
           onDelete={confirmDelete}
           onAdd={addToOpen}
           onRotate={rotate}
           onApplyFilter={applyFilter}
-          onFilterPage={filterPage}
+          onFilterPage={(page, filter) => filterPages([page], filter)}
           onSave={save}
         />
       ) : (
@@ -469,6 +463,7 @@ function Detail(props: {
   picked: string[] | null;
   onPick: (pages: string[] | null) => void;
   shown: (page: string) => string;
+  turns: Record<string, number>;
   onBack: () => void;
   onDelete: () => void;
   onAdd: () => void;
@@ -485,10 +480,12 @@ function Detail(props: {
   const [pagerHeight, setPagerHeight] = useState(0);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filter, setFilter] = useState<Filter>(defaultFilter);
-  // The page whose strengths are shown, so turning to another page closes them.
-  const [strengthsFor, setStrengthsFor] = useState<string | null>(null);
-  // Thumbnails with the page edit they were made for; any other page or edit shows empty boxes.
-  const [made, setMade] = useState<{ key: string; images: SkImage[] }>({ key: '', images: [] });
+  const [strengthsOpen, setStrengthsOpen] = useState(false);
+  // Thumbnails and the page they were made for; another page shows empty boxes until its own arrive.
+  const [previews, setPreviews] = useState<{ page: string; images: Record<Filter['kind'], SkImage> | null }>({
+    page: '',
+    images: null,
+  });
   const cell = (width - 40 - 28) / 3;
   const { scan, busy, picked } = props;
   const editing = editorIndex !== null;
@@ -500,8 +497,14 @@ function Detail(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [editing, editedPage, editedKey],
   );
-  const strengthsOpen = strengthsFor === editedPage;
-  const thumbs = made.key === editedKey ? made.images : [];
+  // Pages scanned before untouched photos were kept have no photo for Original to bring back.
+  const olderPage = useMemo(
+    () => !!editing && !!editedPage && !recorded && anyOriginalMissing([editedPage]),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [editing, editedPage, editedKey, recorded],
+  );
+  const thumbs = previews.page === editedPage ? previews.images : null;
+  const turned = editedPage ? props.turns[editedPage] : 0;
   useEffect(() => {
     if (!editing || !editedPage) return;
     let stale = false;
@@ -509,17 +512,17 @@ function Detail(props: {
     const timer = setTimeout(async () => {
       try {
         const images = await filterPreviews(editedPage, THUMB_W * 2);
-        if (stale) images.forEach((m) => m.dispose());
-        else setMade({ key: editedKey!, images });
+        if (stale) Object.values(images).forEach((m) => m.dispose());
+        else setPreviews({ page: editedPage, images });
       } catch {}
     }, 100);
     return () => {
       stale = true;
       clearTimeout(timer);
     };
-  }, [editing, editedPage, editedKey]);
+  }, [editing, editedPage, turned]);
   // Runs when the images are replaced, and when the editor closes or unmounts.
-  useEffect(() => () => made.images.forEach((t) => t.dispose()), [made]);
+  useEffect(() => () => Object.values(previews.images ?? {}).forEach((t) => t.dispose()), [previews]);
   const available = scannerAvailable();
   const data: Cell[] = [
     ...scan.pages.map((uri, i) => ({ key: uri, uri, n: i + 1 })),
@@ -534,7 +537,8 @@ function Detail(props: {
   const closeEditor = () => {
     setEditorIndex(null);
     setHolding(false);
-    setMade({ key: '', images: [] });
+    setStrengthsOpen(false);
+    setPreviews({ page: '', images: null });
   };
   return (
     <View style={[styles.flex, { paddingTop: insets.top + 8, paddingBottom: bottomPad(insets.bottom) }]}>
@@ -756,6 +760,7 @@ function Detail(props: {
               const page = I18nManager.isRTL ? scan.pages.length - 1 - slid : slid;
               if (page !== current) {
                 setCurrent(page);
+                setStrengthsOpen(false);
                 setHolding(false);
                 // Android reads the count's live region itself; iOS needs an explicit announcement.
                 if (Platform.OS === 'ios') AccessibilityInfo.announceForAccessibility(`Page ${page + 1} of ${scan.pages.length}`);
@@ -806,28 +811,28 @@ function Detail(props: {
                 </View>
               )}
               <View style={styles.thumbs} accessibilityRole="radiogroup" accessibilityLabel="Filter">
-                {FILTER_KINDS.map(({ kind, label }, i) => {
+                {FILTER_KINDS.map(({ kind, label }) => {
                   const checked = recorded?.kind === kind;
-                  const strengthy = checked && kind !== 'original';
+                  const hasStrengths = checked && kind !== 'original';
                   return (
                     <Pressable
                       key={kind}
                       accessibilityRole="radio"
                       accessibilityLabel={label}
-                      accessibilityHint={strengthy ? 'Tap again to show or hide the strengths' : undefined}
+                      accessibilityHint={hasStrengths ? 'Tap again to show or hide the strengths' : undefined}
                       accessibilityState={{ checked, disabled: busy }}
                       disabled={busy}
                       onPress={() => {
-                        if (strengthy) setStrengthsFor(strengthsOpen ? null : editedPage);
+                        if (hasStrengths) setStrengthsOpen(!strengthsOpen);
                         else if (!checked) {
-                          setStrengthsFor(null);
+                          setStrengthsOpen(false);
                           props.onFilterPage(editedPage, { kind, strength: 1 });
                         }
                       }}
                       style={[styles.thumb, disabled]}>
                       <View style={[styles.thumbBox, checked && styles.thumbBoxOn]}>
                         <Canvas style={styles.thumbCanvas}>
-                          {thumbs[i] && <SkiaImage image={thumbs[i]} x={0} y={0} width={THUMB_W} height={THUMB_H} fit="cover" />}
+                          {thumbs && <SkiaImage image={thumbs[kind]} x={0} y={0} width={THUMB_W} height={THUMB_H} fit="cover" />}
                         </Canvas>
                       </View>
                       <Text style={[styles.thumbLabel, checked && styles.thumbLabelOn]} maxFontSizeMultiplier={1.5}>
@@ -837,6 +842,11 @@ function Detail(props: {
                   );
                 })}
               </View>
+              {olderPage && (
+                <Text style={styles.stripNote} maxFontSizeMultiplier={1.5}>
+                  Pages scanned before this version keep their clean-up.
+                </Text>
+              )}
             </View>
           )}
           <View style={styles.editorDone}>
@@ -1329,6 +1339,7 @@ const styles = StyleSheet.create({
   strengthOn: { backgroundColor: '#fff' },
   strengthText: { fontSize: 15, color: '#C9CDD4' },
   strengthTextOn: { fontWeight: '700', color: C.text },
+  stripNote: { textAlign: 'center', fontSize: 13, color: '#A9AFBA', marginTop: 8 },
   thumbs: { flexDirection: 'row', justifyContent: 'center', gap: 18 },
   thumb: { width: 84, alignItems: 'center', gap: 6 },
   thumbBox: { padding: 3, borderRadius: 10, borderWidth: 2, borderColor: 'transparent' },

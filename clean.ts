@@ -362,49 +362,48 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
 
 // The filter a page was last given, as JSON beside it: p3.jpg has f3.json. Pages from before this
 // have none.
-const filterOf = (uri: string) => new File(uri.replace(/p(\d+)\.jpg$/, 'f$1.json'));
+const filterRecord = (uri: string) => new File(uri.replace(/p(\d+)\.jpg$/, 'f$1.json'));
 
 /** The filter the page at `uri` was last given, or null when none is recorded. */
 export function pageFilter(uri: string): Filter | null {
   try {
-    const f = filterOf(uri);
+    const f = filterRecord(uri);
     return f.exists ? parseFilter(f.textSync()) : null;
   } catch {
     return null;
   }
 }
 
-const STRIP: Filter[] = [ORIGINAL, NORMAL, { kind: 'gray', strength: 1 }];
+const PREVIEW_FILTERS: Filter[] = [ORIGINAL, NORMAL, { kind: 'gray', strength: 1 }];
 
 /**
  * Original, Clean and Grayscale at Normal, `width` pixels wide, from the page's untouched photo
  * (the page itself when it has none). Writes no file. The caller disposes the images.
  */
-export async function filterPreviews(uri: string, width: number): Promise<SkImage[]> {
+export async function filterPreviews(uri: string, width: number): Promise<Record<Filter['kind'], SkImage>> {
   const photo = await readPage(heldPhoto(uri));
-  const previews: SkImage[] = [];
+  const previews: Partial<Record<Filter['kind'], SkImage>> = {};
   try {
-    for (const filter of STRIP) {
+    for (const filter of PREVIEW_FILTERS) {
       // Lets taps and slides through between the heavy steps.
       await new Promise((r) => setTimeout(r, 0));
-      previews.push(filterImage(photo, filter, width));
+      previews[filter.kind] = filterImage(photo, filter, width);
     }
   } catch (e) {
-    for (const p of previews) p.dispose();
+    for (const p of Object.values(previews)) p.dispose();
     throw e;
   } finally {
     photo.dispose();
   }
-  return previews;
+  return previews as Record<Filter['kind'], SkImage>;
 }
 
 async function cleanPage(uri: string, filter: Filter): Promise<void> {
   // Every filter starts from the photo as it was before any cleaning, so changes never stack.
-  // shortcut: pages scanned before untouched photos were kept have no o<N>.jpg, so this copies their already-cleaned page; Original can't bring the photo back, and the filter sheet says so.
+  // shortcut: pages scanned before untouched photos were kept have no o<N>.jpg, so this copies their already-cleaned page; Original can't bring the photo back, and the filter sheet and page editor say so.
   await keepOriginal(uri);
   if (filter.kind === 'original') {
     await copyPage(originalOf(uri), uri);
-    filterOf(uri).writeSync(JSON.stringify(filter));
     return;
   }
   const image = await readPage(originalOf(uri));
@@ -415,7 +414,6 @@ async function cleanPage(uri: string, filter: Filter): Promise<void> {
     } finally {
       filtered.dispose();
     }
-    filterOf(uri).writeSync(JSON.stringify(filter));
   } finally {
     image.dispose();
   }
@@ -432,6 +430,7 @@ export async function cleanPages(pageUris: string[], filter: Filter = NORMAL): P
   for (const uri of pageUris) {
     try {
       await cleanPage(uri, filter);
+      filterRecord(uri).writeSync(JSON.stringify(filter));
     } catch {
       failed++;
     }

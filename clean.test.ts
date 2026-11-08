@@ -537,21 +537,21 @@ it('previews Original, Clean and Grayscale Normal from the untouched photo, writ
   const previews = await filterPreviews(PAGE1, 150);
 
   try {
-    expect(previews.map((p) => [p.width(), p.height()])).toEqual([[150, 200], [150, 200], [150, 200]]);
+    expect(Object.values(previews).map((p) => [p.width(), p.height()])).toEqual([[150, 200], [150, 200], [150, 200]]);
     const expected = [
       { kind: 'original', strength: 1 },
       { kind: 'clean', strength: 1 },
       { kind: 'gray', strength: 1 },
     ] as const;
-    expected.forEach((filter, i) => {
+    expected.forEach((filter) => {
       const direct = filterImage(source, filter, 150);
-      expect(meanDifference(previews[i], direct)).toBeLessThan(0.5);
+      expect(meanDifference(previews[filter.kind], direct)).toBeLessThan(0.5);
       direct.dispose();
     });
     expect(mockFiles).toEqual(files);
   } finally {
     source.dispose();
-    for (const p of previews) p.dispose();
+    for (const p of Object.values(previews)) p.dispose();
   }
 }, 30000);
 
@@ -560,7 +560,8 @@ it('previews a page that has no original from the page itself', async () => {
 
   const previews = await filterPreviews(PAGE1, 150);
 
-  expect(previews.map((p) => p.width())).toEqual([150, 150, 150]);
-  for (const p of previews) p.dispose();
+  expect(Object.keys(previews).sort()).toEqual(['clean', 'gray', 'original']);
+  expect(Object.values(previews).map((p) => p.width())).toEqual([150, 150, 150]);
+  for (const p of Object.values(previews)) p.dispose();
   expect([...mockFiles.keys()]).toEqual([PAGE1]);
 }, 30000);
