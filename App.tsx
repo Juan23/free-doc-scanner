@@ -683,7 +683,7 @@ function Detail(props: {
               accessibilityState={{ disabled: busy }}
               disabled={busy}
               onPress={() => props.onRotate(scan.pages[current])}
-              style={[styles.navButton, busy && styles.disabled]}>
+              style={[styles.navButton, disabled]}>
               <Text style={styles.previewAction} maxFontSizeMultiplier={1.5}>Rotate</Text>
             </Pressable>
           </View>
@@ -706,6 +706,7 @@ function Detail(props: {
             }}
             renderItem={({ item, index }) => (
               <Pressable
+                accessibilityRole="image"
                 accessibilityLabel={`Page ${index + 1} of ${scan.pages.length}`}
                 accessibilityHint="Hold to show the untouched photo"
                 onLongPress={() => setHolding(true)}
