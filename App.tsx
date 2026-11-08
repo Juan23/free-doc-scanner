@@ -9,6 +9,7 @@ import {
   Alert,
   BackHandler,
   FlatList,
+  I18nManager,
   Image,
   Linking,
   Modal,
@@ -464,7 +465,7 @@ function Detail(props: {
 }) {
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const [editorIndex, setEditorIndex] = useState<number | null>(null);
   const [current, setCurrent] = useState(0);
   const [holding, setHolding] = useState(false);
   const [pagerHeight, setPagerHeight] = useState(0);
@@ -483,8 +484,8 @@ function Detail(props: {
     [filterOpen, scan.pages, picked],
   );
   const disabled = busy && styles.disabled;
-  const closePreview = () => {
-    setPreviewIndex(null);
+  const closeEditor = () => {
+    setEditorIndex(null);
     setHolding(false);
   };
   return (
@@ -573,13 +574,13 @@ function Detail(props: {
                 ) : (
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityLabel={`Preview page ${item.n}`}
+                    accessibilityLabel={`Edit page ${item.n}`}
                     accessibilityState={{ disabled: busy }}
                     disabled={busy}
                     onPress={() => {
                       const i = item.n! - 1;
                       setCurrent(i);
-                      setPreviewIndex(i);
+                      setEditorIndex(i);
                     }}
                     style={disabled}>
                     {image}
@@ -659,22 +660,22 @@ function Detail(props: {
         </View>
       </View>
       <Modal
-        visible={previewIndex !== null}
+        visible={editorIndex !== null}
         animationType="fade"
         statusBarTranslucent
-        onRequestClose={closePreview}>
+        onRequestClose={closeEditor}>
         <StatusBar style="light" />
-        <View style={[styles.preview, { paddingTop: insets.top + 8, paddingBottom: bottomPad(insets.bottom) }]}>
+        <View style={[styles.editor, { paddingTop: insets.top + 8, paddingBottom: bottomPad(insets.bottom) }]}>
           <View style={styles.nav}>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Back to pages"
-              onPress={closePreview}
+              onPress={closeEditor}
               style={styles.back}>
               <Chevron color="#fff" left />
-              <Text style={styles.previewAction} maxFontSizeMultiplier={1.5}>Back</Text>
+              <Text style={styles.editorAction} maxFontSizeMultiplier={1.5}>Back</Text>
             </Pressable>
-            <Text style={styles.previewCount} accessibilityLiveRegion="polite" maxFontSizeMultiplier={1.5}>
+            <Text style={styles.editorCount} accessibilityLiveRegion="polite" maxFontSizeMultiplier={1.5}>
               Page {current + 1} of {scan.pages.length}
             </Text>
             <Pressable
@@ -684,7 +685,7 @@ function Detail(props: {
               disabled={busy}
               onPress={() => props.onRotate(scan.pages[current])}
               style={[styles.navButton, disabled]}>
-              <Text style={styles.previewAction} maxFontSizeMultiplier={1.5}>Rotate</Text>
+              <Text style={styles.editorAction} maxFontSizeMultiplier={1.5}>Rotate</Text>
             </Pressable>
           </View>
           <FlatList
@@ -697,15 +698,19 @@ function Detail(props: {
             initialNumToRender={1}
             showsHorizontalScrollIndicator={false}
             keyExtractor={(uri) => uri}
-            initialScrollIndex={previewIndex ?? 0}
+            initialScrollIndex={editorIndex ?? 0}
             getItemLayout={(_, i) => ({ length: width, offset: width * i, index: i })}
             scrollEventThrottle={16}
             // Updated during the slide, not after it: Rotate turns this page and takes taps mid-slide.
             onScroll={(e) => {
-              const page = Math.round(e.nativeEvent.contentOffset.x / width);
+              const slid = Math.round(e.nativeEvent.contentOffset.x / width);
+              // A horizontal list is mirrored on right-to-left phones, so page 1 sits at the far end.
+              const page = I18nManager.isRTL ? scan.pages.length - 1 - slid : slid;
               if (page !== current) {
                 setCurrent(page);
                 setHolding(false);
+                // Android reads the count's live region itself; iOS needs an explicit announcement.
+                if (Platform.OS === 'ios') AccessibilityInfo.announceForAccessibility(`Page ${page + 1} of ${scan.pages.length}`);
               }
             }}
             renderItem={({ item, index }) => (
@@ -729,11 +734,11 @@ function Detail(props: {
               </Pressable>
             )}
           />
-          <View style={styles.previewDone}>
+          <View style={styles.editorDone}>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Done"
-              onPress={closePreview}
+              onPress={closeEditor}
               style={[styles.action, styles.primary]}>
               <Text style={styles.primaryText} maxFontSizeMultiplier={1.5}>Done</Text>
             </Pressable>
@@ -1209,10 +1214,10 @@ const styles = StyleSheet.create({
   back: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 8 },
   backText: { fontSize: 17, fontWeight: '500', color: C.accent },
   navCount: { flexShrink: 1, paddingHorizontal: 8, fontSize: 17, fontWeight: '600', color: C.text },
-  preview: { flex: 1, backgroundColor: C.text },
-  previewCount: { flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '600', color: '#fff' },
-  previewAction: { fontSize: 16, fontWeight: '500', color: '#fff' },
-  previewDone: { flexDirection: 'row', paddingHorizontal: 20, paddingTop: 12 },
+  editor: { flex: 1, backgroundColor: C.text },
+  editorCount: { flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '600', color: '#fff' },
+  editorAction: { fontSize: 16, fontWeight: '500', color: '#fff' },
+  editorDone: { flexDirection: 'row', paddingHorizontal: 20, paddingTop: 12 },
   navRight: { flexDirection: 'row', alignItems: 'center' },
   navButton: { minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
   selectText: { fontSize: 16, fontWeight: '500', color: C.accent },
