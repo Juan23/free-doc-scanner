@@ -3,7 +3,7 @@
  */
 /// <reference types="jest" />
 import {
-  AlphaType, BlurStyle, ColorType, FilterMode, ImageFormat, MipmapMode, Skia, type SkImage,
+  AlphaType, BlurStyle, ColorType, ImageFormat, Skia, type SkImage,
 } from '@shopify/react-native-skia';
 
 import { cleanPages, defaultFilter, filterImage, filterPreviews, pageFilter, setDefaultFilter, shrunkCopy, type Filter } from './clean';
@@ -383,21 +383,11 @@ function decode(bytes: Uint8Array): SkImage {
   return Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(bytes))!;
 }
 
-// An encoded page drawn small the way a preview of it would be.
+// An encoded page drawn small the way a preview of it is: with shrunkCopy, as filterImage does.
 function shrunk(bytes: Uint8Array, width: number): SkImage {
   const image = decode(bytes);
-  const height = Math.round((width * image.height()) / image.width());
-  const surface = Skia.Surface.Make(width, height)!;
-  surface.getCanvas().drawImageRectOptions(
-    image,
-    Skia.XYWHRect(0, 0, image.width(), image.height()),
-    Skia.XYWHRect(0, 0, width, height),
-    FilterMode.Linear,
-    MipmapMode.Linear,
-  );
+  const out = shrunkCopy(image, width, Math.round((width * image.height()) / image.width()));
   image.dispose();
-  const out = surface.makeImageSnapshot();
-  surface.dispose();
   return out;
 }
 

@@ -1,6 +1,7 @@
 import { AlphaType, ColorType, FilterMode, ImageFormat, MipmapMode, Skia, TileMode } from '@shopify/react-native-skia';
 import { File } from 'expo-file-system';
 
+import { shrunkCopy } from './clean';
 import { readPage } from './scans';
 
 export type Point = { x: number; y: number };
@@ -145,13 +146,9 @@ export async function findPage(uri: string): Promise<FoundPage> {
   const scale = Math.min(1, SEARCH_LONG_SIDE / Math.max(width, height));
   const sw = Math.round(width * scale);
   const sh = Math.round(height * scale);
-  const surface = Skia.Surface.Make(sw, sh)!;
-  surface
-    .getCanvas()
-    .drawImageRectOptions(image, Skia.XYWHRect(0, 0, width, height), Skia.XYWHRect(0, 0, sw, sh), FilterMode.Linear, MipmapMode.Linear);
-  const small = surface.makeImageSnapshot();
+  const small = shrunkCopy(image, sw, sh);
   const rgba = small.readPixels(0, 0, { width: sw, height: sh, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul }) as Uint8Array | null;
-  for (const o of [image, surface, small]) o.dispose();
+  for (const o of [image, small]) o.dispose();
   if (!rgba) throw new Error('unreadable page');
 
   const found = pageCorners(rgba, sw, sh);
