@@ -211,7 +211,7 @@ function Root() {
       touchPages([page]);
     }, 'Could not rotate');
 
-  // Pages that did change reload even when another failed. The last filter picked is the filter for new scans.
+  // Pages that did change reload even when another failed. The filter is remembered for new scans only when every page changed.
   const filterPages = (pages: string[], filter: Filter) =>
     guarded(async () => {
       const failed = await cleanPages(pages, filter);
@@ -494,7 +494,7 @@ function Detail(props: {
   const editedKey = editedPage && props.shown(editedPage);
   const recorded = useMemo(
     () => (editing && editedPage ? pageFilter(editedPage) : null),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-reads on each edit (editedKey), which the callback does not read
     [editing, editedPage, editedKey],
   );
   // Pages scanned before untouched photos were kept have no photo for Original to bring back.
