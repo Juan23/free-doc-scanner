@@ -1,6 +1,7 @@
-import { AlphaType, ColorType, FilterMode, MipmapMode, Skia, type SkImage } from '@shopify/react-native-skia';
+import { AlphaType, ColorType, Skia, type SkImage } from '@shopify/react-native-skia';
 import { File } from 'expo-file-system';
 
+import { shrunkCopy } from './clean';
 import { originalOf, readPage, replacePage } from './scans';
 
 // Text is looked for on a copy this long, where body text is still 5-10 px high.
@@ -15,14 +16,9 @@ function findInk(image: SkImage): { ink: Uint8Array; w: number; h: number } {
   const scale = Math.min(1, SMALL_LONG_SIDE / Math.max(width, height));
   const w = Math.max(1, Math.round(width * scale));
   const h = Math.max(1, Math.round(height * scale));
-  const surface = Skia.Surface.Make(w, h)!;
-  // Mipmapped, so shrinking averages thin strokes in instead of skipping them.
-  surface
-    .getCanvas()
-    .drawImageRectOptions(image, Skia.XYWHRect(0, 0, width, height), Skia.XYWHRect(0, 0, w, h), FilterMode.Linear, MipmapMode.Linear);
-  const small = surface.makeImageSnapshot();
+  const small = shrunkCopy(image, w, h);
   const rgba = small.readPixels(0, 0, { width: w, height: h, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul }) as Uint8Array | null;
-  for (const o of [surface, small]) o.dispose();
+  small.dispose();
   if (!rgba) throw new Error('unreadable page');
 
   // The per-pixel loops run on Hermes, which interprets them: index work and calls are kept out of them.

@@ -89,6 +89,36 @@ it('finds the corners of a tilted page on a dark desk, in photo pixels, clockwis
   expectNear(found.corners, tilted, 20);
 }, 30000);
 
+// A notebook page on a dark desk in a photo as large as a phone's: 3 px rules every 40 px. On the
+// 300 px copy findPage looks at, the rules are 0.2 px thick and must dim the page a little, not cut it up.
+it('finds a ruled page in a 3024 x 4032 photo', async () => {
+  const big: Quad = [
+    { x: 560, y: 470 },
+    { x: 2530, y: 670 },
+    { x: 2400, y: 3600 },
+    { x: 370, y: 3370 },
+  ];
+  const surface = Skia.Surface.Make(3024, 4032)!;
+  const canvas = surface.getCanvas();
+  canvas.drawColor(Skia.Color('rgb(92,70,52)'));
+  const path = Skia.Path.Polygon(big, true);
+  const paint = Skia.Paint();
+  paint.setColor(Skia.Color('rgb(238,234,222)'));
+  canvas.drawPath(path, paint);
+  paint.setColor(Skia.Color('rgb(60,70,140)'));
+  paint.setAntiAlias(false);
+  canvas.save();
+  canvas.clipPath(path, 1, true);
+  for (let y = 700; y < 3500; y += 40) canvas.drawRect(Skia.XYWHRect(0, y, 3024, 3), paint);
+  canvas.restore();
+  const snapshot = surface.makeImageSnapshot();
+  mockFiles.set('file:///cache/photo.jpg', snapshot.encodeToBytes(ImageFormat.JPEG, 92));
+  for (const o of [snapshot, surface, path, paint]) o.dispose();
+
+  // Measured: the corners are within 13 px with the mipmapped copy, but 1566 px off with the old draw.
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, big, 40);
+}, 60000);
+
 it('finds a white page on a light grey table', async () => {
   mockFiles.set('file:///cache/photo.jpg', photo(tilted, 'rgb(175,175,170)'));
 

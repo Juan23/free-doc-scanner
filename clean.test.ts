@@ -3,10 +3,10 @@
  */
 /// <reference types="jest" />
 import {
-  AlphaType, BlurStyle, ColorType, FilterMode, ImageFormat, MipmapMode, Skia, type SkImage,
+  AlphaType, BlurStyle, ColorType, ImageFormat, Skia, type SkImage,
 } from '@shopify/react-native-skia';
 
-import { cleanPages, defaultFilter, filterImage, filterPreviews, pageFilter, setDefaultFilter, type Filter } from './clean';
+import { cleanPages, defaultFilter, filterImage, filterPreviews, pageFilter, setDefaultFilter, shrunkCopy, type Filter } from './clean';
 import { rotatePage } from './upright';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
@@ -383,21 +383,11 @@ function decode(bytes: Uint8Array): SkImage {
   return Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(bytes))!;
 }
 
-// An encoded page drawn small the way a preview of it would be.
+// An encoded page drawn small the way a preview of it is: with shrunkCopy, as filterImage does.
 function shrunk(bytes: Uint8Array, width: number): SkImage {
   const image = decode(bytes);
-  const height = Math.round((width * image.height()) / image.width());
-  const surface = Skia.Surface.Make(width, height)!;
-  surface.getCanvas().drawImageRectOptions(
-    image,
-    Skia.XYWHRect(0, 0, image.width(), image.height()),
-    Skia.XYWHRect(0, 0, width, height),
-    FilterMode.Linear,
-    MipmapMode.Linear,
-  );
+  const out = shrunkCopy(image, width, Math.round((width * image.height()) / image.width()));
   image.dispose();
-  const out = surface.makeImageSnapshot();
-  surface.dispose();
   return out;
 }
 
@@ -615,5 +605,94 @@ describe('using one page\'s filter on every page', () => {
     expect(await cleanPages(pages, grayStrong)).toBe(1);
 
     expect([pageFilter(pages[0]), pageFilter(pages[1]), pageFilter(pages[2])]).toEqual([grayStrong, null, grayStrong]);
+  }, 60000);
+});
+
+describe('thin strokes on a large photo', () => {
+  // 1 to 3 px black strokes at every phase of the shrink: horizontal in the top half, vertical in the bottom.
+  function strokedPhoto(w: number) {
+    const h = (w * 3) / 4;
+    const surface = Skia.Surface.Make(w, h)!;
+    const canvas = surface.getCanvas();
+    canvas.clear(Skia.Color('white'));
+    const black = Skia.Paint();
+    black.setColor(Skia.Color('black'));
+    black.setAntiAlias(false);
+    const horizontal: { at: number; t: number }[] = [];
+    const vertical: { at: number; t: number }[] = [];
+    for (let at = 30, i = 0; at < h / 2 - 10; i++, at += 53 + ((i * 13) % 11)) {
+      const t = (i % 3) + 1;
+      horizontal.push({ at, t });
+      canvas.drawRect(Skia.XYWHRect(0, at, w, t), black);
+    }
+    for (let at = 30, i = 0; at < w - 10; i++, at += 53 + ((i * 13) % 11)) {
+      const t = (i % 3) + 1;
+      vertical.push({ at, t });
+      canvas.drawRect(Skia.XYWHRect(at, h / 2 + 10, t, h / 2 - 20), black);
+    }
+    const image = surface.makeImageSnapshot();
+    black.dispose();
+    surface.dispose();
+    return { image, w, h, horizontal, vertical };
+  }
+
+  // How much darkness one stroke leaves in `copy`, as a share of what its area average would: 1 is exact.
+  function residues(copy: SkImage, photo: ReturnType<typeof strokedPhoto>) {
+    const sw = copy.width();
+    const sh = copy.height();
+    const k = sw / photo.w;
+    const px = copy.readPixels(0, 0, { width: sw, height: sh, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul }) as Uint8Array;
+    const grey = (x: number, y: number) => px[(y * sw + x) * 4];
+    const around = (at: number, t: number, read: (i: number) => number) => {
+      let dark = 0;
+      const c = Math.floor((at + t / 2) * k);
+      for (let d = -2; d <= 2; d++) dark += (255 - read(c + d)) / 255;
+      return dark / (t * k);
+    };
+    return [
+      ...photo.horizontal.map((s) => around(s.at, s.t, (y) => grey(sw >> 1, y))),
+      ...photo.vertical.map((s) => around(s.at, s.t, (x) => grey(x, sh - (sh >> 2)))),
+    ];
+  }
+
+  it.each([1600, 3024, 4032])('keeps every thin stroke in the small copy of a %i px photo', (w) => {
+    const photo = strokedPhoto(w);
+    const copy = shrunkCopy(photo.image, 500, Math.ceil((photo.h * 500) / w));
+    const all = residues(copy, photo);
+    // The area average is 1; a skipped stroke is 0. Measured worst case: 0.5 to 1.5.
+    expect(Math.min(...all)).toBeGreaterThan(0.4);
+    expect(Math.max(...all)).toBeLessThan(2);
+    copy.dispose();
+    photo.image.dispose();
+  });
+
+  it('treats identical faint strokes alike in the finished page of a 3024 px photo', () => {
+    // 2 px strokes of one grey on off-white paper, 30 to 34 px apart, so they land at every phase of the
+    // shrink. Clean at Light keeps faint marks only near writing, and that is found on the small copy.
+    const w = 3024;
+    const h = (w * 3) / 4;
+    const surface = Skia.Surface.Make(w, h)!;
+    const canvas = surface.getCanvas();
+    canvas.clear(Skia.Color('rgb(246,244,238)'));
+    const faint = Skia.Paint();
+    faint.setColor(Skia.Color('rgb(160,160,160)'));
+    faint.setAntiAlias(false);
+    const ys: number[] = [];
+    for (let i = 0, y = 100; y < h - 100; i++, y += 30 + ((i * 7) % 5)) {
+      ys.push(y);
+      canvas.drawRect(Skia.XYWHRect(w * 0.1, y, w * 0.8, 2), faint);
+    }
+    const photo = surface.makeImageSnapshot();
+    const out = filterImage(photo, { kind: 'clean', strength: 0 });
+    const px = out.readPixels(0, 0, { width: w, height: h, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul }) as Uint8Array;
+    const midColumn = w >> 1;
+    const darkest = ys.map((y) => Math.min(...[-2, -1, 0, 1, 2, 3, 4].map((d) => px[((y + d) * w + midColumn) * 4])));
+    // Measured: each stroke lands at 236 with the mipmapped copy.
+    expect(Math.max(...darkest)).toBeLessThan(250);
+    expect(Math.max(...darkest) - Math.min(...darkest)).toBeLessThan(10);
+    out.dispose();
+    photo.dispose();
+    faint.dispose();
+    surface.dispose();
   }, 60000);
 });

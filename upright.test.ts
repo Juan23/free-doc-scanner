@@ -187,6 +187,48 @@ it.each([1, 2, 3])('turns justified text turned %i quarter turns clockwise uprig
   expect(difference(mockFiles.get(PAGE)!, letter(0, ARTICLE, 1090))).toBeLessThan(3);
 }, 30000);
 
+const LARGE_LINES = [
+  'Thank you for your letter of the third of June and for the copies of the',
+  'signed lease. I have checked them against the draft we agreed in May, and',
+  'apart from the date of the first payment everything is as it should be.',
+  'The keys can be collected from our office on Friday morning, or we can post',
+  'them to you by recorded delivery if that would be more convenient. Please',
+];
+
+/**
+ * A letter in 28 px type on a 3024 x 3024 photo, as large as a phone's, turned clockwise by `turns`
+ * quarter turns. It is read on a copy 1000 px long, where its strokes are about 1 px thick.
+ */
+function largeLetter(turns: number): Uint8Array {
+  const size = 3024;
+  const surface = CanvasKit.MakeSurface(size, size);
+  const canvas = surface.getCanvas();
+  canvas.translate(size / 2, size / 2);
+  canvas.rotate(turns * 90, 0, 0);
+  canvas.translate(-size / 2, -size / 2);
+  canvas.clear(CanvasKit.Color(236, 230, 214));
+  const ink = new CanvasKit.Paint();
+  ink.setColor(CanvasKit.Color(30, 30, 40));
+  ink.setAntiAlias(true);
+  const font = new CanvasKit.Font(CanvasKit.Typeface.GetDefault(), 28);
+  const lines = LARGE_LINES;
+  for (let i = 0, y = 300; y < size - 300; i++, y += 45) canvas.drawText(lines[i % lines.length], 250, y, ink, font);
+  const snapshot = surface.makeImageSnapshot();
+  const bytes = snapshot.encodeToBytes(CanvasKit.ImageFormat.JPEG, 92);
+  for (const o of [snapshot, surface, ink, font]) o.delete();
+  return bytes;
+}
+
+// Measured on this page: with the draw that skips thin strokes, uprightPages left all three turns as
+// they were; with the mipmapped copy it turns each one upright.
+it.each([1, 2, 3])('turns small type on a 3024 px photo, turned %i quarter turns clockwise, upright', async (turns) => {
+  mockFiles.set(PAGE, largeLetter(turns));
+
+  await uprightPages([PAGE]);
+
+  expect(difference(mockFiles.get(PAGE)!, largeLetter(0))).toBeLessThan(3);
+}, 60000);
+
 // Capitals all stand on the baseline and reach the same height, so only stray marks such as commas
 // stick out, and they don't show reliably which way is up.
 const LIST = Array.from({ length: 30 }, (_, i) => `ITEM ${i}: SALT, RICE, OATS, MILK, TEA, SOAP, CORN, OIL, NUTS, EGGS, HAM,`).join('\n');
