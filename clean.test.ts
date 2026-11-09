@@ -435,7 +435,8 @@ it('previews the page that storing the same filter gives, shrunk', async () => {
       await cleanPages([PAGE], filter);
       const stored = shrunk(mockFiles.get(PAGE)!, 150);
       const preview = filterImage(photo, filter, 150);
-      expect(meanDifference(preview, stored)).toBeLessThan(0.5);
+      // A preview is cleaned at 500 px of this 600 px photo, then shrunk: 0.50 to 0.72 off the stored page, not 0.
+      expect(meanDifference(preview, stored)).toBeLessThan(1);
       stored.dispose();
       previews.push(preview);
       if (filter.kind === 'clean' && filter.strength === 1) cleanNormal = preview;
@@ -930,5 +931,83 @@ describe('thin strokes on a large photo', () => {
     photo.dispose();
     ink.dispose();
     surface.dispose();
+  }, 60000);
+});
+
+describe('text in a small preview', () => {
+  const CanvasKit = (globalThis as any).CanvasKit;
+  const W = 1200;
+  const H = 1600;
+  const PITCH = 64;
+  const FIRST = 120;
+  const LINES = 22;
+  const TEXT = ['The quick brown fox jumps over', 'the lazy dog while a second', 'sentence follows with five dozen'];
+
+  // Dark text lines on shadowed paper, like a phone photo of an invoice.
+  function textPhoto(): SkImage {
+    const surface = CanvasKit.MakeSurface(W, H);
+    const canvas = surface.getCanvas();
+    const paper = new CanvasKit.Paint();
+    for (let x = 0; x < W; x += 10) {
+      const t = x / W;
+      paper.setColor(CanvasKit.Color(Math.round(235 - 40 * t), Math.round(228 - 40 * t), Math.round(210 - 40 * t)));
+      canvas.drawRect(CanvasKit.XYWHRect(x, 0, 10, H), paper);
+    }
+    const ink = new CanvasKit.Paint();
+    ink.setColor(CanvasKit.Color(35, 35, 60));
+    ink.setAntiAlias(true);
+    const font = new CanvasKit.Font(CanvasKit.Typeface.GetDefault(), 30);
+    for (let i = 0; i < LINES; i++) canvas.drawText(TEXT[i % 3], 100, FIRST + i * PITCH, ink, font);
+    const bytes = surface.makeImageSnapshot().encodeToBytes(CanvasKit.ImageFormat.JPEG, 92);
+    font.delete();
+    paper.delete();
+    ink.delete();
+    surface.delete();
+    return Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(bytes))!;
+  }
+
+  // The share of columns holding ink along each text line, over the columns the line spans.
+  function inkShares(preview: SkImage): number[] {
+    const w = preview.width();
+    const h = preview.height();
+    const k = w / W;
+    const px = readPixels(preview);
+    const shares: number[] = [];
+    for (let i = 0; i < LINES; i++) {
+      const top = Math.floor((FIRST + i * PITCH - 26) * k);
+      const bottom = Math.ceil((FIRST + i * PITCH + 8) * k);
+      const rows = (x: number) => Array.from({ length: bottom - top + 1 }, (_, j) => Math.min(h - 1, top + j)).map((y) => px[(y * w + x) * 4 + 1]);
+      let paper = 0;
+      for (let x = 0; x < w; x++) paper = Math.max(paper, ...rows(x));
+      let spans = 0;
+      let inked = 0;
+      for (let x = Math.floor(100 * k); x < Math.floor(820 * k); x++) {
+        spans++;
+        if (Math.min(...rows(x)) < 0.75 * paper) inked++;
+      }
+      shares.push(inked / spans);
+    }
+    return shares;
+  }
+
+  const readPixels = (img: SkImage) =>
+    img.readPixels(0, 0, { width: img.width(), height: img.height(), colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul }) as Uint8Array;
+  const mean = (a: number[]) => a.reduce((s, v) => s + v, 0) / a.length;
+
+  it.each([
+    ['clean', 0], ['clean', 1], ['clean', 2], ['gray', 0], ['gray', 1], ['gray', 2],
+  ] as const)('keeps every line of text whole in a 132 px %s thumbnail at strength %i', (kind, strength) => {
+    const photo = textPhoto();
+    const original = filterImage(photo, { kind: 'original', strength: 1 }, 132);
+    const small = filterImage(photo, { kind, strength }, 132);
+    const wanted = inkShares(original);
+    const got = inkShares(small);
+    // Measured on 2026-11-10: fragmented text keeps 66-77% of the columns on average and a worst line at 33-48%;
+    // whole text keeps 74-100% and a worst line at 62-86% (Strong cleans the faint edges of thin strokes away).
+    expect(mean(got) / mean(wanted)).toBeGreaterThanOrEqual(0.7);
+    got.forEach((g, i) => expect(g / wanted[i]).toBeGreaterThanOrEqual(0.55));
+    original.dispose();
+    small.dispose();
+    photo.dispose();
   }, 60000);
 });

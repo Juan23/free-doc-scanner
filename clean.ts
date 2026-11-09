@@ -314,7 +314,9 @@ export function shrunkCopy(image: SkImage, outW: number, outH: number): SkImage 
  * small copy of it. A new image `width` pixels wide, as tall as the photo's shape makes it. Writes
  * no file. The caller disposes the result; everything else made here is freed. The paper, ink and
  * past-edge analysis runs on the same small copy at any width, so a preview and the page stored from
- * the photo agree, except that a hairline the full-size pass keeps can vanish from a small preview.
+ * the photo agree. A width under 500 px (or the photo's, if narrower) is cleaned at that width, then
+ * shrunk: the final pass per output pixel would break text into fragments. A hairline the full-size
+ * pass keeps can still vanish from such a preview (0.8 px grid on a 3024 px photo).
  */
 export function filterImage(image: SkImage, filter: Filter, width: number = image.width()): SkImage {
   const w = image.width();
@@ -324,6 +326,18 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
 
   if (filter.kind === 'original') {
     return shrunkCopy(image, outW, outH);
+  }
+
+  // Small previews: clean at the analysis width, then shrink. Strokes averaged into the final pass's
+  // few pixels fall under its darkness gates and the blurred ink mask, so text breaks into fragments.
+  const middle = Math.min(w, SMALL_WIDTH);
+  if (outW < middle) {
+    const cleaned = filterImage(image, filter, middle);
+    try {
+      return shrunkCopy(cleaned, outW, outH);
+    } finally {
+      cleaned.dispose();
+    }
   }
 
   const scale = Math.min(1, SMALL_WIDTH / w);
