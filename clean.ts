@@ -95,10 +95,12 @@ half4 main(float2 xy) {
 // most creases) go white too; dark marks always stay, so full stops and lines survive.
 // Whatever shows past the paper's edges goes white too.
 // A hairline between two pixels is faint in each, and fainter still on the small copy. So a pixel
-// also stays on a thin ridge: summed across the line it holds between 0.6 and a hairline's ink, the
-// pixels beside hold little, and the ink runs on 4 px both ways (summed across, for a tilted line).
-// Specks, creases 3 px or wider and shadow edges fail that. A straight 2 px crease at 0.35 alpha has
-// a hairline's pixels, so it stays too (measured: 170 of 255 at 1600 px, Clean Normal).
+// also stays on a thin ridge: summed across the line it holds at least `least` and at most a
+// hairline's ink (more when its darkest pixel is darker than a 0.35 alpha crease's), the pixels beside
+// hold little, and the ink runs on 4 px both ways (summed across, for a tilted line). Specks, creases
+// 3 px or wider and shadow edges fail that. A straight 2 px crease at 0.35 alpha has the pixels of a
+// 0.8 px line, so it stays at Normal (measured: 170 of 255 at 1600 px) and not at Strong, whose `least`
+// is higher: Strong keeps lines from 0.9 px.
 const cleanEffect = Skia.RuntimeEffect.Make(`
 uniform shader page;
 uniform shader paper;
@@ -128,9 +130,9 @@ half ridge(float2 xy, half3 p, float2 across) {
   half runs = min(sumAcross(xy - 4 * along, p, across), sumAcross(xy + 4 * along, p, across));
   half hairline = 1.34 - (1 - half(whitePoint)) / 0.3;
   half crease = (half(whitePoint) - 0.63) / 0.6;
-  half least = 0.3 + 2 * max(0, 0.85 - half(whitePoint));
+  half least = 0.38 + 2 * max(0.0, 0.85 - half(whitePoint));
   half limit = hairline + 0.4 * smoothstep(crease, crease + 0.06, max(a, max(b, c)));
-  return smoothstep(least, 1.5 * least, here - 1.5 * beside) * smoothstep(least, 1.5 * least, runs) * (1 - smoothstep(limit + 0.01, limit + 0.11, here));
+  return smoothstep(least, least + 0.08, here - 1.5 * beside) * smoothstep(least, least + 0.08, runs) * (1 - smoothstep(limit + 0.01, limit + 0.11, here));
 }
 half4 main(float2 xy) {
   half3 p = max(paper.eval(xy).rgb, half3(0.05));

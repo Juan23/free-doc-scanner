@@ -818,14 +818,14 @@ describe('thin strokes on a large photo', () => {
   }
 
   it.each([
-    [1600, 'Normal', 1, 0.8],
-    [3024, 'Normal', 1, 0.8],
-    [1600, 'Light', 0, 0.8],
-    [1600, 'Normal', 1, 0.7],
-    [1600, 'Normal', 1, 1.0],
-    [1600, 'Strong', 2, 0.9],
-    [1600, 'Strong', 2, 1.0],
-  ] as const)('keeps the thin dark grid of a form on a %i px photo at Clean %s with %f px lines', (size, _, strength, width) => {
+    [1600, 'Normal', 0.8, 1],
+    [3024, 'Normal', 0.8, 1],
+    [1600, 'Light', 0.8, 0],
+    [1600, 'Normal', 0.7, 1],
+    [1600, 'Normal', 1.0, 1],
+    [1600, 'Strong', 0.9, 2],
+    [1600, 'Strong', 1.0, 2],
+  ] as const)('keeps the thin dark grid of a form on a %i px photo at Clean %s with %f px lines', (size, _, width, strength) => {
     const photo = decode(gridPage(size, width));
     const out = filterImage(photo, { kind: 'clean', strength });
     try {
@@ -855,7 +855,7 @@ describe('thin strokes on a large photo', () => {
     const px = readPixels(out);
     let min = 255;
     for (let y = 697; y < 705; y++) for (let x = 97; x < 403; x++) min = Math.min(min, px[(y * w + x) * 4]);
-    // Measured: 238.
+    // Measured: 252.
     expect(min).toBeGreaterThan(225);
     out.dispose();
     photo.dispose();

@@ -2,13 +2,12 @@
  * @jest-environment @shopify/react-native-skia/jestEnv.js
  */
 /// <reference types="jest" />
-import { existsSync, readFileSync } from 'fs';
-
 import { ImageFormat, Skia, TileMode } from '@shopify/react-native-skia';
 
 import { rotatePage, uprightPages } from './upright';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
+const { existsSync, readFileSync } = jest.requireActual('fs');
 const mockFiles = new Map<string, Uint8Array>();
 
 jest.mock('@shopify/react-native-skia', () =>
