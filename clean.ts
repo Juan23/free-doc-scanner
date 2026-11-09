@@ -460,6 +460,7 @@ export async function filterPreviews(
 async function cleanPage(uri: string, filter: Filter, newPage: boolean): Promise<void> {
   // Every filter starts from the photo as it was before any cleaning, so changes never stack.
   // shortcut: a copy made by an earlier build has no marker, so it counts as the photo even when cleaned; upgrade if those copies can be told apart.
+  // shortcut: a new page whose first clean-up never ran gets a marker on its next filter change, so its line over-warns; nothing is lost, upgrade if someone sees it.
   if (!newPage) await markCleaned(uri);
   await keepOriginal(uri);
   if (filter.kind === 'original') {
