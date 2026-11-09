@@ -262,7 +262,7 @@ function Root() {
   return (
     <View style={styles.screen}>
       {onCapturedPages ? (
-        <Capture onEnd={endCapture} />
+        <Capture pagesBefore={open?.pages.length ?? 0} onEnd={endCapture} />
       ) : open ? (
         <Detail
           scan={open}
@@ -1042,7 +1042,7 @@ const deleteQuietly = (uri: string) => {
 };
 
 // Android's scanner. Its photos and pages wait in cache folders that clearScannerCache empties at launch.
-function Capture(props: { onEnd: (pages: string[]) => void }) {
+function Capture(props: { pagesBefore: number; onEnd: (pages: string[]) => void }) {
   const insets = useSafeAreaInsets();
   const camera = useRef<CameraView>(null);
   const [pages, setPages] = useState<string[]>([]);
@@ -1132,7 +1132,7 @@ function Capture(props: { onEnd: (pages: string[]) => void }) {
             style={[styles.cornersSide, working && styles.disabled]}>
             <Text style={styles.retakeText} maxFontSizeMultiplier={1.5}>Retake</Text>
           </Pressable>
-          <Text style={styles.cornersTitle} maxFontSizeMultiplier={1.5}>{`Page ${pages.length + 1}`}</Text>
+          <Text style={styles.cornersTitle} maxFontSizeMultiplier={1.5}>{`Page ${props.pagesBefore + pages.length + 1}`}</Text>
           <View style={styles.cornersSide} />
         </View>
         <PageEditor photo={photo} onChange={(corners) => setPhoto({ ...photo, corners })} />
@@ -1148,7 +1148,7 @@ function Capture(props: { onEnd: (pages: string[]) => void }) {
               <View style={[styles.plusBar, styles.plusH, styles.plusWhite]} />
               <View style={[styles.plusBar, styles.plusV, styles.plusWhite]} />
             </View>
-            <Text style={styles.pillText} maxFontSizeMultiplier={1.5}>Next page</Text>
+            <Text style={styles.cornersPillText} maxFontSizeMultiplier={1.5}>Next page</Text>
           </Pressable>
           <Pressable
             accessibilityRole="button"
@@ -1156,7 +1156,7 @@ function Capture(props: { onEnd: (pages: string[]) => void }) {
             disabled={working}
             onPress={() => keep(true)}
             style={[styles.cornersPill, styles.donePill, working && styles.disabled]}>
-            <Text style={styles.pillText} maxFontSizeMultiplier={1.5}>Done</Text>
+            <Text style={styles.cornersPillText} maxFontSizeMultiplier={1.5}>Done</Text>
           </Pressable>
         </View>
       </View>
@@ -1175,7 +1175,7 @@ function Capture(props: { onEnd: (pages: string[]) => void }) {
           <View style={styles.guide} />
         </View>
         <View style={[styles.captureTop, { top: insets.top + 8 }]} pointerEvents="none">
-          <Text style={styles.captureChip} maxFontSizeMultiplier={1.5}>{`Page ${pages.length + 1}`}</Text>
+          <Text style={styles.captureChip} maxFontSizeMultiplier={1.5}>{`Page ${props.pagesBefore + pages.length + 1}`}</Text>
         </View>
         <Pressable
           accessibilityRole="button"
@@ -1193,15 +1193,13 @@ function Capture(props: { onEnd: (pages: string[]) => void }) {
       </View>
       <View style={[styles.captureBar, { paddingBottom: bottomPad(insets.bottom) }]}>
         <View style={styles.captureSlot}>
-          {last ? (
+          {!!last && (
             <View accessible accessibilityLabel={`${pagesLabel(pages.length)} taken`} style={styles.camThumbBox}>
               <Image source={{ uri: last }} style={styles.camThumb} resizeMode="cover" />
               <View style={styles.thumbBadge}>
                 <Text style={styles.thumbBadgeText} maxFontSizeMultiplier={1.5}>{pages.length}</Text>
               </View>
             </View>
-          ) : (
-            <View style={styles.camThumbBox} />
           )}
         </View>
         <Pressable
@@ -1211,7 +1209,7 @@ function Capture(props: { onEnd: (pages: string[]) => void }) {
           disabled={working}
           onPress={shoot}
           style={styles.shutter}>
-          {working ? <ActivityIndicator color={C.text} /> : <View style={styles.shutterInner} />}
+          {working ? <ActivityIndicator color="#fff" /> : <View style={styles.shutterInner} />}
         </Pressable>
         <View style={[styles.captureSlot, styles.captureSlotEnd]}>
           {!!last && (
@@ -1712,25 +1710,26 @@ const styles = StyleSheet.create({
   captureOverlay: { alignItems: 'center', justifyContent: 'center' },
   guide: { width: '72%', aspectRatio: 3 / 4, borderWidth: 3, borderColor: '#6E97FF', borderRadius: 8, backgroundColor: 'rgba(76,125,255,0.16)' },
   captureTop: { position: 'absolute', left: 0, right: 0, height: 44, alignItems: 'center', justifyContent: 'center' },
-  captureHold: { position: 'absolute', left: 0, right: 0, bottom: 16, alignItems: 'center' },
+  captureHold: { position: 'absolute', left: 0, right: 0, bottom: 20, alignItems: 'center' },
   captureChip: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 14, overflow: 'hidden', backgroundColor: 'rgba(0,0,0,0.5)', fontSize: 13, color: '#fff' },
-  closeButton: { position: 'absolute', left: 12, width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(0,0,0,0.45)', alignItems: 'center', justifyContent: 'center' },
+  closeButton: { position: 'absolute', left: 16, width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(0,0,0,0.45)', alignItems: 'center', justifyContent: 'center' },
   closeBar: { position: 'absolute', width: 18, height: 2, borderRadius: 1, backgroundColor: '#fff' },
   captureBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 28, paddingTop: 16, backgroundColor: '#000' },
   captureSlot: { width: 96 },
   captureSlotEnd: { alignItems: 'flex-end' },
   camThumbBox: { width: 56, height: 56, alignItems: 'center', justifyContent: 'center' },
   camThumb: { width: 42, height: 56, borderRadius: 4 },
-  thumbBadge: { position: 'absolute', top: 0, right: 0, minWidth: 22, height: 22, borderRadius: 11, paddingHorizontal: 5, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
+  thumbBadge: { position: 'absolute', top: -6, right: -4, minWidth: 22, height: 22, borderRadius: 11, paddingHorizontal: 5, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
   thumbBadgeText: { fontSize: 12, fontWeight: '700', color: '#fff' },
   donePillCam: { height: 48, minWidth: 80, borderRadius: 24, paddingHorizontal: 18, backgroundColor: C.accent, alignItems: 'center', justifyContent: 'center' },
   pillText: { fontSize: 16, fontWeight: '600', color: '#fff' },
+  cornersPillText: { fontSize: 17, fontWeight: '600', color: '#fff' },
   corners: { flex: 1, backgroundColor: '#0E0F12' },
   cornersBar: { height: 52, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8 },
   cornersSide: { width: 88, minHeight: 44, justifyContent: 'center', paddingHorizontal: 8 },
   retakeText: { fontSize: 17, color: '#C9CDD4' },
   cornersTitle: { flex: 1, textAlign: 'center', fontSize: 16, fontWeight: '600', color: '#fff' },
-  editorArea: { flex: 1, borderRadius: 16, overflow: 'hidden', marginTop: 8, marginHorizontal: 20 },
+  editorArea: { flex: 1, borderRadius: 16, overflow: 'hidden', marginTop: 8, marginHorizontal: 20, backgroundColor: '#2B2D31' },
   cornersHint: { marginTop: 16, textAlign: 'center', fontSize: 14, color: '#A9AFBA' },
   cornersRow: { flexDirection: 'row', gap: 10, paddingHorizontal: 20, marginTop: 16 },
   cornersPill: { flex: 1, height: 52, borderRadius: 26, flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center' },
