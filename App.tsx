@@ -458,7 +458,7 @@ function Detail(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- re-reads on each edit (subjectKey), which the callback does not read
     [subjectKey],
   );
-  // Pages scanned before untouched photos were kept have no photo for Original to bring back.
+  // Pages with no untouched photo, or one copied from a cleaned page, have none for Original to bring back.
   const olderPage = useMemo(
     () => (editing || filtering) && anyPhotoMissing(filtering ? pickedPages : scan.pages),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- re-reads on each edit (subjectKey), which the callback does not read
