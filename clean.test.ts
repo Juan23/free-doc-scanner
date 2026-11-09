@@ -783,6 +783,40 @@ describe('thin strokes on a large photo', () => {
     surface.dispose();
   }, 60000);
 
+  // A crease of 3 px or wider is dark in all three pixels across, which no thin line is, so a darker
+  // one (0.4 alpha) goes white too. Measured on main: 255 at 3 px, 251 at 4 and 5 px (Normal), 255 at 3 px (Strong).
+  it('whitens 0.4 alpha creases 3 to 5 px wide at Clean Normal and a 3 px one at Strong', () => {
+    const w = 1600;
+    const h = 1200;
+    const surface = Skia.Surface.Make(w, h)!;
+    const canvas = surface.getCanvas();
+    canvas.drawColor(Skia.Color('rgb(235,228,210)'));
+    const ink = Skia.Paint();
+    ink.setColor(Skia.Color('rgb(35,35,40)'));
+    for (let y = 100; y < 300; y += 40) canvas.drawRect(Skia.XYWHRect(100, y, 800, 12), ink);
+    const faint = Skia.Paint();
+    faint.setColor(Skia.Color('rgba(0,0,0,0.4)'));
+    const widths = [3, 4, 5];
+    widths.forEach((m, i) => canvas.drawRect(Skia.XYWHRect(100, 550 + i * 120, 300, m), faint));
+    const photo = surface.makeImageSnapshot();
+    const darkest = (strength: 1 | 2) => {
+      const out = filterImage(photo, { kind: 'clean', strength });
+      const px = readPixels(out);
+      out.dispose();
+      return widths.map((m, i) => {
+        let min = 255;
+        for (let y = 550 + i * 120 - 3; y < 550 + i * 120 + m + 3; y++) for (let x = 97; x < 403; x++) min = Math.min(min, px[(y * w + x) * 4]);
+        return min;
+      });
+    };
+    expect(darkest(1).every((d) => d > 245)).toBe(true);
+    expect(darkest(2)[0]).toBeGreaterThan(245);
+    photo.dispose();
+    ink.dispose();
+    faint.dispose();
+    surface.dispose();
+  }, 120000);
+
   // A form: warm paper under a grid of dark lines `width` px wide (0.8 gives each of the two pixel
   // rows or columns a line sits between about 40% ink). `size` is the photo's width; it is 4:3.
   function gridPage(size: number, width = 0.8): Uint8Array {
