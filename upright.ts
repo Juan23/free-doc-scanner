@@ -89,8 +89,9 @@ const MIN_SPACE = 3;
 // Spaces are measured up to this many times SPACE.
 const FAR = 4;
 // With spaces on both sides, the wider counts only when this many times the other: a typewriter
-// font's full stop has a wide gap before it, but its space after is wider still.
-const WIDER = 3;
+// font's full stop has a wide gap before it, but its space after is wider still. Not more: in type
+// 12 px high on the small copy the gap before a comma after a y is already 4 px, against 11 after.
+const WIDER = 2;
 
 function median(values: number[]): number {
   const sorted = values.sort((a, b) => a - b);

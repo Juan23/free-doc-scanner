@@ -140,6 +140,7 @@ function luma(bytes: Uint8Array): { width: number; height: number; at: (x: numbe
   const width = image.width();
   const height = image.height();
   const px = image.readPixels(0, 0, { width, height, colorType: 4, alphaType: 3 }) as Uint8Array;
+  image.dispose();
   return { width, height, at: (x, y) => (px[(y * width + x) * 4] + px[(y * width + x) * 4 + 1] + px[(y * width + x) * 4 + 2]) / 3 };
 }
 
@@ -195,14 +196,18 @@ const LARGE_LINES = [
   'them to you by recorded delivery if that would be more convenient. Please',
 ];
 
+let surface: any;
+
 /**
  * A letter in 28 px type on a 3024 x 3024 photo, as large as a phone's, turned clockwise by `turns`
  * quarter turns. It is read on a copy 1000 px long, where its strokes are about 1 px thick.
  */
-function largeLetter(turns: number): Uint8Array {
+function largeLetter(turns: number, type = 28): Uint8Array {
   const size = 3024;
-  const surface = CanvasKit.MakeSurface(size, size);
+  // CanvasKit's software surfaces are not freed by delete(), so one is reused: made per page, 60 pages exhaust the heap.
+  surface ??= CanvasKit.MakeSurface(size, size);
   const canvas = surface.getCanvas();
+  canvas.save();
   canvas.translate(size / 2, size / 2);
   canvas.rotate(turns * 90, 0, 0);
   canvas.translate(-size / 2, -size / 2);
@@ -210,12 +215,14 @@ function largeLetter(turns: number): Uint8Array {
   const ink = new CanvasKit.Paint();
   ink.setColor(CanvasKit.Color(30, 30, 40));
   ink.setAntiAlias(true);
-  const font = new CanvasKit.Font(CanvasKit.Typeface.GetDefault(), 28);
+  const face = CanvasKit.Typeface.GetDefault();
+  const font = new CanvasKit.Font(face, type);
   const lines = LARGE_LINES;
-  for (let i = 0, y = 300; y < size - 300; i++, y += 45) canvas.drawText(lines[i % lines.length], 250, y, ink, font);
+  for (let i = 0, y = 300; y < size - 300; i++, y += Math.round((45 * type) / 28)) canvas.drawText(lines[i % lines.length], 250, y, ink, font);
+  canvas.restore();
   const snapshot = surface.makeImageSnapshot();
   const bytes = snapshot.encodeToBytes(CanvasKit.ImageFormat.JPEG, 92);
-  for (const o of [snapshot, surface, ink, font]) o.delete();
+  for (const o of [snapshot, ink, font, face]) o.delete();
   return bytes;
 }
 
@@ -431,3 +438,16 @@ it('rejects a page it cannot read, leaving it as it is', async () => {
   await expect(rotatePage(PAGE, 1)).rejects.toThrow();
   expect(mockFiles.get(PAGE)).toBe(broken);
 });
+
+// Measured with 3 for WIDER: sizes 36, 38, 40 and 46 each left a turn sideways (7 of 56), because the
+// gap before a comma was about a third of the space after it. No size may turn an upright page.
+it.each(Array.from({ length: 14 }, (_, i) => 26 + 2 * i))('turns a 3024 px letter in %i px type upright at every quarter turn', async (type) => {
+  const upright = largeLetter(0, type);
+  for (const turns of [0, 1, 2, 3]) {
+    mockFiles.set(PAGE, largeLetter(turns, type));
+
+    await uprightPages([PAGE]);
+
+    expect([type, turns, difference(mockFiles.get(PAGE)!, upright) < 3]).toEqual([type, turns, true]);
+  }
+}, 120000);

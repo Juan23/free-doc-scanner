@@ -744,3 +744,52 @@ describe('thin strokes on a large photo', () => {
     surface.dispose();
   }, 60000);
 });
+
+// A form: warm paper under a grid of 0.8 px dark lines that sit between two pixel rows or columns,
+// so each pixel gets about 40% ink. `size` is the photo's width; it is 4:3.
+function gridPage(size: number): Uint8Array {
+  const h = (size * 4) / 3;
+  const surface = Skia.Surface.Make(size, h)!;
+  const canvas = surface.getCanvas();
+  canvas.drawColor(Skia.Color('rgb(235,228,210)'));
+  const ink = Skia.Paint();
+  ink.setColor(Skia.Color('rgb(35,35,40)'));
+  for (let x = 100; x < size; x += 100) canvas.drawRect(Skia.XYWHRect(x + 0.6, 0, 0.8, h), ink);
+  for (let y = 100; y < h; y += 100) canvas.drawRect(Skia.XYWHRect(0, y + 0.6, size, 0.8), ink);
+  return surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 95);
+}
+
+// The share of line pixels (the darker of the two a line sits between, along every line, crossings
+// included) that are darker than `limit`.
+function gridDarkShare(out: SkImage, size: number, limit: number): number {
+  const h = out.height();
+  const px = out.readPixels(0, 0, { width: size, height: h, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul }) as Uint8Array;
+  const at = (x: number, y: number) => (px[(y * size + x) * 4] + px[(y * size + x) * 4 + 1] + px[(y * size + x) * 4 + 2]) / 3;
+  let dark = 0;
+  let total = 0;
+  for (let x = 100; x < size; x += 100) {
+    for (let y = 0; y < h; y++) {
+      total++;
+      if (Math.min(at(x, y), at(x + 1, y)) < limit) dark++;
+    }
+  }
+  for (let y = 100; y < h; y += 100) {
+    for (let x = 0; x < size; x++) {
+      total++;
+      if (Math.min(at(x, y), at(x, y + 1)) < limit) dark++;
+    }
+  }
+  return dark / total;
+}
+
+it.each([1600, 3024])('keeps the thin dark grid of a form on a %i px photo at Clean Normal', (size) => {
+  const photo = decode(gridPage(size));
+  const out = filterImage(photo, { kind: 'clean', strength: 1 });
+  try {
+    // A line reads as unbroken when nearly every pixel along it, crossings included, stays grey or darker.
+    expect(gridDarkShare(out, size, 200)).toBeGreaterThan(0.97);
+  } finally {
+    photo.dispose();
+    out.dispose();
+  }
+}, 60000);

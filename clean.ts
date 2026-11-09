@@ -94,6 +94,9 @@ half4 main(float2 xy) {
 // stretches the levels so grain goes white and ink dark. Faint marks far from any writing (dirt,
 // creases) go white too; dark marks always stay, so full stops and lines survive.
 // Whatever shows past the paper's edges goes white too.
+// A hairline between two pixels is faint in each, and on the small copy fainter still, so a pixel
+// also stays when it and its neighbours, along x or y, hold a line's worth of ink (about 0.6)
+// while the pixels just beside them hold little: wider smudges and shadow edges fail that.
 const cleanEffect = Skia.RuntimeEffect.Make(`
 uniform shader page;
 uniform shader paper;
@@ -101,10 +104,23 @@ uniform shader ink;
 uniform shader beyond;
 uniform float whitePoint;
 uniform float grey;
+half3 levels(float2 xy, half3 p) {
+  return saturate((page.eval(xy).rgb / p - (half(whitePoint) - 0.6)) / 0.6);
+}
+half darkAt(float2 xy, half3 p) {
+  half3 c = levels(xy, p);
+  return 1 - min(min(c.r, c.g), c.b);
+}
+half ridge(float2 xy, half3 p, float2 step) {
+  half beside = darkAt(xy - 2 * step, p) + darkAt(xy + 2 * step, p);
+  return darkAt(xy - step, p) + darkAt(xy, p) + darkAt(xy + step, p) - 1.5 * beside;
+}
 half4 main(float2 xy) {
-  half3 c = saturate((page.eval(xy).rgb / max(paper.eval(xy).rgb, half3(0.05)) - (half(whitePoint) - 0.6)) / 0.6);
+  half3 p = max(paper.eval(xy).rgb, half3(0.05));
+  half3 c = levels(xy, p);
   half dark = 1 - min(min(c.r, c.g), c.b);
-  half keep = max(smoothstep(0.45, 0.65, dark), smoothstep(0.02, 0.05, ink.eval(xy).a));
+  half line = max(ridge(xy, p, float2(1, 0)), ridge(xy, p, float2(0, 1)));
+  half keep = max(max(smoothstep(0.45, 0.65, dark), smoothstep(0.02, 0.05, ink.eval(xy).a)), smoothstep(0.4, 0.6, line));
   half3 cleaned = mix(half3(1), c, keep * (1 - beyond.eval(xy).a));
   half greyed = dot(cleaned, half3(0.2126, 0.7152, 0.0722));
   return half4(mix(cleaned, half3(greyed), half(grey)), 1);
