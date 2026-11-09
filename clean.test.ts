@@ -860,6 +860,7 @@ describe('thin strokes on a large photo', () => {
     [1600, 'Normal', 1.1, 1],
     [1600, 'Strong', 0.9, 2],
     [1600, 'Strong', 1.0, 2],
+    [1600, 'Strong', 1.2, 2],
   ] as const)('keeps the thin dark grid of a form on a %i px photo at Clean %s with %s px lines', (size, _, width, strength) => {
     const photo = decode(gridPage(size, width));
     const out = filterImage(photo, { kind: 'clean', strength });
