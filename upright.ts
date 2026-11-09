@@ -91,6 +91,9 @@ const FAR = 4;
 // With spaces on both sides, the wider counts only when this many times the other: a typewriter
 // font's full stop has a wide gap before it, but its space after is wider still.
 const WIDER = 3;
+// From this many times up to WIDER, a mark with spaces on both sides tells nothing: a comma after a y
+// has a 4 px gap before it and 11 after, in 36 px type on a 3024 px photo, as another script's mark can.
+const NEUTRAL = 2;
 
 function median(values: number[]): number {
   const sorted = values.sort((a, b) => a - b);
@@ -118,7 +121,7 @@ type Marks = {
   ltr: number; // space only after, as full stops of left-to-right text have
   rtl: number; // space only before, as those of right-to-left text have
   inWord: number; // letters close on both sides
-  alone: number; // spaces on both sides, neither WIDER times the other: a speck, or a typewriter font's letter
+  alone: number; // spaces on both sides, neither NEUTRAL times the other: a speck, or a typewriter font's letter
 };
 
 /**
@@ -253,8 +256,8 @@ function strokes(ink: Uint8Array, w: number, h: number) {
         const rtl = isStop ? before : after;
         if (ltr >= space && (rtl < space || ltr >= WIDER * rtl)) marks.ltr++;
         else if (rtl >= space && (ltr < space || rtl >= WIDER * ltr)) marks.rtl++;
-        else if (ltr >= space) marks.alone++;
-        else marks.inWord++;
+        else if (ltr < space) marks.inWord++;
+        else if (ltr < NEUTRAL * rtl && rtl < NEUTRAL * ltr) marks.alone++;
       }
     });
   }

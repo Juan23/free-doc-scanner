@@ -743,4 +743,125 @@ describe('thin strokes on a large photo', () => {
     faint.dispose();
     surface.dispose();
   }, 60000);
+
+  function readPixels(out: SkImage): Uint8Array {
+    return out.readPixels(0, 0, { width: out.width(), height: out.height(), colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul }) as Uint8Array;
+  }
+
+  // Specks and creases of 0.35 alpha black, far from the lines of writing at the top. A mark's
+  // darkest pixel in the finished page is read.
+  it('whitens faint specks and wide creases away from writing on a 1600 px photo at Clean Normal', () => {
+    const w = 1600;
+    const h = 1200;
+    const surface = Skia.Surface.Make(w, h)!;
+    const canvas = surface.getCanvas();
+    canvas.drawColor(Skia.Color('rgb(235,228,210)'));
+    const ink = Skia.Paint();
+    ink.setColor(Skia.Color('rgb(35,35,40)'));
+    for (let y = 100; y < 300; y += 40) canvas.drawRect(Skia.XYWHRect(100, y, 800, 12), ink);
+    const faint = Skia.Paint();
+    faint.setColor(Skia.Color('rgba(0,0,0,0.35)'));
+    const marks: Record<string, [number, number, number, number]> = { crease3: [100, 700, 300, 3], crease6: [100, 800, 300, 6], speck3: [800, 600, 3, 3], speck8: [800, 800, 8, 8] };
+    for (const [x, y, a, b] of Object.values(marks)) canvas.drawRect(Skia.XYWHRect(x, y, a, b), faint);
+    const photo = surface.makeImageSnapshot();
+    const out = filterImage(photo, { kind: 'clean', strength: 1 });
+    const px = readPixels(out);
+    const darkest = (x: number, y: number, a: number, b: number) => {
+      let min = 255;
+      for (let yy = y - 3; yy < y + b + 3; yy++) for (let xx = x - 3; xx < x + a + 3; xx++) min = Math.min(min, px[(yy * w + xx) * 4]);
+      return min;
+    };
+    // Measured: all 255 but the 6 px crease, at about 228.
+    expect(darkest(...marks.speck3)).toBeGreaterThan(245);
+    expect(darkest(...marks.speck8)).toBeGreaterThan(245);
+    expect(darkest(...marks.crease3)).toBeGreaterThan(245);
+    expect(darkest(...marks.crease6)).toBeGreaterThan(225);
+    out.dispose();
+    photo.dispose();
+    ink.dispose();
+    faint.dispose();
+    surface.dispose();
+  }, 60000);
+
+  // A form: warm paper under a grid of 0.8 px dark lines that sit between two pixel rows or columns,
+  // so each pixel gets about 40% ink. `size` is the photo's width; it is 4:3.
+  function gridPage(size: number): Uint8Array {
+    const h = (size * 4) / 3;
+    const surface = Skia.Surface.Make(size, h)!;
+    const canvas = surface.getCanvas();
+    canvas.drawColor(Skia.Color('rgb(235,228,210)'));
+    const ink = Skia.Paint();
+    ink.setColor(Skia.Color('rgb(35,35,40)'));
+    for (let x = 100; x < size; x += 100) canvas.drawRect(Skia.XYWHRect(x + 0.6, 0, 0.8, h), ink);
+    for (let y = 100; y < h; y += 100) canvas.drawRect(Skia.XYWHRect(0, y + 0.6, size, 0.8), ink);
+    return surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 95);
+  }
+
+  // Walks the line pixel pairs (the darker of the two a line sits between, along every line,
+  // crossings included): the share darker than `limit`, and how many within 6 px of a crossing are not.
+  function gridPairs(out: SkImage, size: number, limit: number) {
+    const h = out.height();
+    const px = readPixels(out);
+    const at = (x: number, y: number) => (px[(y * size + x) * 4] + px[(y * size + x) * 4 + 1] + px[(y * size + x) * 4 + 2]) / 3;
+    const near = (v: number) => v % 100 < 7 || v % 100 > 93;
+    let dark = 0;
+    let total = 0;
+    let brokenAtCrossings = 0;
+    const count = (pair: number, atCrossing: boolean) => {
+      total++;
+      if (pair < limit) dark++;
+      else if (atCrossing) brokenAtCrossings++;
+    };
+    for (let x = 100; x < size; x += 100) for (let y = 0; y < h; y++) count(Math.min(at(x, y), at(x + 1, y)), near(y));
+    for (let y = 100; y < h; y += 100) for (let x = 0; x < size; x++) count(Math.min(at(x, y), at(x, y + 1)), near(x));
+    return { share: dark / total, brokenAtCrossings };
+  }
+
+  it.each([
+    [1600, 'Normal', 1],
+    [3024, 'Normal', 1],
+    [1600, 'Light', 0],
+  ] as const)('keeps the thin dark grid of a form on a %i px photo at Clean %s', (size, _, strength) => {
+    const photo = decode(gridPage(size));
+    const out = filterImage(photo, { kind: 'clean', strength });
+    try {
+      // A line reads as unbroken when nearly every pixel along it stays grey or darker, and none at a crossing is lost.
+      const { share, brokenAtCrossings } = gridPairs(out, size, 200);
+      expect(share).toBeGreaterThan(0.97);
+      expect(brokenAtCrossings).toBe(0);
+    } finally {
+      photo.dispose();
+      out.dispose();
+    }
+  }, 60000);
+
+  it('keeps a thin dark line tilted 2 degrees on a 1600 px photo at Clean Normal', () => {
+    const w = 1600;
+    const h = 1200;
+    const surface = Skia.Surface.Make(w, h)!;
+    const canvas = surface.getCanvas();
+    canvas.drawColor(Skia.Color('rgb(235,228,210)'));
+    const ink = Skia.Paint();
+    ink.setColor(Skia.Color('rgb(35,35,40)'));
+    ink.setAntiAlias(true);
+    canvas.translate(100, 500);
+    canvas.rotate(2, 0, 0);
+    canvas.drawRect(Skia.XYWHRect(0, 0, 1400, 0.8), ink);
+    const photo = surface.makeImageSnapshot();
+    const out = filterImage(photo, { kind: 'clean', strength: 1 });
+    const px = readPixels(out);
+    // From a few pixels in from the ends, as a line is not kept right up to its end.
+    let kept = 0;
+    let total = 0;
+    for (let x = 110; x < 1480; x++) {
+      const y = Math.round(500 + (x - 100) * Math.tan((2 * Math.PI) / 180));
+      total++;
+      if (Math.min(...[-1, 0, 1, 2].map((d) => px[((y + d) * w + x) * 4])) < 200) kept++;
+    }
+    expect(kept / total).toBeGreaterThan(0.97);
+    out.dispose();
+    photo.dispose();
+    ink.dispose();
+    surface.dispose();
+  }, 60000);
 });

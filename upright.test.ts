@@ -140,6 +140,7 @@ function luma(bytes: Uint8Array): { width: number; height: number; at: (x: numbe
   const width = image.width();
   const height = image.height();
   const px = image.readPixels(0, 0, { width, height, colorType: 4, alphaType: 3 }) as Uint8Array;
+  image.dispose();
   return { width, height, at: (x, y) => (px[(y * width + x) * 4] + px[(y * width + x) * 4 + 1] + px[(y * width + x) * 4 + 2]) / 3 };
 }
 
@@ -195,14 +196,18 @@ const LARGE_LINES = [
   'them to you by recorded delivery if that would be more convenient. Please',
 ];
 
+let letterSurface: any;
+
 /**
- * A letter in 28 px type on a 3024 x 3024 photo, as large as a phone's, turned clockwise by `turns`
- * quarter turns. It is read on a copy 1000 px long, where its strokes are about 1 px thick.
+ * A letter in `fontSize` px type on a 3024 x 3024 photo, as large as a phone's, turned clockwise by
+ * `turns` quarter turns. It is read on a copy 1000 px long, where 28 px strokes are about 1 px thick.
  */
-function largeLetter(turns: number): Uint8Array {
+function largeLetter(turns: number, fontSize = 28): Uint8Array {
   const size = 3024;
-  const surface = CanvasKit.MakeSurface(size, size);
-  const canvas = surface.getCanvas();
+  // CanvasKit's software surfaces are not freed by delete(), so one is reused: made per page, 60 pages exhaust the heap.
+  letterSurface ??= CanvasKit.MakeSurface(size, size);
+  const canvas = letterSurface.getCanvas();
+  canvas.save();
   canvas.translate(size / 2, size / 2);
   canvas.rotate(turns * 90, 0, 0);
   canvas.translate(-size / 2, -size / 2);
@@ -210,24 +215,16 @@ function largeLetter(turns: number): Uint8Array {
   const ink = new CanvasKit.Paint();
   ink.setColor(CanvasKit.Color(30, 30, 40));
   ink.setAntiAlias(true);
-  const font = new CanvasKit.Font(CanvasKit.Typeface.GetDefault(), 28);
+  const face = CanvasKit.Typeface.GetDefault();
+  const font = new CanvasKit.Font(face, fontSize);
   const lines = LARGE_LINES;
-  for (let i = 0, y = 300; y < size - 300; i++, y += 45) canvas.drawText(lines[i % lines.length], 250, y, ink, font);
-  const snapshot = surface.makeImageSnapshot();
+  for (let i = 0, y = 300; y < size - 300; i++, y += Math.round((45 * fontSize) / 28)) canvas.drawText(lines[i % lines.length], 250, y, ink, font);
+  canvas.restore();
+  const snapshot = letterSurface.makeImageSnapshot();
   const bytes = snapshot.encodeToBytes(CanvasKit.ImageFormat.JPEG, 92);
-  for (const o of [snapshot, surface, ink, font]) o.delete();
+  for (const o of [snapshot, ink, font, face]) o.delete();
   return bytes;
 }
-
-// Measured on this page: with the draw that skips thin strokes, uprightPages left all three turns as
-// they were; with the mipmapped copy it turns each one upright.
-it.each([1, 2, 3])('turns small type on a 3024 px photo, turned %i quarter turns clockwise, upright', async (turns) => {
-  mockFiles.set(PAGE, largeLetter(turns));
-
-  await uprightPages([PAGE]);
-
-  expect(difference(mockFiles.get(PAGE)!, largeLetter(0))).toBeLessThan(3);
-}, 60000);
 
 // Capitals all stand on the baseline and reach the same height, so only stray marks such as commas
 // stick out, and they don't show reliably which way is up.
@@ -269,12 +266,13 @@ it.each([0, 1, 2, 3])('never turns a page of Russian text the wrong way (%i)', a
  * with `yodsEvery`, yods also come between letters, and with `stopsEvery`, full stops end words.
  * With `pointsEvery`, a vowel point sits apart below letters, as in pointed Hebrew; `tallEvery`
  * sets how often a letter sticks up (0: never). With `spaced`, each yod stands alone between wide
- * gaps, as in a typewriter font. With `bars`, letters are a bar along the top on two stems, heavy
+ * gaps, as in a typewriter font, or with `gaps` [left, right], each yod has that many pixels of
+ * space on its left and right. With `bars`, letters are a bar along the top on two stems, heavy
  * at the top as Hebrew's are, rather than solid blocks.
  */
 function blocks(
   turns: number,
-  { finalYodsEvery = 7, yodsEvery = 0, stopsEvery = 0, pointsEvery = 0, tallEvery = 13, spaced = false, bars = false } = {},
+  { finalYodsEvery = 7, yodsEvery = 0, stopsEvery = 0, pointsEvery = 0, tallEvery = 13, spaced = false, bars = false, gaps = [0, 0] } = {},
 ): Uint8Array {
   const [w, h] = turns % 2 ? [H, W] : [W, H];
   const surface = CanvasKit.MakeSurface(w, h);
@@ -286,7 +284,7 @@ function blocks(
   const ink = new CanvasKit.Paint();
   ink.setColor(CanvasKit.Color(30, 30, 40));
   const box = (x: number, y: number, width: number, height: number) => canvas.drawRect(CanvasKit.XYWHRect(x, y, width, height), ink);
-  const gap = spaced ? 9 : 0;
+  const [left, right] = spaced ? [9, 9] : gaps;
   const yod = (x: number, top: number) => box(x, top, 4, 6);
   let k = 0;
   let word = 0;
@@ -296,9 +294,9 @@ function blocks(
       x -= 12; // the space between words
       for (let letter = 0; letter < 2 + (word % 5); letter++, k++) {
         if (yodsEvery && k % yodsEvery === 2) {
-          x -= 4 + gap;
+          x -= 4 + right;
           yod(x, top);
-          x -= gap;
+          x -= left;
         } else {
           const up = k % tallEvery === 4 ? 7 : 0;
           const down = k % 3 === 1 ? 8 : 0;
@@ -313,7 +311,7 @@ function blocks(
         x -= 3;
       }
       if (word % finalYodsEvery === 0) {
-        x -= 4 + gap;
+        x -= 4 + right;
         yod(x, top);
       }
       if (stopsEvery && word % stopsEvery === 0) {
@@ -332,6 +330,8 @@ describe.each([
   ["with yods only ending words, its letters heavy at the top as Hebrew's are", { bars: true }],
   ['with yods alone between wide gaps, as in a typewriter font', { spaced: true }],
   ['with a few yods inside words and full stops', { finalYodsEvery: 4, stopsEvery: 16, yodsEvery: 50 }],
+  // The gap before each yod is more than twice and less than three times the one after: neither a full stop's nor alone.
+  ['with yods between letters, a space on one side more than twice the other and no yods ending words', { yodsEvery: 13, finalYodsEvery: 1000, gaps: [17, 6] }],
   ['with nothing sticking up', { tallEvery: 0 }],
   ["with vowel points, its letters heavy at the top as Hebrew's are", { pointsEvery: 3, tallEvery: 5, bars: true }],
 ])('a page of a right-to-left script whose yods look like full stops upside down, %s,', (_, options) => {
@@ -431,3 +431,16 @@ it('rejects a page it cannot read, leaving it as it is', async () => {
   await expect(rotatePage(PAGE, 1)).rejects.toThrow();
   expect(mockFiles.get(PAGE)).toBe(broken);
 });
+
+// Sizes 36, 38, 40 and 46 are where a comma's gap before is about a third of the space after it, so
+// those commas must not count against the page. No size may turn an upright page.
+it.each(Array.from({ length: 14 }, (_, i) => 26 + 2 * i))('turns a 3024 px letter in %i px type upright at every quarter turn', async (fontSize) => {
+  const upright = largeLetter(0, fontSize);
+  for (const turns of [0, 1, 2, 3]) {
+    mockFiles.set(PAGE, largeLetter(turns, fontSize));
+
+    await uprightPages([PAGE]);
+
+    expect([fontSize, turns, difference(mockFiles.get(PAGE)!, upright) < 3]).toEqual([fontSize, turns, true]);
+  }
+}, 120000);
