@@ -1120,6 +1120,7 @@ function Capture(props: { pagesBefore: number; onEnd: (pages: string[]) => void 
   });
 
   const pad = { paddingTop: insets.top, paddingBottom: bottomPad(insets.bottom) };
+  const pageLabel = `Page ${props.pagesBefore + pages.length + 1}`;
   if (photo) {
     return (
       <View style={[styles.corners, pad]}>
@@ -1132,7 +1133,7 @@ function Capture(props: { pagesBefore: number; onEnd: (pages: string[]) => void 
             style={[styles.cornersSide, working && styles.disabled]}>
             <Text style={styles.retakeText} maxFontSizeMultiplier={1.5}>Retake</Text>
           </Pressable>
-          <Text style={styles.cornersTitle} maxFontSizeMultiplier={1.5}>{`Page ${props.pagesBefore + pages.length + 1}`}</Text>
+          <Text style={styles.cornersTitle} maxFontSizeMultiplier={1.5}>{pageLabel}</Text>
           <View style={styles.cornersSide} />
         </View>
         <PageEditor photo={photo} onChange={(corners) => setPhoto({ ...photo, corners })} />
@@ -1175,7 +1176,7 @@ function Capture(props: { pagesBefore: number; onEnd: (pages: string[]) => void 
           <View style={styles.guide} />
         </View>
         <View style={[styles.captureTop, { top: insets.top + 8 }]} pointerEvents="none">
-          <Text style={styles.captureChip} maxFontSizeMultiplier={1.5}>{`Page ${props.pagesBefore + pages.length + 1}`}</Text>
+          <Text style={styles.captureChip} maxFontSizeMultiplier={1.5}>{pageLabel}</Text>
         </View>
         <Pressable
           accessibilityRole="button"
@@ -1726,7 +1727,7 @@ const styles = StyleSheet.create({
   cornersPillText: { fontSize: 17, fontWeight: '600', color: '#fff' },
   corners: { flex: 1, backgroundColor: '#0E0F12' },
   cornersBar: { height: 52, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8 },
-  cornersSide: { width: 88, minHeight: 44, justifyContent: 'center', paddingHorizontal: 8 },
+  cornersSide: { width: 88, minHeight: 48, justifyContent: 'center', paddingHorizontal: 8 },
   retakeText: { fontSize: 17, color: '#C9CDD4' },
   cornersTitle: { flex: 1, textAlign: 'center', fontSize: 16, fontWeight: '600', color: '#fff' },
   editorArea: { flex: 1, borderRadius: 16, overflow: 'hidden', marginTop: 8, marginHorizontal: 20, backgroundColor: '#2B2D31' },
