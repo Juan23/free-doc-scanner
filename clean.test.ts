@@ -435,7 +435,7 @@ it('previews the page that storing the same filter gives, shrunk', async () => {
       await cleanPages([PAGE], filter);
       const stored = shrunk(mockFiles.get(PAGE)!, 150);
       const preview = filterImage(photo, filter, 150);
-      // A preview is cleaned at 500 px of this 600 px photo, then shrunk: 0.50 to 0.72 off the stored page, not 0.
+      // Cleaned at 500 px then shrunk, a preview sits 0.50 to 0.72 off the stored page, so the bound is 1.
       expect(meanDifference(preview, stored)).toBeLessThan(1);
       stored.dispose();
       previews.push(preview);
@@ -1002,8 +1002,8 @@ describe('text in a small preview', () => {
     const small = filterImage(photo, { kind, strength }, 132);
     const wanted = inkShares(original);
     const got = inkShares(small);
-    // Measured on 2026-11-10: fragmented text keeps 66-77% of the columns on average and a worst line at 33-48%;
-    // whole text keeps 74-100% and a worst line at 62-86% (Strong cleans the faint edges of thin strokes away).
+    // Fragmented text keeps 66-77% of its columns on average (worst line 33-48%); whole text keeps
+    // 74-100% (worst line 62-86%). Strong cleans the faint edges of thin strokes away.
     expect(mean(got) / mean(wanted)).toBeGreaterThanOrEqual(0.7);
     got.forEach((g, i) => expect(g / wanted[i]).toBeGreaterThanOrEqual(0.55));
     original.dispose();
