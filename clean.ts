@@ -95,10 +95,12 @@ half4 main(float2 xy) {
 // most creases) go white too; dark marks always stay, so full stops and lines survive.
 // Whatever shows past the paper's edges goes white too.
 // A hairline between two pixels is faint in each, and fainter still on the small copy. So a pixel
-// also stays on a thin ridge: summed across the line it holds between 0.6 and a hairline's ink, the
-// pixels beside hold little, and the ink runs on 4 px both ways (summed across, for a tilted line).
-// Specks, creases 3 px or wider and shadow edges fail that. A straight 2 px crease at 0.35 alpha has
-// a hairline's pixels, so it stays too (measured: 170 of 255 at 1600 px, Clean Normal).
+// also stays on a thin ridge: summed across the line it holds at least `least` and at most a
+// hairline's ink, the pixels beside hold little, and the ink runs on 4 px both ways (summed across,
+// for a tilted line). A narrow ridge (its lightest of the three pixels across under a third of the
+// darkest, such as a 1.2 px line) gets the low `least` and 0.4 more ink at most. Specks, creases 3 px
+// or wider (all three pixels dark) and shadow edges fail. A 2 px crease at alpha A has the pixels of
+// an (A * 2.3) px line: it stays at Normal from 0.3 alpha, and at Strong from 0.4.
 const cleanEffect = Skia.RuntimeEffect.Make(`
 uniform shader page;
 uniform shader paper;
@@ -120,11 +122,19 @@ half sumAcross(float2 xy, half3 p, float2 across) {
 }
 half ridge(float2 xy, half3 p, float2 across) {
   float2 along = across.yx;
-  half here = sumAcross(xy, p, across);
+  half a = darkAt(xy - across, p);
+  half b = darkAt(xy, p);
+  half c = darkAt(xy + across, p);
+  half here = a + b + c;
   half beside = darkAt(xy - 2 * across, p) + darkAt(xy + 2 * across, p);
   half runs = min(sumAcross(xy - 4 * along, p, across), sumAcross(xy + 4 * along, p, across));
   half hairline = 1.34 - (1 - half(whitePoint)) / 0.3;
-  return smoothstep(0.4, 0.6, here - 1.5 * beside) * smoothstep(0.4, 0.6, runs) * (1 - smoothstep(hairline + 0.01, hairline + 0.11, here));
+  half least = 0.38 + 2 * max(0.0, 0.85 - half(whitePoint));
+  half narrow = 1 - smoothstep(0.25, 0.4, min(a, min(b, c)) / max(max(a, max(b, c)), 0.01));
+  half lower = mix(0.4, least, narrow);
+  half width = mix(0.2, 0.08, narrow);
+  half limit = hairline + 0.4 * narrow;
+  return smoothstep(lower, lower + width, here - 1.5 * beside) * smoothstep(lower, lower + width, runs) * (1 - smoothstep(limit + 0.01, limit + 0.11, here));
 }
 half4 main(float2 xy) {
   half3 p = max(paper.eval(xy).rgb, half3(0.05));

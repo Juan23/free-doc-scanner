@@ -783,17 +783,51 @@ describe('thin strokes on a large photo', () => {
     surface.dispose();
   }, 60000);
 
-  // A form: warm paper under a grid of 0.8 px dark lines that sit between two pixel rows or columns,
-  // so each pixel gets about 40% ink. `size` is the photo's width; it is 4:3.
-  function gridPage(size: number): Uint8Array {
+  // A 3 px or wider crease is dark in all three pixels, so a darker one (0.4 alpha) goes white too.
+  // Measured: 255 at 3 px, 251 at 4 and 5 px (Normal), 255 at 3 px (Strong).
+  it('whitens 0.4 alpha creases 3 to 5 px wide at Clean Normal and a 3 px one at Strong', () => {
+    const w = 1600;
+    const h = 1200;
+    const surface = Skia.Surface.Make(w, h)!;
+    const canvas = surface.getCanvas();
+    canvas.drawColor(Skia.Color('rgb(235,228,210)'));
+    const ink = Skia.Paint();
+    ink.setColor(Skia.Color('rgb(35,35,40)'));
+    for (let y = 100; y < 300; y += 40) canvas.drawRect(Skia.XYWHRect(100, y, 800, 12), ink);
+    const faint = Skia.Paint();
+    faint.setColor(Skia.Color('rgba(0,0,0,0.4)'));
+    const widths = [3, 4, 5];
+    widths.forEach((m, i) => canvas.drawRect(Skia.XYWHRect(100, 550 + i * 120, 300, m), faint));
+    const photo = surface.makeImageSnapshot();
+    const darkest = (strength: 1 | 2) => {
+      const out = filterImage(photo, { kind: 'clean', strength });
+      const px = readPixels(out);
+      out.dispose();
+      return widths.map((m, i) => {
+        let min = 255;
+        for (let y = 550 + i * 120 - 3; y < 550 + i * 120 + m + 3; y++) for (let x = 97; x < 403; x++) min = Math.min(min, px[(y * w + x) * 4]);
+        return min;
+      });
+    };
+    expect(darkest(1).every((d) => d > 245)).toBe(true);
+    expect(darkest(2)[0]).toBeGreaterThan(245);
+    photo.dispose();
+    ink.dispose();
+    faint.dispose();
+    surface.dispose();
+  }, 120000);
+
+  // A form: warm paper under a grid of dark lines `width` px wide (0.8 gives each of the two pixel
+  // rows or columns a line sits between about 40% ink). `size` is the photo's width; it is 4:3.
+  function gridPage(size: number, width = 0.8): Uint8Array {
     const h = (size * 4) / 3;
     const surface = Skia.Surface.Make(size, h)!;
     const canvas = surface.getCanvas();
     canvas.drawColor(Skia.Color('rgb(235,228,210)'));
     const ink = Skia.Paint();
     ink.setColor(Skia.Color('rgb(35,35,40)'));
-    for (let x = 100; x < size; x += 100) canvas.drawRect(Skia.XYWHRect(x + 0.6, 0, 0.8, h), ink);
-    for (let y = 100; y < h; y += 100) canvas.drawRect(Skia.XYWHRect(0, y + 0.6, size, 0.8), ink);
+    for (let x = 100; x < size; x += 100) canvas.drawRect(Skia.XYWHRect(x + 1 - width / 2, 0, width, h), ink);
+    for (let y = 100; y < h; y += 100) canvas.drawRect(Skia.XYWHRect(0, y + 1 - width / 2, size, width), ink);
     return surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 95);
   }
 
@@ -818,11 +852,17 @@ describe('thin strokes on a large photo', () => {
   }
 
   it.each([
-    [1600, 'Normal', 1],
-    [3024, 'Normal', 1],
-    [1600, 'Light', 0],
-  ] as const)('keeps the thin dark grid of a form on a %i px photo at Clean %s', (size, _, strength) => {
-    const photo = decode(gridPage(size));
+    [1600, 'Normal', 0.8, 1],
+    [3024, 'Normal', 0.8, 1],
+    [1600, 'Light', 0.8, 0],
+    [1600, 'Normal', 0.7, 1],
+    [1600, 'Normal', 1.0, 1],
+    [1600, 'Normal', 1.1, 1],
+    [1600, 'Strong', 0.9, 2],
+    [1600, 'Strong', 1.0, 2],
+    [1600, 'Strong', 1.2, 2],
+  ] as const)('keeps the thin dark grid of a form on a %i px photo at Clean %s with %s px lines', (size, _, width, strength) => {
+    const photo = decode(gridPage(size, width));
     const out = filterImage(photo, { kind: 'clean', strength });
     try {
       // A line reads as unbroken when nearly every pixel along it stays grey or darker, and none at a crossing is lost.
@@ -833,6 +873,30 @@ describe('thin strokes on a large photo', () => {
       photo.dispose();
       out.dispose();
     }
+  }, 60000);
+
+  // A 2 px crease at 0.35 alpha has the pixels of a 0.8 px line, so Normal keeps it too (170); Strong's
+  // lines must be 0.9 px or more, which keeps this one away.
+  it('whitens a faint 2 px crease away from writing on a 1600 px photo at Clean Strong', () => {
+    const w = 1600;
+    const h = 1200;
+    const surface = Skia.Surface.Make(w, h)!;
+    const canvas = surface.getCanvas();
+    canvas.drawColor(Skia.Color('rgb(235,228,210)'));
+    const faint = Skia.Paint();
+    faint.setColor(Skia.Color('rgba(0,0,0,0.35)'));
+    canvas.drawRect(Skia.XYWHRect(100, 700, 300, 2), faint);
+    const photo = surface.makeImageSnapshot();
+    const out = filterImage(photo, { kind: 'clean', strength: 2 });
+    const px = readPixels(out);
+    let min = 255;
+    for (let y = 697; y < 705; y++) for (let x = 97; x < 403; x++) min = Math.min(min, px[(y * w + x) * 4]);
+    // Measured: 252.
+    expect(min).toBeGreaterThan(225);
+    out.dispose();
+    photo.dispose();
+    faint.dispose();
+    surface.dispose();
   }, 60000);
 
   it('keeps a thin dark line tilted 2 degrees on a 1600 px photo at Clean Normal', () => {

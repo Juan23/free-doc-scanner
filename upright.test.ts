@@ -7,6 +7,7 @@ import { ImageFormat, Skia, TileMode } from '@shopify/react-native-skia';
 import { rotatePage, uprightPages } from './upright';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
+const { existsSync, readFileSync } = jest.requireActual('fs');
 const mockFiles = new Map<string, Uint8Array>();
 
 jest.mock('@shopify/react-native-skia', () =>
@@ -202,7 +203,7 @@ let letterSurface: any;
  * A letter in `fontSize` px type on a 3024 x 3024 photo, as large as a phone's, turned clockwise by
  * `turns` quarter turns. It is read on a copy 1000 px long, where 28 px strokes are about 1 px thick.
  */
-function largeLetter(turns: number, fontSize = 28): Uint8Array {
+function largeLetter(turns: number, fontSize = 28, lines = LARGE_LINES, fontFile?: string, rtl = false): Uint8Array {
   const size = 3024;
   // CanvasKit's software surfaces are not freed by delete(), so one is reused: made per page, 60 pages exhaust the heap.
   letterSurface ??= CanvasKit.MakeSurface(size, size);
@@ -215,10 +216,14 @@ function largeLetter(turns: number, fontSize = 28): Uint8Array {
   const ink = new CanvasKit.Paint();
   ink.setColor(CanvasKit.Color(30, 30, 40));
   ink.setAntiAlias(true);
-  const face = CanvasKit.Typeface.GetDefault();
+  const data = fontFile ? readFileSync(fontFile) : null;
+  const face = data ? CanvasKit.Typeface.MakeFreeTypeFaceFromData(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)) : CanvasKit.Typeface.GetDefault();
   const font = new CanvasKit.Font(face, fontSize);
-  const lines = LARGE_LINES;
-  for (let i = 0, y = 300; y < size - 300; i++, y += Math.round((45 * fontSize) / 28)) canvas.drawText(lines[i % lines.length], 250, y, ink, font);
+  for (let i = 0, y = 300; y < size - 300; i++, y += Math.round((45 * fontSize) / 28)) {
+    const line = lines[i % lines.length];
+    const width = font.getGlyphWidths(font.getGlyphIDs(line)).reduce((a: number, b: number) => a + b, 0);
+    canvas.drawText(line, rtl ? size - 250 - width : 250, y, ink, font);
+  }
   canvas.restore();
   const snapshot = letterSurface.makeImageSnapshot();
   const bytes = snapshot.encodeToBytes(CanvasKit.ImageFormat.JPEG, 92);
@@ -444,3 +449,48 @@ it.each(Array.from({ length: 14 }, (_, i) => 26 + 2 * i))('turns a 3024 px lette
     expect([fontSize, turns, difference(mockFiles.get(PAGE)!, upright) < 3]).toEqual([fontSize, turns, true]);
   }
 }, 120000);
+
+// Real typefaces draw differently from CanvasKit's default. Not committed: skipped without macOS's fonts.
+// Only Latin must turn; Cyrillic and Hebrew stay as they are. Courier New's Latin turns only from 40 to
+// 48 px, so 44 is tested: at 32 px its marks look like another script's, at 52 px no full stops are found.
+const FONTS = '/System/Library/Fonts/Supplemental/';
+const REAL_RUSSIAN = RUSSIAN.split('\n').slice(0, 5);
+const REAL_HEBREW = [
+  'קיבלנו את מכתבך ואנו מודים לך על העניין שגילית בעבודתנו. למרבה הצער, השנה',
+  'לא נוכל להשתתף בתערוכה, משום שהקבוצה שלנו עסוקה בהכנת פרויקט חדש. עם זאת,',
+  'נשמח מאוד להיפגש איתך בזמן אחר ולדון באפשרות של שיתוף פעולה בעתיד הקרוב.',
+  'אנא הודע לנו אילו ימים נוחים לך, ואנו נשתדל למצוא את הזמן המתאים לפגישה.',
+  'המפתחות יהיו מוכנים באיסוף במשרד שלנו ביום שישי בבוקר, או שנשלח אותם בדואר.',
+];
+// [typeface, size, whether it turns upright, lines, right to left]
+const REAL: [string, number, boolean, string[], boolean][] = [
+  ['Times New Roman.ttf', 36, true, LARGE_LINES, false],
+  ['Arial.ttf', 36, true, LARGE_LINES, false],
+  ['Courier New.ttf', 44, true, LARGE_LINES, false],
+  ['Times New Roman.ttf', 36, false, REAL_RUSSIAN, false],
+  ['Times New Roman.ttf', 36, false, REAL_HEBREW, true],
+  ['Arial.ttf', 36, false, REAL_HEBREW, true],
+  ['Courier New.ttf', 36, false, REAL_HEBREW, true],
+];
+const haveFonts = existsSync(FONTS + 'Times New Roman.ttf');
+(haveFonts ? describe : describe.skip)('a 3024 px page in a real typeface', () => {
+  it.each(REAL)(
+    '%s in %i px type (turns upright: %s, %#) is never turned wrongly, nor when upright',
+    async (file, size, mustTurn, lines, rtl) => {
+      const upright = largeLetter(0, size, lines, FONTS + file, rtl);
+      for (const turns of [0, 1, 2, 3]) {
+        const page = largeLetter(turns, size, lines, FONTS + file, rtl);
+        mockFiles.set(PAGE, page);
+
+        await uprightPages([PAGE]);
+
+        const result = mockFiles.get(PAGE)!;
+        const asUpright = difference(result, upright) < 3;
+        expect([turns, untouched(page) || asUpright]).toEqual([turns, true]);
+        if (turns === 0) expect(untouched(page)).toBe(true);
+        else if (mustTurn) expect([turns, asUpright]).toEqual([turns, true]);
+      }
+    },
+    120000,
+  );
+});
