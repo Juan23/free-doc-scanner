@@ -9,7 +9,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.juan23.freedocscanner",
-      "buildNumber": "9",
+      "buildNumber": "10",
       "config": {
         "usesNonExemptEncryption": false
       },
@@ -30,7 +30,7 @@
         "android.permission.SYSTEM_ALERT_WINDOW"
       ],
       "allowBackup": false,
-      "versionCode": 9
+      "versionCode": 10
     },
     "plugins": [
       [
