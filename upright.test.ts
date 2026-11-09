@@ -220,8 +220,9 @@ function largeLetter(turns: number, fontSize = 28, lines = LARGE_LINES, fontFile
   const face = data ? CanvasKit.Typeface.MakeFreeTypeFaceFromData(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)) : CanvasKit.Typeface.GetDefault();
   const font = new CanvasKit.Font(face, fontSize);
   for (let i = 0, y = 300; y < size - 300; i++, y += Math.round((45 * fontSize) / 28)) {
-    // drawText lays glyphs out left to right, so right-to-left text is drawn reversed to read as printed Hebrew does.
-    const line = rtl ? [...lines[i % lines.length]].reverse().join('') : lines[i % lines.length];
+    const stored = lines[i % lines.length];
+    // drawText lays glyphs out left to right, so right-to-left text is reversed to read as printed.
+    const line = rtl ? [...stored].reverse().join('') : stored;
     const width = font.getGlyphWidths(font.getGlyphIDs(line)).reduce((a: number, b: number) => a + b, 0);
     canvas.drawText(line, rtl ? size - 250 - width : 250, y, ink, font);
   }
@@ -454,9 +455,8 @@ it.each(Array.from({ length: 14 }, (_, i) => 26 + 2 * i))('turns a 3024 px lette
 // Real typefaces draw differently from CanvasKit's default. Not committed: skipped without macOS's fonts.
 // Only Latin must turn; Cyrillic and Hebrew stay as they are. Courier New's Latin turns only from 40 to
 // 48 px, so 44 is tested: at 32 px its marks look like another script's, at 52 px no full stops are found.
-// The Hebrew rows only check that real Hebrew stays: measured in Times New Roman, Arial and Courier New
-// from 24 to 56 px, it stays even with the marks rule and the heavy-at-the-bottom rule both off, so no
-// real-font row guards those two rules (the made-up script above does).
+// The Hebrew rows only check that real Hebrew stays. Real fonts stay even with the marks and
+// heavy-bottom rules off (24 to 56 px), so the made-up script above guards those two rules.
 const FONTS = '/System/Library/Fonts/Supplemental/';
 const REAL_RUSSIAN = RUSSIAN.split('\n').slice(0, 5);
 const REAL_HEBREW = [

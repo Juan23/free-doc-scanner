@@ -860,7 +860,7 @@ describe('thin strokes on a large photo', () => {
     [1600, 'Normal', 1.1, 1],
     [1600, 'Normal', 1.2, 1],
     [3024, 'Normal', 0.7, 1],
-    [3024, 'Strong', 1.0, 2],
+    [3024, 'Strong', 0.9, 2],
     [1600, 'Strong', 0.9, 2],
     [1600, 'Strong', 1.0, 2],
     [1600, 'Strong', 1.2, 2],
