@@ -97,13 +97,10 @@ half4 main(float2 xy) {
 // A hairline between two pixels is faint in each, and fainter still on the small copy. So a pixel
 // also stays on a thin ridge: summed across the line it holds at least `least` and at most a
 // hairline's ink, the pixels beside hold little, and the ink runs on 4 px both ways (summed across,
-// for a tilted line). A line is narrow when its lightest pixel of the three across is under about a
-// third of its darkest (1.2 px or thinner touches two, or three with small outer ones); only a narrow
-// one gets the low `least` and 0.4 more ink at most. Anything wider is judged as before. Specks,
-// creases 3 px or wider (all three pixels dark) and shadow edges fail. A 2 px crease at alpha A has
-// the pixels of an (A * 2.3) px line, so it stays when that is a line Normal keeps, 0.7 px or more,
-// from 0.3 alpha (measured at 1600 px: 192 of 255 at 0.3), and at Strong, which keeps lines from
-// 0.9 px, from 0.4 alpha.
+// for a tilted line). A narrow ridge (its lightest of the three pixels across under a third of the
+// darkest, such as a 1.2 px line) gets the low `least` and 0.4 more ink at most. Specks, creases 3 px
+// or wider (all three pixels dark) and shadow edges fail. A 2 px crease at alpha A has the pixels of
+// an (A * 2.3) px line: it stays at Normal from 0.3 alpha, and at Strong from 0.4.
 const cleanEffect = Skia.RuntimeEffect.Make(`
 uniform shader page;
 uniform shader paper;

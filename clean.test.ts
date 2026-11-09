@@ -783,8 +783,8 @@ describe('thin strokes on a large photo', () => {
     surface.dispose();
   }, 60000);
 
-  // A crease of 3 px or wider is dark in all three pixels across, which no thin line is, so a darker
-  // one (0.4 alpha) goes white too. Measured on main: 255 at 3 px, 251 at 4 and 5 px (Normal), 255 at 3 px (Strong).
+  // A 3 px or wider crease is dark in all three pixels, so a darker one (0.4 alpha) goes white too.
+  // Measured: 255 at 3 px, 251 at 4 and 5 px (Normal), 255 at 3 px (Strong).
   it('whitens 0.4 alpha creases 3 to 5 px wide at Clean Normal and a 3 px one at Strong', () => {
     const w = 1600;
     const h = 1200;
@@ -857,9 +857,10 @@ describe('thin strokes on a large photo', () => {
     [1600, 'Light', 0.8, 0],
     [1600, 'Normal', 0.7, 1],
     [1600, 'Normal', 1.0, 1],
+    [1600, 'Normal', 1.1, 1],
     [1600, 'Strong', 0.9, 2],
     [1600, 'Strong', 1.0, 2],
-  ] as const)('keeps the thin dark grid of a form on a %i px photo at Clean %s with %f px lines', (size, _, width, strength) => {
+  ] as const)('keeps the thin dark grid of a form on a %i px photo at Clean %s with %s px lines', (size, _, width, strength) => {
     const photo = decode(gridPage(size, width));
     const out = filterImage(photo, { kind: 'clean', strength });
     try {

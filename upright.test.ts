@@ -450,10 +450,9 @@ it.each(Array.from({ length: 14 }, (_, i) => 26 + 2 * i))('turns a 3024 px lette
   }
 }, 120000);
 
-// Real typefaces, which draw differently from CanvasKit's default: macOS's own, not committed. Each
-// page is turned every way: an upright page is never turned, no page is turned the wrong way, and the
-// pages marked to turn must turn upright. Cyrillic and Hebrew are left as they are. Courier New's Latin
-// turns at 44 px only: at 32 px its marks look like another script's, at 52 px no full stops are found.
+// Real typefaces draw differently from CanvasKit's default. Not committed: skipped without macOS's fonts.
+// Only Latin must turn; Cyrillic and Hebrew stay as they are. Courier New's Latin turns only from 40 to
+// 48 px, so 44 is tested: at 32 px its marks look like another script's, at 52 px no full stops are found.
 const FONTS = '/System/Library/Fonts/Supplemental/';
 const REAL_RUSSIAN = RUSSIAN.split('\n').slice(0, 5);
 const REAL_HEBREW = [
