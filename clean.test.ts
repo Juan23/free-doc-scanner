@@ -398,9 +398,8 @@ function shrunk(bytes: Uint8Array, width: number): SkImage {
 
 // The mean difference per colour channel, 0-255.
 function meanDifference(a: SkImage, b: SkImage): number {
-  const pixels = { width: a.width(), height: a.height(), colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul };
-  const pa = a.readPixels(0, 0, pixels) as Uint8Array;
-  const pb = b.readPixels(0, 0, pixels) as Uint8Array;
+  const pa = readPixels(a);
+  const pb = readPixels(b);
   let sum = 0;
   for (let i = 0; i < pa.length; i += 4) {
     sum += Math.abs(pa[i] - pb[i]) + Math.abs(pa[i + 1] - pb[i + 1]) + Math.abs(pa[i + 2] - pb[i + 2]);
@@ -694,7 +693,7 @@ describe('thin strokes on a large photo', () => {
     const sw = copy.width();
     const sh = copy.height();
     const k = sw / photo.w;
-    const px = copy.readPixels(0, 0, { width: sw, height: sh, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul }) as Uint8Array;
+    const px = readPixels(copy);
     const grey = (x: number, y: number) => px[(y * sw + x) * 4];
     const around = (at: number, t: number, read: (i: number) => number) => {
       let dark = 0;
@@ -737,7 +736,7 @@ describe('thin strokes on a large photo', () => {
     }
     const photo = surface.makeImageSnapshot();
     const out = filterImage(photo, { kind: 'clean', strength: 0 });
-    const px = out.readPixels(0, 0, { width: w, height: h, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul }) as Uint8Array;
+    const px = readPixels(out);
     const midColumn = w >> 1;
     const darkest = ys.map((y) => Math.min(...[-2, -1, 0, 1, 2, 3, 4].map((d) => px[((y + d) * w + midColumn) * 4])));
     // Measured: each stroke lands at 236 with the mipmapped copy.
