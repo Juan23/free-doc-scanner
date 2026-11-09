@@ -106,6 +106,7 @@ it('turns shadowed, tinted paper, specks and creases white and keeps ink dark, i
 
   expect([...mockFiles.keys()].sort()).toEqual([
     'file:///doc/scans/1/f1.json',
+    'file:///doc/scans/1/o1.cleaned',
     'file:///doc/scans/1/o1.jpg',
     'file:///doc/scans/1/p1.jpg',
   ]);
@@ -532,6 +533,37 @@ it('filters an older page with no original and no record, and records it', async
 
   expect(pageFilter(PAGE1)).toEqual({ kind: 'clean', strength: 1 });
 }, 30000);
+
+it('marks an already-stored page that has no original, and not a new page or one with an original', async () => {
+  const MARK = 'file:///doc/scans/1/o1.cleaned';
+  mockFiles.set(PAGE1, photographedPage());
+  await cleanPages([PAGE1], { kind: 'clean', strength: 1 }, true);
+  expect(mockFiles.has(MARK)).toBe(false);
+  mockFiles.clear();
+
+  mockFiles.set(PAGE1, photographedPage());
+  await cleanPages([PAGE1], { kind: 'clean', strength: 1 });
+  expect(mockFiles.has(MARK)).toBe(true);
+  mockFiles.clear();
+
+  mockFiles.set(PAGE1, photographedPage());
+  mockFiles.set('file:///doc/scans/1/o1.jpg', photographedPage());
+  await cleanPages([PAGE1], { kind: 'clean', strength: 1 });
+  expect(mockFiles.has(MARK)).toBe(false);
+}, 60000);
+
+it('Original on a marked page records Original and leaves the page as it is', async () => {
+  // The older page as stored: its clean-up is already in it.
+  const older = photographedPage();
+  mockFiles.set(PAGE1, older);
+  await cleanPages([PAGE1], { kind: 'clean', strength: 1 });
+
+  await cleanPages([PAGE1], { kind: 'original', strength: 1 });
+
+  expect(pageFilter(PAGE1)).toEqual({ kind: 'original', strength: 1 });
+  expect(mockFiles.get(PAGE1)).toEqual(older);
+  expect(mockFiles.has('file:///doc/scans/1/o1.cleaned')).toBe(true);
+}, 60000);
 
 it('never overwrites a page whose address is not p<N>.jpg with its filter record', async () => {
   const odd = 'file:///doc/scans/1/page.jpg';

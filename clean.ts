@@ -3,7 +3,7 @@ import {
 } from '@shopify/react-native-skia';
 import { File, Paths } from 'expo-file-system';
 
-import { copyPage, heldPhoto, keepOriginal, originalOf, readPage, replacePage } from './scans';
+import { copyPage, heldPhoto, keepOriginal, markCleaned, originalOf, readPage, replacePage } from './scans';
 
 /** How to treat a page: leave it as photographed, clean it, or clean it to grey. Light, Normal and Strong set how much clean-up keeps. */
 export type Filter = { kind: 'original' | 'clean' | 'gray'; strength: 0 | 1 | 2 };
@@ -430,9 +430,10 @@ export async function filterPreviews(
   return previews as Record<Filter['kind'], SkImage>;
 }
 
-async function cleanPage(uri: string, filter: Filter): Promise<void> {
+async function cleanPage(uri: string, filter: Filter, newPage: boolean): Promise<void> {
   // Every filter starts from the photo as it was before any cleaning, so changes never stack.
-  // shortcut: pages scanned before untouched photos were kept have no o<N>.jpg, so this copies their already-cleaned page; Original can't bring the photo back, and the page editor says so.
+  // shortcut: copies made by earlier builds carry no marker, so the line stays away on them, nothing to upgrade unless those files can be told apart.
+  if (!newPage) await markCleaned(uri);
   await keepOriginal(uri);
   if (filter.kind === 'original') {
     await copyPage(originalOf(uri), uri);
@@ -456,14 +457,14 @@ async function cleanPage(uri: string, filter: Filter): Promise<void> {
  * replacing each page. Original puts each page's untouched photo back. A page that can't be
  * cleaned stays as it was. Returns how many pages failed.
  */
-export async function cleanPages(pageUris: string[], filter: Filter = NORMAL): Promise<number> {
+export async function cleanPages(pageUris: string[], filter: Filter = NORMAL, newPages = false): Promise<number> {
   let failed = 0;
   // One page at a time: each holds full-size bitmaps in memory.
   for (const uri of pageUris) {
     try {
       // Before cleaning, so a page whose filter can't be recorded is left as it was.
       const record = filterRecord(uri);
-      await cleanPage(uri, filter);
+      await cleanPage(uri, filter, newPages);
       record.writeSync(JSON.stringify(filter));
     } catch {
       failed++;

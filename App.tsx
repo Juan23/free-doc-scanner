@@ -27,7 +27,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 import { cleanPages, defaultFilter, filterPreviews, setDefaultFilter, sharedFilter, type Filter } from './clean';
 import { cropPage, findPage, isConvex, type FoundPage, type Point, type Quad } from './crop';
 import { clearScannerCache, pagesToSave, saveJpegs, savePdf } from './save';
-import { addPages, anyOriginalMissing, createScan, deleteScan, heldPhoto, listScans, type Scan } from './scans';
+import { addPages, anyPhotoMissing, createScan, deleteScan, heldPhoto, listScans, type Scan } from './scans';
 import { rotatePage, uprightPages } from './upright';
 
 const C = {
@@ -177,7 +177,7 @@ function Root() {
   async function finishNewest(scan: Scan, count: number) {
     const pages = scan.pages.slice(-count);
     await uprightPages(pages);
-    await cleanPages(pages, defaultFilter());
+    await cleanPages(pages, defaultFilter(), true);
   }
 
   const scanNew = () =>
@@ -460,7 +460,7 @@ function Detail(props: {
   );
   // Pages scanned before untouched photos were kept have no photo for Original to bring back.
   const olderPage = useMemo(
-    () => (editing || filtering) && anyOriginalMissing(filtering ? pickedPages : scan.pages),
+    () => (editing || filtering) && anyPhotoMissing(filtering ? pickedPages : scan.pages),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- re-reads on each edit (subjectKey), which the callback does not read
     [editing, filtering, scan.pages, pickedPages, subjectKey],
   );
