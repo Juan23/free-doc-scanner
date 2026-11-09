@@ -120,11 +120,17 @@ half sumAcross(float2 xy, half3 p, float2 across) {
 }
 half ridge(float2 xy, half3 p, float2 across) {
   float2 along = across.yx;
-  half here = sumAcross(xy, p, across);
+  half a = darkAt(xy - across, p);
+  half b = darkAt(xy, p);
+  half c = darkAt(xy + across, p);
+  half here = a + b + c;
   half beside = darkAt(xy - 2 * across, p) + darkAt(xy + 2 * across, p);
   half runs = min(sumAcross(xy - 4 * along, p, across), sumAcross(xy + 4 * along, p, across));
   half hairline = 1.34 - (1 - half(whitePoint)) / 0.3;
-  return smoothstep(0.4, 0.6, here - 1.5 * beside) * smoothstep(0.4, 0.6, runs) * (1 - smoothstep(hairline + 0.01, hairline + 0.11, here));
+  half crease = (half(whitePoint) - 0.63) / 0.6;
+  half least = 0.3 + 2 * max(0, 0.85 - half(whitePoint));
+  half limit = hairline + 0.4 * smoothstep(crease, crease + 0.06, max(a, max(b, c)));
+  return smoothstep(least, 1.5 * least, here - 1.5 * beside) * smoothstep(least, 1.5 * least, runs) * (1 - smoothstep(limit + 0.01, limit + 0.11, here));
 }
 half4 main(float2 xy) {
   half3 p = max(paper.eval(xy).rgb, half3(0.05));
