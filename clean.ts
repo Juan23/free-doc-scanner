@@ -92,15 +92,13 @@ half4 main(float2 xy) {
 
 // Divides each pixel by the paper's brightness around it, so shadows and tint turn white, and
 // stretches the levels so grain goes white and ink dark. Faint marks far from any writing (dirt,
-// creases) go white too; dark marks always stay, so full stops and lines survive.
+// most creases) go white too; dark marks always stay, so full stops and lines survive.
 // Whatever shows past the paper's edges goes white too.
-// A hairline between two pixels is faint in each, and on the small copy fainter still. So a pixel
-// also stays when, across the line, it and its neighbours hold a hairline's ink, no more (0.84 in
-// all at Normal; `hairline` follows the white point) and no less (0.6), the pixels just beside hold
-// little, and ink runs on 4 px away on both sides (summed across, so a slightly tilted line counts).
-// That leaves out specks, creases 3 px or wider and shadow edges. A straight 2 px crease at 0.35
-// alpha has the same pixels as a hairline between two pixels, so it stays too (measured: 170 of 255
-// at 1600 px, Clean Normal).
+// A hairline between two pixels is faint in each, and fainter still on the small copy. So a pixel
+// also stays on a thin ridge: summed across the line it holds between 0.6 and a hairline's ink, the
+// pixels beside hold little, and the ink runs on 4 px both ways (summed across, for a tilted line).
+// Specks, creases 3 px or wider and shadow edges fail that. A straight 2 px crease at 0.35 alpha has
+// a hairline's pixels, so it stays too (measured: 170 of 255 at 1600 px, Clean Normal).
 const cleanEffect = Skia.RuntimeEffect.Make(`
 uniform shader page;
 uniform shader paper;

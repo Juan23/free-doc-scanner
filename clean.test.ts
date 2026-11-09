@@ -771,7 +771,7 @@ describe('thin strokes on a large photo', () => {
       for (let yy = y - 3; yy < y + b + 3; yy++) for (let xx = x - 3; xx < x + a + 3; xx++) min = Math.min(min, px[(yy * w + xx) * 4]);
       return min;
     };
-    // Measured: all 255, but the 6 px crease, which the code before the grid change left at 228.
+    // Measured: all 255 but the 6 px crease, at about 228.
     expect(darkest(...marks.speck3)).toBeGreaterThan(245);
     expect(darkest(...marks.speck8)).toBeGreaterThan(245);
     expect(darkest(...marks.crease3)).toBeGreaterThan(245);

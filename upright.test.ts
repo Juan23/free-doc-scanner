@@ -432,9 +432,8 @@ it('rejects a page it cannot read, leaving it as it is', async () => {
   expect(mockFiles.get(PAGE)).toBe(broken);
 });
 
-// Measured with 3 for WIDER and no NEUTRAL band: sizes 36, 38, 40 and 46 each left a turn sideways
-// (7 of 56), because the gap before a comma was about a third of the space after it. No size may
-// turn an upright page.
+// Sizes 36, 38, 40 and 46 are where a comma's gap before is about a third of the space after it, so
+// those commas must not count against the page. No size may turn an upright page.
 it.each(Array.from({ length: 14 }, (_, i) => 26 + 2 * i))('turns a 3024 px letter in %i px type upright at every quarter turn', async (fontSize) => {
   const upright = largeLetter(0, fontSize);
   for (const turns of [0, 1, 2, 3]) {
