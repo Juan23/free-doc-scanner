@@ -198,7 +198,7 @@ it('keepOriginal writes the first original copy as .part and drops it when the m
   expect(mockFs.nodes.get(`${ROOT}/5/o1.jpg`)).toBe('img-p1.jpg');
 });
 
-it('listScans ignores the cleaned marker', () => {
+it('listScans ignores an o<N>.cleaned file an earlier build left', () => {
   putScan('5', ['p1.jpg', 'o1.jpg', 'o1.cleaned']);
 
   expect(listScans()[0].pages).toEqual([`${ROOT}/5/p1.jpg`]);
