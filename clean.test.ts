@@ -380,6 +380,10 @@ it('leaves a page it cannot read as it is, cleans the rest, and counts the failu
   expect(luma(mockFiles.get('file:///doc/scans/1/p2.jpg')!, 30, 400)).toBeGreaterThan(245);
 }, 30000);
 
+function readPixels(image: SkImage): Uint8Array {
+  return image.readPixels(0, 0, { width: image.width(), height: image.height(), colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul }) as Uint8Array;
+}
+
 function decode(bytes: Uint8Array): SkImage {
   return Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(bytes))!;
 }
@@ -745,10 +749,6 @@ describe('thin strokes on a large photo', () => {
     surface.dispose();
   }, 60000);
 
-  function readPixels(out: SkImage): Uint8Array {
-    return out.readPixels(0, 0, { width: out.width(), height: out.height(), colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul }) as Uint8Array;
-  }
-
   // Specks and creases of 0.35 alpha black, far from the lines of writing at the top. A mark's
   // darkest pixel in the finished page is read.
   it('whitens faint specks and wide creases away from writing on a 1600 px photo at Clean Normal', () => {
@@ -990,8 +990,6 @@ describe('text in a small preview', () => {
     return shares;
   }
 
-  const readPixels = (img: SkImage) =>
-    img.readPixels(0, 0, { width: img.width(), height: img.height(), colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul }) as Uint8Array;
   const mean = (a: number[]) => a.reduce((s, v) => s + v, 0) / a.length;
 
   it.each([
