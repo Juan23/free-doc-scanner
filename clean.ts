@@ -94,9 +94,13 @@ half4 main(float2 xy) {
 // stretches the levels so grain goes white and ink dark. Faint marks far from any writing (dirt,
 // creases) go white too; dark marks always stay, so full stops and lines survive.
 // Whatever shows past the paper's edges goes white too.
-// A hairline between two pixels is faint in each, and on the small copy fainter still, so a pixel
-// also stays when it and its neighbours, along x or y, hold a line's worth of ink (about 0.6)
-// while the pixels just beside them hold little: wider smudges and shadow edges fail that.
+// A hairline between two pixels is faint in each, and on the small copy fainter still. So a pixel
+// also stays when, across the line, it and its neighbours hold a hairline's ink, no more (0.84 in
+// all at Normal; `hairline` follows the white point) and no less (0.6), the pixels just beside hold
+// little, and ink runs on 4 px away on both sides (summed across, so a slightly tilted line counts).
+// That leaves out specks, creases 3 px or wider and shadow edges. A straight 2 px crease at 0.35
+// alpha has the same pixels as a hairline between two pixels, so it stays too (measured: 170 of 255
+// at 1600 px, Clean Normal).
 const cleanEffect = Skia.RuntimeEffect.Make(`
 uniform shader page;
 uniform shader paper;
@@ -107,20 +111,29 @@ uniform float grey;
 half3 levels(float2 xy, half3 p) {
   return saturate((page.eval(xy).rgb / p - (half(whitePoint) - 0.6)) / 0.6);
 }
-half darkAt(float2 xy, half3 p) {
-  half3 c = levels(xy, p);
+half darkOf(half3 c) {
   return 1 - min(min(c.r, c.g), c.b);
 }
-half ridge(float2 xy, half3 p, float2 step) {
-  half beside = darkAt(xy - 2 * step, p) + darkAt(xy + 2 * step, p);
-  return darkAt(xy - step, p) + darkAt(xy, p) + darkAt(xy + step, p) - 1.5 * beside;
+half darkAt(float2 xy, half3 p) {
+  return darkOf(levels(xy, p));
+}
+half sumAcross(float2 xy, half3 p, float2 across) {
+  return darkAt(xy - across, p) + darkAt(xy, p) + darkAt(xy + across, p);
+}
+half ridge(float2 xy, half3 p, float2 across) {
+  float2 along = across.yx;
+  half here = sumAcross(xy, p, across);
+  half beside = darkAt(xy - 2 * across, p) + darkAt(xy + 2 * across, p);
+  half runs = min(sumAcross(xy - 4 * along, p, across), sumAcross(xy + 4 * along, p, across));
+  half hairline = 1.34 - (1 - half(whitePoint)) / 0.3;
+  return smoothstep(0.4, 0.6, here - 1.5 * beside) * smoothstep(0.4, 0.6, runs) * (1 - smoothstep(hairline + 0.01, hairline + 0.11, here));
 }
 half4 main(float2 xy) {
   half3 p = max(paper.eval(xy).rgb, half3(0.05));
   half3 c = levels(xy, p);
-  half dark = 1 - min(min(c.r, c.g), c.b);
-  half line = max(ridge(xy, p, float2(1, 0)), ridge(xy, p, float2(0, 1)));
-  half keep = max(max(smoothstep(0.45, 0.65, dark), smoothstep(0.02, 0.05, ink.eval(xy).a)), smoothstep(0.4, 0.6, line));
+  half dark = darkOf(c);
+  half keep = max(smoothstep(0.45, 0.65, dark), smoothstep(0.02, 0.05, ink.eval(xy).a));
+  if (keep < 1 && dark > 0.1) keep = max(keep, max(ridge(xy, p, float2(1, 0)), ridge(xy, p, float2(0, 1))));
   half3 cleaned = mix(half3(1), c, keep * (1 - beyond.eval(xy).a));
   half greyed = dot(cleaned, half3(0.2126, 0.7152, 0.0722));
   return half4(mix(cleaned, half3(greyed), half(grey)), 1);
