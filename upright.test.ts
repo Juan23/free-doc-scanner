@@ -220,7 +220,9 @@ function largeLetter(turns: number, fontSize = 28, lines = LARGE_LINES, fontFile
   const face = data ? CanvasKit.Typeface.MakeFreeTypeFaceFromData(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)) : CanvasKit.Typeface.GetDefault();
   const font = new CanvasKit.Font(face, fontSize);
   for (let i = 0, y = 300; y < size - 300; i++, y += Math.round((45 * fontSize) / 28)) {
-    const line = lines[i % lines.length];
+    const stored = lines[i % lines.length];
+    // drawText lays glyphs out left to right, so right-to-left text is reversed to read as printed.
+    const line = rtl ? [...stored].reverse().join('') : stored;
     const width = font.getGlyphWidths(font.getGlyphIDs(line)).reduce((a: number, b: number) => a + b, 0);
     canvas.drawText(line, rtl ? size - 250 - width : 250, y, ink, font);
   }
@@ -453,6 +455,8 @@ it.each(Array.from({ length: 14 }, (_, i) => 26 + 2 * i))('turns a 3024 px lette
 // Real typefaces draw differently from CanvasKit's default. Not committed: skipped without macOS's fonts.
 // Only Latin must turn; Cyrillic and Hebrew stay as they are. Courier New's Latin turns only from 40 to
 // 48 px, so 44 is tested: at 32 px its marks look like another script's, at 52 px no full stops are found.
+// The Hebrew rows only check that real Hebrew stays. Real fonts stay even with the marks and
+// heavy-bottom rules off (24 to 56 px), so the made-up script above guards those two rules.
 const FONTS = '/System/Library/Fonts/Supplemental/';
 const REAL_RUSSIAN = RUSSIAN.split('\n').slice(0, 5);
 const REAL_HEBREW = [
