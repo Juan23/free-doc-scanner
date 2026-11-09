@@ -28,27 +28,10 @@ export function originalOf(uri: string): string {
   return uri.replace(/p(\d+\.jpg)$/, 'o$1');
 }
 
-const markerOf = (uri: string) => originalOf(uri).replace(/\.jpg$/, '.cleaned');
-
-/** Whether any of `pages` has no untouched photo: no original, or an original copied from a cleaned page. */
-export function anyPhotoMissing(pages: string[]): boolean {
-  return pages.some((page) => {
-    const original = originalOf(page);
-    return original !== page && (!new File(original).exists || new File(markerOf(page)).exists);
-  });
-}
-
 /** The untouched photo of the page at `uri` when one is stored, else the page itself. */
 export function heldPhoto(uri: string): string {
   const original = originalOf(uri);
   return original !== uri && new File(original).exists ? original : uri;
-}
-
-/** Marks the stored page at `uri` as already cleaned, before keepOriginal copies it, unless it already has an original. */
-export async function markCleaned(uri: string): Promise<void> {
-  const original = originalOf(uri);
-  if (original === uri || new File(original).exists) return;
-  await new File(markerOf(uri)).write(new Uint8Array());
 }
 
 /** Keeps the page at `uri` as its untouched original, once: an original already there stays. */

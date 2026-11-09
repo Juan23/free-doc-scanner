@@ -27,7 +27,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 import { cleanPages, defaultFilter, filterPreviews, setDefaultFilter, sharedFilter, type Filter } from './clean';
 import { cropPage, findPage, isConvex, type FoundPage, type Point, type Quad } from './crop';
 import { clearScannerCache, pagesToSave, saveJpegs, savePdf } from './save';
-import { addPages, anyPhotoMissing, createScan, deleteScan, heldPhoto, listScans, type Scan } from './scans';
+import { addPages, createScan, deleteScan, heldPhoto, listScans, type Scan } from './scans';
 import { rotatePage, uprightPages } from './upright';
 
 const C = {
@@ -177,7 +177,7 @@ function Root() {
   async function finishNewest(scan: Scan, count: number) {
     const pages = scan.pages.slice(-count);
     await uprightPages(pages);
-    await cleanPages(pages, defaultFilter(), true);
+    await cleanPages(pages, defaultFilter());
   }
 
   const scanNew = () =>
@@ -457,12 +457,6 @@ function Detail(props: {
     () => sharedFilter(subject),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- re-reads on each edit (subjectKey), which the callback does not read
     [subjectKey],
-  );
-  // Pages with no untouched photo, or one copied from a cleaned page, have none for Original to bring back.
-  const olderPage = useMemo(
-    () => (editing || filtering) && anyPhotoMissing(filtering ? pickedPages : scan.pages),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-reads on each edit (subjectKey), which the callback does not read
-    [editing, filtering, scan.pages, pickedPages, subjectKey],
   );
   const thumbs = previews.page === previewPage ? previews.images : null;
   const turned = previewPage ? props.turns[previewPage] : 0;
@@ -772,7 +766,6 @@ function Detail(props: {
               thumbs={thumbs}
               recorded={recorded}
               busy={busy}
-              older={olderPage}
               strengthsOpen={strengthsOpen}
               onStrengths={setStrengthsOpen}
               onFilter={(filter) => props.onFilterPage(editedPage, filter)}
@@ -836,7 +829,6 @@ function Detail(props: {
               thumbs={thumbs}
               recorded={recorded}
               busy={busy}
-              older={olderPage}
               strengthsOpen={strengthsOpen}
               onStrengths={setStrengthsOpen}
               onFilter={(filter) => props.onFilterPages(pickedPages, filter)}
@@ -920,7 +912,6 @@ function FilterStrip(props: {
   thumbs: Record<Filter['kind'], SkImage> | null;
   recorded: Filter | null;
   busy: boolean;
-  older: boolean;
   strengthsOpen: boolean;
   onStrengths: (open: boolean) => void;
   onFilter: (filter: Filter) => void;
@@ -988,11 +979,6 @@ function FilterStrip(props: {
           );
         })}
       </View>
-      {props.older && (
-        <Text style={styles.stripNote} maxFontSizeMultiplier={1.5}>
-          Pages scanned before this version keep their clean-up.
-        </Text>
-      )}
     </View>
   );
 }
@@ -1543,7 +1529,6 @@ const styles = StyleSheet.create({
   strengthOn: { backgroundColor: '#fff' },
   strengthText: { fontSize: 15, color: '#C9CDD4' },
   strengthTextOn: { fontWeight: '700', color: C.text },
-  stripNote: { textAlign: 'center', fontSize: 13, color: '#A9AFBA', marginTop: 8 },
   thumbs: { flexDirection: 'row', justifyContent: 'center', gap: 18 },
   thumb: { width: 84, alignItems: 'center', gap: 6 },
   thumbBox: { padding: 3, borderRadius: 10, borderWidth: 2, borderColor: 'transparent' },
