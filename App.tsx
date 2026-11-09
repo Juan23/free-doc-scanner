@@ -1041,7 +1041,7 @@ const deleteQuietly = (uri: string) => {
   } catch {}
 };
 
-// Android's scanner. Its photos and pages wait in cache folders that clearScannerCache empties at launch.
+// Android's camera screen. Its photos and pages wait in cache folders that clearScannerCache empties at launch.
 function Capture(props: { pagesBefore: number; onEnd: (pages: string[]) => void }) {
   const insets = useSafeAreaInsets();
   const camera = useRef<CameraView>(null);
