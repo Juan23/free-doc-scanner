@@ -3,7 +3,7 @@ import { Directory } from 'expo-file-system';
 import { Album, Asset, requestPermissionsAsync } from 'expo-media-library';
 import { Platform } from 'react-native';
 
-import { clearScannerCache, pagesToSave, saveJpegs, savePdf, scanName } from './save';
+import { clearScannerCache, pagesToSave, pickOnLongPress, saveJpegs, savePdf, scanName } from './save';
 
 // In-memory file system. Writes and copies finish on a later tick, like the native module.
 const mockFs = {
@@ -261,4 +261,11 @@ it('saves only the picked pages, in page order whatever order they were tapped i
 
 it('saves every page when none are picked', () => {
   expect(pagesToSave(['file:///p1.jpg', 'file:///p2.jpg'], [])).toEqual(['file:///p1.jpg', 'file:///p2.jpg']);
+});
+
+it('long press starts a selection with that page picked, and keeps it picked', () => {
+  expect(pickOnLongPress(null, 'file:///p2.jpg')).toEqual(['file:///p2.jpg']);
+  const picked = ['file:///p1.jpg'];
+  expect(pickOnLongPress(picked, 'file:///p2.jpg')).toEqual(['file:///p1.jpg', 'file:///p2.jpg']);
+  expect(pickOnLongPress(picked, 'file:///p1.jpg')).toBe(picked);
 });
