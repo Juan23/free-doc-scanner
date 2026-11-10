@@ -1,5 +1,5 @@
 /// <reference types="jest" />
-import { addPages, anyPhotoMissing, createScan, deleteScan, heldPhoto, keepOriginal, listScans, markCleaned } from './scans';
+import { addPages, createScan, deleteScan, heldPhoto, keepOriginal, listScans } from './scans';
 import { scanName } from './save';
 
 // In-memory file system: uri -> directory marker or file text. Moves finish on a later tick.
@@ -198,48 +198,7 @@ it('keepOriginal writes the first original copy as .part and drops it when the m
   expect(mockFs.nodes.get(`${ROOT}/5/o1.jpg`)).toBe('img-p1.jpg');
 });
 
-it('anyPhotoMissing reports a page with no untouched photo, and only then', () => {
-  putScan('5', ['p1.jpg', 'p2.jpg', 'o2.jpg']);
-  const pages = [`${ROOT}/5/p1.jpg`, `${ROOT}/5/p2.jpg`];
-
-  expect(anyPhotoMissing(pages)).toBe(true);
-  put(`${ROOT}/5/o1.jpg`, 'img-o1.jpg');
-  expect(anyPhotoMissing(pages)).toBe(false);
-});
-
-it('markCleaned writes o<N>.cleaned before the copy, so a crash between them still reads as an older page', async () => {
-  putScan('5', ['p1.jpg']);
-  const page = `${ROOT}/5/p1.jpg`;
-
-  await markCleaned(page);
-  mockFs.failMoveAt = mockFs.moves + 1;
-  await expect(keepOriginal(page)).rejects.toThrow('move failed');
-
-  expect(mockFs.nodes.has(`${ROOT}/5/o1.cleaned`)).toBe(true);
-  expect(anyPhotoMissing([page])).toBe(true);
-});
-
-it('markCleaned writes nothing when an original is stored, and anyPhotoMissing stays false', async () => {
-  putScan('5', ['p1.jpg', 'o1.jpg']);
-
-  await markCleaned(`${ROOT}/5/p1.jpg`);
-
-  expect(mockFs.nodes.has(`${ROOT}/5/o1.cleaned`)).toBe(false);
-  expect(anyPhotoMissing([`${ROOT}/5/p1.jpg`])).toBe(false);
-});
-
-it('anyPhotoMissing stays true for a page whose copy was made from a cleaned page', async () => {
-  putScan('5', ['p1.jpg']);
-  const page = `${ROOT}/5/p1.jpg`;
-
-  await markCleaned(page);
-  await keepOriginal(page);
-
-  expect(mockFs.nodes.has(`${ROOT}/5/o1.jpg`)).toBe(true);
-  expect(anyPhotoMissing([page])).toBe(true);
-});
-
-it('listScans ignores the cleaned marker', () => {
+it('listScans ignores an o<N>.cleaned file an earlier build left', () => {
   putScan('5', ['p1.jpg', 'o1.jpg', 'o1.cleaned']);
 
   expect(listScans()[0].pages).toEqual([`${ROOT}/5/p1.jpg`]);
