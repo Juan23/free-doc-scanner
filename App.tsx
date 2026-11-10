@@ -26,7 +26,7 @@ import {
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { cleanPages, defaultFilter, filterPreviews, setDefaultFilter, sharedFilter, type Filter } from './clean';
 import { cropPage, findPage, isConvex, type FoundPage, type Point, type Quad } from './crop';
-import { clearScannerCache, pagesToSave, saveJpegs, savePdf } from './save';
+import { clearScannerCache, pagesToSave, pickOnLongPress, saveJpegs, savePdf } from './save';
 import { addPages, createScan, deleteScan, heldPhoto, listScans, type Scan } from './scans';
 import { rotatePage, uprightPages } from './upright';
 
@@ -596,6 +596,7 @@ function Detail(props: {
                 accessibilityLabel={picked ? `Page ${item.n}` : `Edit page ${item.n}`}
                 accessibilityState={picked ? { checked: on, disabled: busy } : { disabled: busy }}
                 disabled={busy}
+                onLongPress={() => props.onPick(pickOnLongPress(picked, uri))}
                 onPress={() => {
                   if (picked) return props.onPick(on ? picked.filter((p) => p !== uri) : [...picked, uri]);
                   const i = item.n! - 1;

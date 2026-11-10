@@ -16,6 +16,10 @@ export function scanName(date: Date = new Date()): string {
 export const pagesToSave = (pages: string[], picked: string[]) =>
   picked.length ? pages.filter((p) => picked.includes(p)) : pages;
 
+/** The picks after a long press: the page is picked, never unpicked. */
+export const pickOnLongPress = (picked: string[] | null, uri: string): string[] =>
+  picked === null ? [uri] : picked.includes(uri) ? picked : [...picked, uri];
+
 /** One PDF page per page JPEG, in order, at A4 width with the image's aspect ratio. */
 export async function buildPdf(pages: string[]): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
