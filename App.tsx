@@ -26,7 +26,7 @@ import {
 import Slider from '@react-native-community/slider';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { cleanPages, defaultFilter, filterPreviews, setDefaultFilter, sharedFilter, type Filter } from './clean';
-import { cropPage, findPage, isConvex, type FoundPage, type Point, type Quad } from './crop';
+import { cropPage, findPage, isConvex, previewCorners, type FoundPage, type Point, type Quad } from './crop';
 import { clearScannerCache, pagesToSave, pickOnLongPress, saveJpegs, savePdf } from './save';
 import { addPages, createScan, deleteScan, heldPhoto, listScans, type Scan } from './scans';
 import { rotatePage, uprightPages } from './upright';
@@ -1044,6 +1044,33 @@ function Capture(props: { pagesBefore: number; onEnd: (pages: string[]) => void 
   const [working, setWorking] = useState(false);
   // State updates are async, so a second tap in the same frame would still see working=false.
   const inFlight = useRef(false);
+  const [found, setFound] = useState<FoundPage | null>(null);
+  const [view, setView] = useState({ width: 0, height: 0 });
+
+  // While the camera is idle, small photos taken one after another show where the page is. expo-camera has no live frames.
+  useEffect(() => {
+    if (working || photo) return;
+    let stopped = false;
+    (async () => {
+      while (!stopped) {
+        let uri: string | undefined;
+        let failed = true;
+        try {
+          uri = (await camera.current?.takePictureAsync({ quality: 0.2, shutterSound: false }))?.uri;
+          const page = uri ? await findPage(uri) : null;
+          if (!stopped) setFound(page?.found ? page : null);
+          failed = !page;
+        } catch {}
+        if (uri) deleteQuietly(uri);
+        // The camera may not be ready yet: try again shortly.
+        if (failed) await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    })();
+    return () => {
+      stopped = true;
+      setFound(null);
+    };
+  }, [working, photo]);
 
   async function step(task: () => Promise<void>, errorTitle: string) {
     if (inFlight.current) return;
@@ -1160,14 +1187,21 @@ function Capture(props: { pagesBefore: number; onEnd: (pages: string[]) => void 
   const last = pages[pages.length - 1];
   return (
     <View style={styles.capture}>
-      <View style={styles.flex}>
-        <CameraView ref={camera} style={styles.flex} facing="back" animateShutter />
+      <View style={styles.flex} onLayout={(e) => setView(e.nativeEvent.layout)}>
+        {/* No shutter flash: it would blink on every preview photo. */}
+        <CameraView ref={camera} style={styles.flex} facing="back" animateShutter={false} />
         <View
           style={[StyleSheet.absoluteFill, styles.captureOverlay]}
           pointerEvents="none"
           accessibilityElementsHidden
           importantForAccessibility="no-hide-descendants">
-          <View style={styles.guide} />
+          {found ? (
+            <Canvas style={StyleSheet.absoluteFill}>
+              <Path path={`M ${previewCorners(found.corners, found, view).map((p) => `${p.x} ${p.y}`).join(' L ')} Z`} style="stroke" strokeWidth={3} color="#6E97FF" />
+            </Canvas>
+          ) : (
+            <View style={styles.guide} />
+          )}
         </View>
         <View style={[styles.captureTop, { top: insets.top + 8 }]} pointerEvents="none">
           <Text style={styles.captureChip} maxFontSizeMultiplier={1.5}>{pageLabel}</Text>
