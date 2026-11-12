@@ -920,6 +920,8 @@ function FilterStrip(props: {
 }) {
   const { recorded, busy, thumbs } = props;
   const disabled = busy && styles.disabled;
+  // Bumped to put the thumb back when a release changes nothing.
+  const [resets, setResets] = useState(0);
   return (
     <View style={styles.strip}>
       {props.strengthsOpen && recorded && recorded.kind !== 'original' && (
@@ -929,7 +931,7 @@ function FilterStrip(props: {
             <View style={styles.strengthMark} />
             <Slider
               // Remounted when the strength changes elsewhere (another page): the slider only reads value as it mounts, and 0 not at all.
-              key={recorded.strength}
+              key={`${recorded.strength}:${resets}`}
               style={styles.strengthSlider}
               minimumValue={0}
               maximumValue={2}
@@ -944,7 +946,9 @@ function FilterStrip(props: {
               onSlidingComplete={(v) => {
                 // Snaps to Normal near the middle mark.
                 const strength = Math.abs(v - 1) < 0.1 ? 1 : v;
-                if (strength !== recorded.strength) props.onFilter({ kind: recorded.kind, strength });
+                // A release while a filter runs is not applied, so the thumb goes back; so does one that snaps to where it was.
+                if (busy || strength === recorded.strength) setResets(resets + 1);
+                else props.onFilter({ kind: recorded.kind, strength });
               }}
             />
           </View>
