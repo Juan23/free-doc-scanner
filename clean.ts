@@ -5,8 +5,11 @@ import { File, Paths } from 'expo-file-system';
 
 import { copyPage, heldPhoto, keepOriginal, originalOf, readPage, replacePage } from './scans';
 
-/** How to treat a page: leave it as photographed, clean it, or clean it to grey. Light, Normal and Strong set how much clean-up keeps. */
-export type Filter = { kind: 'original' | 'clean' | 'gray'; strength: 0 | 1 | 2 };
+/**
+ * How to treat a page: leave it as photographed, clean it, or clean it to grey. `strength`, from 0
+ * to 2, sets how much clean-up keeps: 0 Light, 1 Normal, 2 Strong, and in between, between them.
+ */
+export type Filter = { kind: 'original' | 'clean' | 'gray'; strength: number };
 
 // How much clean-up keeps, per strength. `whitePoint`: a pixel at this share of the paper's
 // brightness turns white. `inkThreshold`: a mark at this share or darker counts as writing. Light
@@ -17,6 +20,15 @@ const KEEP = [
   { whitePoint: 0.85, inkThreshold: 0.9, paleLine: 0.15 },
   { whitePoint: 0.8, inkThreshold: 0.87, paleLine: 0.55 },
 ];
+
+// A strength's KEEP numbers, each straight between the two steps around it; exactly a row at 0, 1 and 2.
+function keepAt(strength: number): (typeof KEEP)[number] {
+  const i = Math.min(1, Math.floor(strength));
+  const t = strength - i;
+  const [a, b] = [KEEP[i], KEEP[i + 1]];
+  const mix = (k: keyof typeof a) => (1 - t) * a[k] + t * b[k];
+  return { whitePoint: mix('whitePoint'), inkThreshold: mix('inkThreshold'), paleLine: mix('paleLine') };
+}
 
 const NORMAL: Filter = { kind: 'clean', strength: 1 };
 const ORIGINAL: Filter = { kind: 'original', strength: 1 };
@@ -30,7 +42,7 @@ function parseFilter(text: string): Filter | null {
   try {
     const f = JSON.parse(text);
     const kinds = ['original', 'clean', 'gray'];
-    if (kinds.includes(f.kind) && [0, 1, 2].includes(f.strength)) return f;
+    if (kinds.includes(f.kind) && typeof f.strength === 'number' && f.strength >= 0 && f.strength <= 2) return f;
   } catch {}
   return null;
 }
@@ -373,6 +385,7 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
     }
   }
 
+  const keep = keepAt(filter.strength);
   const scale = Math.min(1, SMALL_WIDTH / w);
   const sw = Math.ceil(w * scale);
   const sh = Math.ceil(h * scale);
@@ -402,7 +415,7 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
 
   const smallPageShader = clamp(smallPage, FilterMode.Nearest);
   const inkShader = inkEffect.makeShaderWithChildren(
-    [KEEP[filter.strength].inkThreshold],
+    [keep.inkThreshold],
     [smallPageShader, coarseShader],
   );
   const spreadInk = Skia.Paint();
@@ -437,7 +450,7 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
   const textShader = clamp(ink, FilterMode.Linear, toOut);
   const beyondShader = clamp(beyond, FilterMode.Linear, toOut);
   const cleanShader = cleanEffect.makeShaderWithChildren(
-    [KEEP[filter.strength].whitePoint, filter.kind === 'gray' ? 1 : 0, outW >= PALE_LINE_WIDTH ? KEEP[filter.strength].paleLine : 1],
+    [keep.whitePoint, filter.kind === 'gray' ? 1 : 0, outW >= PALE_LINE_WIDTH ? keep.paleLine : 1],
     [pageShader, paperShader, textShader, beyondShader],
   );
   const out = Skia.Surface.Make(outW, outH)!;

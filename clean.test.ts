@@ -331,6 +331,42 @@ it('wipes at Strong what Normal keeps', async () => {
   expect(luma(mockFiles.get(PAGE)!, 154, 415)).toBeGreaterThan(254);
 }, 30000);
 
+it('keeps more faint ink halfway between Light and Normal than at Normal, and less than at Light', () => {
+  // Marks at 88% of the paper's brightness, which Normal wipes.
+  const photo = decode(faintPage('rgb(207,201,185)'));
+  // The darkness left over the line of faint marks.
+  const ink = (strength: number) => {
+    const out = filterImage(photo, { kind: 'clean', strength });
+    const px = readPixels(out);
+    out.dispose();
+    let sum = 0;
+    for (let y = 370; y < 460; y++) for (let x = 140; x < 460; x++) sum += 255 - px[(y * W + x) * 4];
+    return sum;
+  };
+  const [light, half, normal] = [0, 0.5, 1].map(ink);
+  photo.dispose();
+  // Measured: 390778, 42998 and 0.
+  expect(half).toBeLessThan(light);
+  expect(half).toBeGreaterThan(normal);
+}, 30000);
+
+it('reads an old filter file and records with steps 0, 1 or 2, any strength between, and nothing else', () => {
+  const write = (uri: string, text: string) => mockFiles.set(uri, Uint8Array.from(text, (c) => c.charCodeAt(0)));
+  write('file:///doc/filter', '{"kind":"gray","strength":1}');
+  expect(defaultFilter()).toEqual({ kind: 'gray', strength: 1 });
+
+  const read = (text: string) => {
+    write(SIDECAR1, text);
+    return pageFilter(PAGE1);
+  };
+  expect(read('{"kind":"clean","strength":0}')).toEqual({ kind: 'clean', strength: 0 });
+  expect(read('{"kind":"clean","strength":0.5}')).toEqual({ kind: 'clean', strength: 0.5 });
+  expect(read('{"kind":"clean","strength":2}')).toEqual({ kind: 'clean', strength: 2 });
+  expect(read('{"kind":"clean","strength":2.5}')).toBeNull();
+  expect(read('{"kind":"clean","strength":-0.5}')).toBeNull();
+  expect(read('{"kind":"clean","strength":"1"}')).toBeNull();
+});
+
 it('turns the cleaned page grey, not hard black and white', async () => {
   const PAGE = 'file:///doc/scans/1/p1.jpg';
   mockFiles.set(PAGE, photographedPage());
@@ -956,6 +992,22 @@ describe('table lines', () => {
     const kept = lines.map((l, i) => [l.grey, l.width, strength < 2 || l.grey <= 130 ? darkest[i] <= 200 : true]);
     expect(kept).toEqual(lines.map((l) => [l.grey, l.width, true]));
   }, 60000);
+
+  // FNV-1a over an image's pixels.
+  const hash = (image: SkImage) => readPixels(image).reduce((h, v) => Math.imul(h ^ v, 16777619) >>> 0, 2166136261);
+
+  it('gives the same pixels at strengths 0, 1 and 2 as Light, Normal and Strong did', () => {
+    const photo = tablePhoto();
+    const got = [0, 1, 2].map((strength) => {
+      const out = filterImage(photo, { kind: 'clean', strength });
+      const h = hash(out);
+      out.dispose();
+      return h;
+    });
+    photo.dispose();
+    // Measured before the strength became a number. Skia's own changes can move them: re-measure then.
+    expect(got).toEqual([3552159371, 365768292, 1287771065]);
+  }, 120000);
 });
 
 describe('text in a small preview', () => {

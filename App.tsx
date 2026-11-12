@@ -23,6 +23,7 @@ import {
   type ViewStyle,
   View,
 } from 'react-native';
+import Slider from '@react-native-community/slider';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { cleanPages, defaultFilter, filterPreviews, setDefaultFilter, sharedFilter, type Filter } from './clean';
 import { cropPage, findPage, isConvex, type FoundPage, type Point, type Quad } from './crop';
@@ -401,11 +402,11 @@ const FILTER_KINDS: { kind: Filter['kind']; label: string }[] = [
   { kind: 'gray', label: 'Grayscale' },
 ];
 
-const FILTER_STRENGTHS: { strength: Filter['strength']; label: string }[] = [
-  { strength: 0, label: 'Light' },
-  { strength: 1, label: 'Normal' },
-  { strength: 2, label: 'Strong' },
-];
+const STRENGTH_NAMES = ['Light', 'Normal', 'Strong'];
+
+// What a screen reader says for a strength: its name at 0, 1 and 2, else the two it lies between.
+const strengthText = (s: number) =>
+  Number.isInteger(s) ? STRENGTH_NAMES[s] : `Between ${STRENGTH_NAMES[Math.floor(s)]} and ${STRENGTH_NAMES[Math.ceil(s)]}`;
 
 type Cell = { key: string; uri?: string; n?: number };
 
@@ -922,26 +923,32 @@ function FilterStrip(props: {
   return (
     <View style={styles.strip}>
       {props.strengthsOpen && recorded && recorded.kind !== 'original' && (
-        <View style={styles.strengths} accessibilityRole="radiogroup" accessibilityLabel="Clean-up strength">
-          {FILTER_STRENGTHS.map(({ strength, label }) => {
-            const checked = recorded.strength === strength;
-            return (
-              <Pressable
-                key={label}
-                accessibilityRole="radio"
-                accessibilityLabel={label}
-                accessibilityState={{ checked, disabled: busy }}
-                disabled={busy}
-                onPress={() => {
-                  if (!checked) props.onFilter({ kind: recorded.kind, strength });
-                }}
-                style={[styles.strength, checked && styles.strengthOn, disabled]}>
-                <Text style={[styles.strengthText, checked && styles.strengthTextOn]} maxFontSizeMultiplier={1.5}>
-                  {label}
-                </Text>
-              </Pressable>
-            );
-          })}
+        <View style={[styles.strengths, disabled]}>
+          <Text style={styles.strengthText} maxFontSizeMultiplier={1.5}>Light</Text>
+          <View style={styles.strengthTrack}>
+            <View style={styles.strengthMark} />
+            <Slider
+              // Remounted when the strength changes elsewhere (another page): the slider only reads value as it mounts, and 0 not at all.
+              key={recorded.strength}
+              style={styles.strengthSlider}
+              minimumValue={0}
+              maximumValue={2}
+              value={recorded.strength}
+              disabled={busy}
+              minimumTrackTintColor="#fff"
+              maximumTrackTintColor="#5A5F69"
+              thumbTintColor="#fff"
+              accessibilityLabel="Clean-up strength"
+              accessibilityValue={{ text: strengthText(recorded.strength) }}
+              // Each page clean holds about 100 MB of bitmaps, so pages are filtered when the finger lifts, not as it moves.
+              onSlidingComplete={(v) => {
+                // Snaps to Normal near the middle mark.
+                const strength = Math.abs(v - 1) < 0.1 ? 1 : v;
+                if (strength !== recorded.strength) props.onFilter({ kind: recorded.kind, strength });
+              }}
+            />
+          </View>
+          <Text style={styles.strengthText} maxFontSizeMultiplier={1.5}>Strong</Text>
         </View>
       )}
       <View style={styles.thumbs} accessibilityRole="radiogroup" accessibilityLabel="Filter">
@@ -953,7 +960,7 @@ function FilterStrip(props: {
               key={kind}
               accessibilityRole="radio"
               accessibilityLabel={label}
-              accessibilityHint={hasStrengths ? 'Tap again to show or hide the strengths' : undefined}
+              accessibilityHint={hasStrengths ? 'Tap again to show or hide the strength slider' : undefined}
               accessibilityState={{ checked, disabled: busy }}
               disabled={busy}
               onPress={() => {
@@ -1525,11 +1532,11 @@ const styles = StyleSheet.create({
   editorCount: { flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '600', color: '#fff' },
   editorAction: { fontSize: 16, fontWeight: '500', color: '#fff' },
   strip: { paddingTop: 12, gap: 12 },
-  strengths: { flexDirection: 'row', alignSelf: 'center', backgroundColor: '#22252B', borderRadius: 12, padding: 3 },
-  strength: { height: 38, minWidth: 84, borderRadius: 10, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12 },
-  strengthOn: { backgroundColor: '#fff' },
+  strengths: { flexDirection: 'row', alignItems: 'center', alignSelf: 'center', gap: 10, backgroundColor: '#22252B', borderRadius: 12, height: 44, paddingHorizontal: 14 },
   strengthText: { fontSize: 15, color: '#C9CDD4' },
-  strengthTextOn: { fontWeight: '700', color: C.text },
+  strengthTrack: { width: 190, height: 40, justifyContent: 'center' },
+  strengthMark: { position: 'absolute', left: 94, top: 8, width: 2, height: 24, borderRadius: 1, backgroundColor: '#5A5F69' },
+  strengthSlider: { width: 190, height: 40 },
   thumbs: { flexDirection: 'row', justifyContent: 'center', gap: 18 },
   thumb: { width: 84, alignItems: 'center', gap: 6 },
   thumbBox: { padding: 3, borderRadius: 10, borderWidth: 2, borderColor: 'transparent' },
