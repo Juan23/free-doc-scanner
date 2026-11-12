@@ -913,6 +913,51 @@ describe('thin strokes on a large photo', () => {
   }, 60000);
 });
 
+describe('table lines', () => {
+  // A 1600 x 2000 table on warm paper: a bar of dark text at the top, then 1400 px lines 1 and 2 px
+  // wide at four greys, far from the text.
+  const GREYS = [100, 130, 150, 180];
+  const lines = GREYS.flatMap((grey, i) => [1, 2].map((width, j) => ({ grey, width, y: 500 + (i * 2 + j) * 160 })));
+
+  function tablePhoto(): SkImage {
+    const surface = Skia.Surface.Make(1600, 2000)!;
+    const canvas = surface.getCanvas();
+    canvas.drawColor(Skia.Color('rgb(230,224,208)'));
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color('rgb(35,35,40)'));
+    canvas.drawRect(Skia.XYWHRect(100, 200, 1400, 16), paint);
+    for (const { grey, width, y } of lines) {
+      paint.setColor(Skia.Color(`rgb(${grey},${grey},${grey})`));
+      canvas.drawRect(Skia.XYWHRect(100, y, 1400, width), paint);
+    }
+    return decode(surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 95));
+  }
+
+  // The darkest pixel along each line, from 10 px in from its ends: 255 is gone.
+  function darkestAlong(out: SkImage): number[] {
+    const px = readPixels(out);
+    return lines.map(({ width, y }) => {
+      let min = 255;
+      for (let yy = y - 3; yy < y + width + 3; yy++) for (let x = 110; x < 1490; x++) min = Math.min(min, px[(yy * 1600 + x) * 4]);
+      return min;
+    });
+  }
+
+  it.each([
+    ['clean', 0], ['clean', 1], ['clean', 2], ['gray', 0], ['gray', 1], ['gray', 2],
+  ] as const)('keeps printed table lines at %s strength %i', (kind, strength) => {
+    const photo = tablePhoto();
+    const out = filterImage(photo, { kind, strength });
+    const darkest = darkestAlong(out);
+    out.dispose();
+    photo.dispose();
+    // Measured: 37 to 189 for every line at Light and Normal; at Strong 37 to 160 for greys 100 and
+    // 130, 255 for 150 and 180. Strong may whiten those, as it does faint pencil.
+    const kept = lines.map((l, i) => [l.grey, l.width, strength < 2 || l.grey <= 130 ? darkest[i] <= 200 : true]);
+    expect(kept).toEqual(lines.map((l) => [l.grey, l.width, true]));
+  }, 60000);
+});
+
 describe('text in a small preview', () => {
   const CanvasKit = (globalThis as any).CanvasKit;
   const W = 1200;
