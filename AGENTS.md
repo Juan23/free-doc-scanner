@@ -18,21 +18,26 @@ npx expo-doctor             # diagnose dependency and config issues
 npx expo install --fix      # fix incompatible package versions
 ```
 
-Run lint, typecheck and `npm test` before declaring any task done.
+Run lint, typecheck and `npm test` before declaring any task done. To run one test file: `npx jest clean.test.ts` (there is no `test:changed` script).
 
 ## Building
 
 Builds run locally from the project root. Use these two commands:
 
 ```bash
+export LANG=en_US.UTF-8   # without it `pod install` stops on a Unicode normalization error
 npx expo run:ios --device
 ```
 
 ```bash
-export JAVA_HOME="$(/usr/libexec/java_home -v 17)"
+export JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home
 export ANDROID_HOME="$HOME/Library/Android/sdk"
 npx expo run:android --device
 ```
+
+This Mac has no Java 17, so `/usr/libexec/java_home -v 17` fails; Homebrew's Java 21 builds debug and release (checked 2026-11-12, build 12).
+
+For a store build, bump `ios.buildNumber` and `android.versionCode` in `app.json`, run `npx expo prebuild --clean`, then `./gradlew bundleRelease` in `android/` and `xcodebuild … archive` and `-exportArchive` in `ios/`. Run `xcodebuild -exportArchive` with `PATH=/usr/bin:/bin:/usr/sbin:/sbin`: Homebrew's `rsync` comes first otherwise, and the export stops with "Copy failed".
 
 The iOS Simulator has no camera, so scanning on iOS needs a real iPhone. An Android emulator can run the camera screen, but its camera saves black photos.
 
