@@ -622,7 +622,10 @@ export function strengthPreview(uri: string, width: number, show: (image: SkImag
       running = null;
     }
   };
+  // The last strength asked to be drawn: a lift at that strength needs no further pass.
+  let lastAsked: Filter | null = null;
   const queue = (filter: Filter, quiet: boolean) => {
+    if (!quiet) lastAsked = filter;
     next = filter;
     silent = quiet;
     running ??= run();
@@ -643,7 +646,7 @@ export function strengthPreview(uri: string, width: number, show: (image: SkImag
     warm: (filter: Filter) => queue(filter, true),
     stop,
     async finish(filter: Filter) {
-      queue(filter, false);
+      if (lastAsked?.kind !== filter.kind || lastAsked.strength !== filter.strength) queue(filter, false);
       await running;
       stop();
     },

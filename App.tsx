@@ -31,7 +31,8 @@ import { cropPage, findPage, isConvex, previewCorners, type FoundPage, type Poin
 import { clearScannerCache, pagesToSave, pickOnLongPress, saveJpegs, savePdf } from './save';
 import { addPages, createScan, deleteScan, heldPhoto, listScans, type Scan } from './scans';
 import { rotatePage, uprightPages } from './upright';
-import { disposeNextFrame, useStrengthPreview } from './useStrengthPreview';
+import { disposeNextFrame } from './liveImages';
+import { useStrengthPreview } from './useStrengthPreview';
 
 const C = {
   text: '#15171C',
@@ -820,7 +821,7 @@ function Detail(props: {
               </View>
               <Text style={styles.sheetHeading} accessibilityRole="header" maxFontSizeMultiplier={1.5}>
                 Filter {pagesLabel(pickedPages.length)}
-              {livePreview.image && pickedPages.length > 1 ? ', the first shown' : ''}
+                {livePreview.image && pickedPages.length > 1 ? ', the first shown' : ''}
               </Text>
               <FilterStrip {...stripProps} onFilter={(filter) => livePreview.storeAfterPreview(filter, (f) => props.onFilterPages(pickedPages, f))} />
               <Pressable

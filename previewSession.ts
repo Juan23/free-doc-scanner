@@ -73,7 +73,7 @@ export function previewSession(events: { clear: () => void; finishing: (on: bool
       awaitingPage = false;
       events.clear();
     },
-    /** The screen is going away: stops every run without touching its state. */
+    /** The screen is going away: stops every run without clearing the screen. */
     leave: stopAll,
   };
 }

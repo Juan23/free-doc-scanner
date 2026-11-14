@@ -2,16 +2,8 @@ import type { SkImage } from '@shopify/react-native-skia';
 import { useCallback, useEffect, useState } from 'react';
 
 import { strengthPreview, type Filter } from './clean';
-import { liveImages } from './liveImages';
+import { disposeNextFrame, liveImages } from './liveImages';
 import { previewSession } from './previewSession';
-
-/**
- * Frees `images` a frame later: a Canvas hands its new drawing to Skia a moment after React commits,
- * and Skia replays the old one first, so an image just taken off the screen may still be drawn once.
- */
-export function disposeNextFrame(images: SkImage[]) {
-  if (images.length) requestAnimationFrame(() => images.forEach((image) => image.dispose()));
-}
 
 /**
  * The page at the strength under the finger, shown until the stored page replaces it (the order is
@@ -22,7 +14,7 @@ export function useStrengthPreview(page: string | undefined, width: number, subj
   // `upTo` is the number of the last image handed over when `image` was set; see liveImages.
   const [shown, setShown] = useState<{ image: SkImage | null; upTo: number }>({ image: null, upTo: 0 });
   const [finishing, setFinishing] = useState(false);
-  const [images] = useState(() => liveImages<SkImage>());
+  const [images] = useState(() => liveImages<SkImage>(disposeNextFrame));
   const [session] = useState(() =>
     previewSession({ clear: () => setShown({ image: null, upTo: images.lastNumber() }), finishing: setFinishing }),
   );
@@ -32,12 +24,12 @@ export function useStrengthPreview(page: string | undefined, width: number, subj
   );
   const preview = (filter: Filter | null) => (filter && page ? session.preview(filter, start) : session.hide());
   useEffect(() => {
-    requestAnimationFrame(() => images.release(shown.upTo, shown.image));
+    images.release(shown.upTo, shown.image);
   }, [shown, images]);
   useEffect(
     () => () => {
       session.leave();
-      requestAnimationFrame(images.clear);
+      images.clear();
     },
     [session, images],
   );

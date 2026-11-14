@@ -709,6 +709,20 @@ describe('the strength slider\'s live preview', () => {
     for (const image of shown) image.dispose();
   }, 30000);
 
+  it('on finish with the strength already shown, draws no extra pass', async () => {
+    mockFiles.set(PAGE1, photographedPage());
+    const shown: SkImage[] = [];
+    const live = strengthPreview(PAGE1, W, (image) => shown.push(image));
+
+    live.preview({ kind: 'clean', strength: 1.5 });
+    while (!shown.length) await settle();
+    await live.finish({ kind: 'clean', strength: 1.5 });
+    await settle();
+
+    expect(shown.length).toBe(1);
+    for (const image of shown) image.dispose();
+  }, 30000);
+
   it('on finish, shows the strength being stored last, then nothing more', async () => {
     const photo = photographedPage();
     mockFiles.set(PAGE1, photo);
