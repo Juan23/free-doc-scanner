@@ -527,6 +527,46 @@ export async function filterPreviews(
   return previews as Record<Filter['kind'], SkImage>;
 }
 
+/**
+ * The page filtered as the strength slider moves, before anything is stored: each `preview` filters
+ * the page's untouched photo, one at a time, and while one runs only the latest waits. Each result
+ * goes to `show`, which disposes it. At least 1000 px wide (or the photo's width), so pale table
+ * lines show as on the stored page. `stop` ends it and frees the photo; nothing is shown after.
+ */
+export function strengthPreview(uri: string, width: number, show: (image: SkImage) => void) {
+  const photo = readPage(heldPhoto(uri));
+  let next: Filter | null = null;
+  let running = false;
+  let stopped = false;
+  const run = async () => {
+    running = true;
+    try {
+      const image = await photo;
+      while (next && !stopped) {
+        const filter = next;
+        next = null;
+        // Lets the slider move between the heavy steps.
+        await new Promise((r) => setTimeout(r, 0));
+        if (stopped) break;
+        show(filterImage(image, filter, Math.min(image.width(), Math.max(PALE_LINE_WIDTH, width))));
+      }
+    } catch {
+    } finally {
+      running = false;
+    }
+  };
+  return {
+    preview(filter: Filter) {
+      next = filter;
+      if (!running) run();
+    },
+    stop() {
+      stopped = true;
+      photo.then((image) => image.dispose(), () => {});
+    },
+  };
+}
+
 async function cleanPage(uri: string, filter: Filter): Promise<void> {
   // Every filter starts from the photo as it was before any cleaning, so changes never stack.
   await keepOriginal(uri);

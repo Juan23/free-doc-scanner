@@ -14,6 +14,7 @@ import {
   Linking,
   Modal,
   type GestureResponderEvent,
+  PixelRatio,
   Platform,
   Pressable,
   type StyleProp,
@@ -25,7 +26,7 @@ import {
 } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { cleanPages, defaultFilter, filterPreviews, setDefaultFilter, sharedFilter, type Filter } from './clean';
+import { cleanPages, defaultFilter, filterPreviews, setDefaultFilter, sharedFilter, strengthPreview, type Filter } from './clean';
 import { cropPage, findPage, isConvex, previewCorners, type FoundPage, type Point, type Quad } from './crop';
 import { clearScannerCache, pagesToSave, pickOnLongPress, saveJpegs, savePdf } from './save';
 import { addPages, createScan, deleteScan, heldPhoto, listScans, type Scan } from './scans';
@@ -404,6 +405,9 @@ const FILTER_KINDS: { kind: Filter['kind']; label: string }[] = [
 
 const STRENGTH_NAMES = ['Light', 'Normal', 'Strong'];
 
+// A finger snaps to Normal near the middle mark. A screen reader's or keyboard's step is smaller than that zone, so it is not snapped: it would never leave Normal.
+const snapped = (s: number) => (Math.abs(s - 1) < 0.1 ? 1 : s);
+
 // What a screen reader says for a strength: its name at 0, 1 and 2, else the two it lies between.
 const strengthText = (s: number) =>
   Number.isInteger(s) ? STRENGTH_NAMES[s] : `Between ${STRENGTH_NAMES[Math.floor(s)]} and ${STRENGTH_NAMES[Math.ceil(s)]}`;
@@ -479,6 +483,45 @@ function Detail(props: {
   }, [previewPage, turned]);
   // Runs when the images are replaced, and when the editor or filter panel closes or unmounts.
   useEffect(() => () => Object.values(previews.images ?? {}).forEach((t) => t.dispose()), [previews]);
+  // The subject's first page at the strength under the finger, shown until the stored page replaces it.
+  // `upTo` counts the images handed over up to this one; a later one may not be drawn yet, so it is never freed here.
+  const [live, setLive] = useState<{ image: SkImage | null; upTo: number }>({ image: null, upTo: 0 });
+  const liveRun = useRef<ReturnType<typeof strengthPreview> | null>(null);
+  // Every image handed to setLive: two can land in one render, so each is freed once a later one is on screen.
+  const liveImages = useRef<{ image: SkImage; n: number }[]>([]);
+  const handed = useRef(0);
+  // Frees the photo it filters from; the last image stays on screen.
+  const endRun = () => {
+    liveRun.current?.stop();
+    liveRun.current = null;
+  };
+  const stopLive = () => {
+    endRun();
+    setLive({ image: null, upTo: handed.current });
+  };
+  const previewStrength = (filter: Filter | null) => {
+    if (!filter || !previewPage) return stopLive();
+    liveRun.current ??= strengthPreview(previewPage, width * PixelRatio.get(), (image) => {
+      liveImages.current.push({ image, n: ++handed.current });
+      setLive({ image, upTo: handed.current });
+    });
+    liveRun.current.preview(filter);
+  };
+  useEffect(() => {
+    liveImages.current = liveImages.current.filter((e) => e.n > live.upTo || e.image === live.image || (e.image.dispose(), false));
+  }, [live]);
+  useEffect(() => {
+    const images = liveImages;
+    return () => images.current.forEach((e) => e.image.dispose());
+  }, []);
+  // Another page, closing, or the filter being stored (filterPages reloads its pages even when one fails) ends it.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- stopLive reads only a ref and a setter, so any render's copy does
+  useEffect(() => stopLive, [subjectKey]);
+  // The slider can also vanish mid-drag (a second finger taps the thumbnail), and then no lift comes.
+  const showStrengths = (open: boolean) => {
+    if (!open) stopLive();
+    setStrengthsOpen(open);
+  };
   const available = scannerAvailable();
   const data: Cell[] = [
     ...scan.pages.map((uri, i) => ({ key: uri, uri, n: i + 1 })),
@@ -754,6 +797,11 @@ function Detail(props: {
                 </Pressable>
               )}
             />
+            {live.image && !holding && (
+              <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">
+                <SkiaImage image={live.image} x={0} y={0} width={width} height={pagerHeight} fit="contain" />
+              </Canvas>
+            )}
             {/* Over the pager's top edge, so the pager and strip never move. The grid's toast sits behind this Modal. */}
             <View
               style={styles.editorToastSlot}
@@ -768,9 +816,15 @@ function Detail(props: {
               thumbs={thumbs}
               recorded={recorded}
               busy={busy}
+              live={live.image}
               strengthsOpen={strengthsOpen}
-              onStrengths={setStrengthsOpen}
-              onFilter={(filter) => props.onFilterPage(editedPage, filter)}
+              onStrengths={showStrengths}
+              onPreview={previewStrength}
+              onFilter={(filter) => {
+                // A store holds about 100 MB of bitmaps of its own: free the preview's photo first.
+                endRun();
+                props.onFilterPage(editedPage, filter);
+              }}
             />
           )}
           <View style={styles.editorDone}>
@@ -831,9 +885,14 @@ function Detail(props: {
               thumbs={thumbs}
               recorded={recorded}
               busy={busy}
+              live={live.image}
               strengthsOpen={strengthsOpen}
-              onStrengths={setStrengthsOpen}
-              onFilter={(filter) => props.onFilterPages(pickedPages, filter)}
+              onStrengths={showStrengths}
+              onPreview={previewStrength}
+              onFilter={(filter) => {
+                endRun();
+                props.onFilterPages(pickedPages, filter);
+              }}
             />
             <Pressable
               accessibilityRole="button"
@@ -914,8 +973,10 @@ function FilterStrip(props: {
   thumbs: Record<Filter['kind'], SkImage> | null;
   recorded: Filter | null;
   busy: boolean;
+  live: SkImage | null;
   strengthsOpen: boolean;
   onStrengths: (open: boolean) => void;
+  onPreview: (filter: Filter | null) => void;
   onFilter: (filter: Filter) => void;
 }) {
   const { recorded, busy, thumbs } = props;
@@ -925,11 +986,12 @@ function FilterStrip(props: {
   const touching = useRef(false);
   const release = (v: number, snap: boolean) => {
     if (!recorded) return;
-    // A finger snaps to Normal near the middle mark. A screen reader's or keyboard's step is smaller than that zone, so it would never leave Normal.
-    const strength = snap && Math.abs(v - 1) < 0.1 ? 1 : v;
+    const strength = snap ? snapped(v) : v;
     // A release while a filter runs is not applied, so the thumb goes back; so does one that snaps to where it was.
-    if (busy || strength === recorded.strength) setResets(resets + 1);
-    else props.onFilter({ kind: recorded.kind, strength });
+    if (busy || strength === recorded.strength) {
+      setResets(resets + 1);
+      props.onPreview(null);
+    } else props.onFilter({ kind: recorded.kind, strength });
   };
   return (
     <View style={styles.strip}>
@@ -951,7 +1013,7 @@ function FilterStrip(props: {
               thumbTintColor="#fff"
               accessibilityLabel="Clean-up strength"
               accessibilityValue={{ text: strengthText(recorded.strength) }}
-              // Each page clean holds about 100 MB of bitmaps, so pages are filtered when the finger lifts, not as it moves.
+              // Each page clean holds about 100 MB of bitmaps, so pages are stored when the finger lifts; as it moves, only the screen shows it.
               onSlidingStart={() => (touching.current = true)}
               onSlidingComplete={(v) => {
                 touching.current = false;
@@ -959,7 +1021,8 @@ function FilterStrip(props: {
               }}
               // A screen reader or a keyboard moves the thumb with no touch, so no lift follows: each step is applied.
               onValueChange={(v) => {
-                if (!touching.current) release(v, false);
+                if (touching.current) props.onPreview({ kind: recorded.kind, strength: snapped(v) });
+                else release(v, false);
               }}
             />
           </View>
@@ -970,6 +1033,7 @@ function FilterStrip(props: {
         {FILTER_KINDS.map(({ kind, label }) => {
           const checked = recorded?.kind === kind;
           const hasStrengths = checked && kind !== 'original';
+          const image = (checked && props.live) || thumbs?.[kind];
           return (
             <Pressable
               key={kind}
@@ -988,7 +1052,7 @@ function FilterStrip(props: {
               style={[styles.thumb, disabled]}>
               <View style={[styles.thumbBox, checked && styles.thumbBoxOn]}>
                 <Canvas style={styles.thumbCanvas}>
-                  {thumbs && <SkiaImage image={thumbs[kind]} x={0} y={0} width={THUMB_W} height={THUMB_H} fit="cover" />}
+                  {image && <SkiaImage image={image} x={0} y={0} width={THUMB_W} height={THUMB_H} fit="cover" />}
                 </Canvas>
               </View>
               <Text

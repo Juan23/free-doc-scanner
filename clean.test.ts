@@ -6,7 +6,7 @@ import {
   AlphaType, BlurStyle, ColorType, ImageFormat, Skia, type SkImage,
 } from '@shopify/react-native-skia';
 
-import { cleanPages, defaultFilter, filterImage, filterPreviews, pageFilter, setDefaultFilter, sharedFilter, shrunkCopy, type Filter } from './clean';
+import { cleanPages, defaultFilter, filterImage, filterPreviews, pageFilter, setDefaultFilter, sharedFilter, shrunkCopy, strengthPreview, type Filter } from './clean';
 import { rotatePage } from './upright';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
@@ -647,6 +647,50 @@ it('previews a page that has no original from the page itself', async () => {
   for (const p of Object.values(previews)) p.dispose();
   expect([...mockFiles.keys()]).toEqual([PAGE1]);
 }, 30000);
+
+describe('the strength slider\'s live preview', () => {
+  const settle = () => new Promise((r) => setTimeout(r, 50));
+
+  it('filters only the latest of quick moves, at the photo\'s width under 1000 px, as storing it would look', async () => {
+    const photo = photographedPage();
+    mockFiles.set(PAGE1, photo);
+    const files = new Map(mockFiles);
+    const shown: SkImage[] = [];
+    const live = strengthPreview(PAGE1, 300, (image) => shown.push(image));
+
+    live.preview({ kind: 'clean', strength: 0 });
+    live.preview({ kind: 'clean', strength: 0.5 });
+    live.preview({ kind: 'gray', strength: 2 });
+    while (!shown.length) await settle();
+    await settle();
+
+    const source = decode(photo);
+    const direct = filterImage(source, { kind: 'gray', strength: 2 }, W);
+    try {
+      expect(shown.length).toBe(1);
+      expect(shown[0].width()).toBe(W);
+      expect(meanDifference(shown[0], direct)).toBeLessThan(0.5);
+      expect(mockFiles).toEqual(files);
+    } finally {
+      live.stop();
+      for (const image of [source, direct, ...shown]) image.dispose();
+    }
+  }, 30000);
+
+  it('shows nothing once stopped, even for a move asked for just before', async () => {
+    mockFiles.set(PAGE1, photographedPage());
+    const shown: SkImage[] = [];
+    const live = strengthPreview(PAGE1, 300, (image) => shown.push(image));
+
+    live.preview({ kind: 'clean', strength: 2 });
+    live.stop();
+    await settle();
+    live.preview({ kind: 'clean', strength: 0 });
+    await settle();
+
+    expect(shown.length).toBe(0);
+  }, 30000);
+});
 
 describe('using one page\'s filter on every page', () => {
   const pages = [1, 2, 3].map((n) => `file:///doc/scans/1/p${n}.jpg`);
