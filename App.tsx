@@ -49,11 +49,6 @@ const PILL_H = 60;
 
 const pagesLabel = (n: number) => `${n} ${n === 1 ? 'page' : 'pages'}`;
 
-const unavailableText = 'This iPhone can’t run the built-in document scanner.';
-
-// Android has its own camera screen in this app: Google's scanner can't open in manual capture.
-const scannerAvailable = () => Platform.OS === 'android' || CameraView.isDocumentScannerAvailable;
-
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export default function App() {
@@ -131,32 +126,11 @@ function Root() {
   }
 
   function scanPages(onPages: (pages: string[]) => Promise<void>) {
-    if (Platform.OS === 'android') {
-      return guarded(async () => {
-        const { granted, canAskAgain } = await Camera.requestCameraPermissionsAsync();
-        if (granted) setOnCapturedPages(() => onPages);
-        else if (!canAskAgain) askForSettings('Camera access needed', 'Allow camera access in Settings to scan.');
-      }, 'Scan failed');
-    }
+    // The app's own camera screen on both platforms: neither VisionKit nor Google's scanner can open in manual capture.
     return guarded(async () => {
-      let result;
-      try {
-        result = await CameraView.scanDocumentAsync({ quality: 0.8 });
-      } catch (e) {
-        // VisionKit fails instead of asking again once camera access was denied.
-        if (!(await Camera.getCameraPermissionsAsync()).granted) {
-          askForSettings('Camera access needed', 'Allow camera access in Settings to scan.');
-          return;
-        }
-        throw e;
-      }
-      if (result) {
-        try {
-          await onPages(result.pages);
-        } finally {
-          refresh();
-        }
-      }
+      const { granted, canAskAgain } = await Camera.requestCameraPermissionsAsync();
+      if (granted) setOnCapturedPages(() => onPages);
+      else if (!canAskAgain) askForSettings('Camera access needed', 'Allow camera access in Settings to scan.');
     }, 'Scan failed');
   }
 
@@ -302,7 +276,6 @@ function Home(props: {
   onScan: () => void;
   onOpen: (s: Scan) => void;
 }) {
-  const available = scannerAvailable();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const card = (width - 40 - 14) / 2;
@@ -319,9 +292,7 @@ function Home(props: {
     </View>
   );
   let body;
-  if (props.scans.length === 0 && !available) {
-    body = <Message icon={<InfoIcon />} title="Scanner not available" text={unavailableText} />;
-  } else if (props.scans.length === 0) {
+  if (props.scans.length === 0) {
     body = (
       <Message
         large
@@ -335,7 +306,7 @@ function Home(props: {
     body = (
       <FlatList
         style={styles.flex}
-        contentContainerStyle={[styles.gridList, { paddingBottom: available ? pillRoom + 24 : 12 }]}
+        contentContainerStyle={[styles.gridList, { paddingBottom: pillRoom + 24 }]}
         data={props.scans}
         numColumns={2}
         columnWrapperStyle={styles.homeRow}
@@ -363,32 +334,24 @@ function Home(props: {
       />
     );
   }
-  const grid = available && props.scans.length > 0;
+  const grid = props.scans.length > 0;
   return (
-    <View style={[styles.flex, { paddingTop: insets.top + 16 }, !available && { paddingBottom: bottomPad(insets.bottom) }]}>
+    <View style={[styles.flex, { paddingTop: insets.top + 16 }]}>
       {header}
       {body}
       {grid && <View pointerEvents="none" style={[styles.fade, { height: pillRoom + 44 }]} />}
-      {available && (
-        <View pointerEvents="box-none" style={[styles.pillWrap, { bottom: bottomPad(insets.bottom) }]}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Scan"
-            accessibilityState={{ disabled: props.busy }}
-            disabled={props.busy}
-            onPress={props.onScan}
-            style={[styles.pill, props.busy && styles.disabled]}>
-            <ScanIcon />
-            <Text style={styles.scanButtonText} maxFontSizeMultiplier={1.5}>Scan</Text>
-          </Pressable>
-        </View>
-      )}
-      {!available && props.scans.length > 0 && (
-        <View style={styles.scanBar}>
-          <Text style={styles.barTitle}>Scanner not available</Text>
-          <Text style={styles.messageText}>{unavailableText}</Text>
-        </View>
-      )}
+      <View pointerEvents="box-none" style={[styles.pillWrap, { bottom: bottomPad(insets.bottom) }]}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Scan"
+          accessibilityState={{ disabled: props.busy }}
+          disabled={props.busy}
+          onPress={props.onScan}
+          style={[styles.pill, props.busy && styles.disabled]}>
+          <ScanIcon />
+          <Text style={styles.scanButtonText} maxFontSizeMultiplier={1.5}>Scan</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -479,10 +442,9 @@ function Detail(props: {
   }, [previewPage, turned]);
   // Runs when the images are replaced, and when the editor or filter panel closes or unmounts.
   useEffect(() => () => Object.values(previews.images ?? {}).forEach((t) => t.dispose()), [previews]);
-  const available = scannerAvailable();
   const data: Cell[] = [
     ...scan.pages.map((uri, i) => ({ key: uri, uri, n: i + 1 })),
-    ...(available && !picked ? [{ key: 'add' }] : []),
+    ...(!picked ? [{ key: 'add' }] : []),
   ];
   const disabled = busy && styles.disabled;
   const releasePreviews = () => {
@@ -1050,7 +1012,7 @@ const deleteQuietly = (uri: string) => {
   } catch {}
 };
 
-// Android's camera screen. Its photos and pages wait in cache folders that clearScannerCache empties at launch.
+// The camera screen. Its photos and pages wait in cache folders that clearScannerCache empties at launch.
 function Capture(props: { pagesBefore: number; onEnd: (pages: string[]) => void }) {
   const insets = useSafeAreaInsets();
   const camera = useRef<CameraView>(null);
@@ -1061,6 +1023,8 @@ function Capture(props: { pagesBefore: number; onEnd: (pages: string[]) => void 
   const inFlight = useRef(false);
   const [found, setFound] = useState<FoundPage | null>(null);
   const [view, setView] = useState({ width: 0, height: 0 });
+  // iOS refuses a photo while another is being taken, so the shutter waits for the preview photo under way.
+  const previewShot = useRef<Promise<unknown> | null>(null);
 
   // While the camera is idle, small photos taken one after another show where the page is. expo-camera has no live frames.
   useEffect(() => {
@@ -1071,7 +1035,9 @@ function Capture(props: { pagesBefore: number; onEnd: (pages: string[]) => void 
         let uri: string | undefined;
         let failed = true;
         try {
-          uri = (await camera.current?.takePictureAsync({ quality: 0.2, shutterSound: false }))?.uri;
+          const shot = camera.current?.takePictureAsync({ quality: 0.2, shutterSound: false });
+          previewShot.current = shot ?? null;
+          uri = (await shot)?.uri;
           const page = uri ? await findPage(uri) : null;
           if (!stopped) setFound(page?.found ? page : null);
           failed = !page;
@@ -1103,6 +1069,7 @@ function Capture(props: { pagesBefore: number; onEnd: (pages: string[]) => void 
 
   const shoot = () =>
     step(async () => {
+      await previewShot.current?.catch(() => {});
       const picture = await camera.current?.takePictureAsync({ quality: 0.9, shutterSound: false });
       if (!picture) return;
       try {
@@ -1415,15 +1382,6 @@ function LockIcon() {
   );
 }
 
-function InfoIcon() {
-  return (
-    <View style={styles.info}>
-      <View style={styles.infoDot} />
-      <View style={styles.infoBar} />
-    </View>
-  );
-}
-
 function Chevron(props: { color: string; left?: boolean }) {
   return (
     <View
@@ -1503,7 +1461,6 @@ const styles = StyleSheet.create({
   tileBehind: { position: 'absolute', top: 5, left: 5 },
   cardName: { fontSize: 13, lineHeight: 18, fontWeight: '600', color: C.text },
   cardSub: { fontSize: 13, lineHeight: 18, color: C.muted },
-  scanBar: { paddingHorizontal: 20, paddingTop: 12 },
   pillWrap: { position: 'absolute', left: 0, right: 0, alignItems: 'center' },
   pill: {
     minHeight: PILL_H,
@@ -1535,7 +1492,6 @@ const styles = StyleSheet.create({
   messageTextLarge: { fontSize: 16, lineHeight: 23 },
   messageTitle: { marginTop: 8, fontSize: 20, lineHeight: 26, fontWeight: '600', color: C.text, textAlign: 'center' },
   messageText: { fontSize: 15, lineHeight: 22, color: C.muted, textAlign: 'center' },
-  barTitle: { fontSize: 15, lineHeight: 22, fontWeight: '600', color: C.muted, textAlign: 'center' },
   art: { width: 150, height: 150, alignItems: 'center', justifyContent: 'center' },
   artPage: {
     position: 'absolute',
@@ -1551,18 +1507,6 @@ const styles = StyleSheet.create({
     gap: 9,
   },
   artLine: { height: 4, borderRadius: 2, backgroundColor: '#D5D9DF' },
-  info: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    borderWidth: 1.5,
-    borderColor: C.chevron,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-  },
-  infoBar: { position: 'absolute', top: 20, width: 2, height: 17, borderRadius: 1, backgroundColor: C.chevron },
-  infoDot: { position: 'absolute', bottom: 18, width: 3, height: 3, borderRadius: 2, backgroundColor: C.chevron },
   nav: {
     minHeight: 44,
     flexDirection: 'row',
