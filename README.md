@@ -4,7 +4,7 @@ A lightweight, free document scanner for iOS and Android. Scan a document and sa
 
 ## Features
 
-- Edges are detected and the page is cropped and straightened automatically. The app has its own camera screen, the same on iPhone and Android: line the page up (the blue outline follows the page it finds), tap the shutter, then check or drag the corners and choose Next page or Done.
+- Edges are detected and the page is cropped and straightened automatically. The app has its own camera screen, the same on iPhone and Android: line the page up inside the blue guide box, tap the shutter, then check or drag the corners and choose Next page or Done.
 - Multi-page capture and retakes.
 - Choose pages to save: tap Select on a scan and pick pages; Save or filter then offers Save as PDF, Save as JPEG or a filter for only those pages, saved in page order.
 - Filter for new scans (Clean, Normal by default): Clean whitens the paper and removes shadows, tint, specks and faint creases from each new scan, keeping the writing, and whitens table showing past bent or curled page edges. Light keeps faint pencil and faded print; Strong wipes more. Grayscale cleans to grey, and Original keeps the photos. The last filter you pick on a scan's page becomes the one for new scans.

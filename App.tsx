@@ -1021,6 +1021,7 @@ function Capture(props: { pagesBefore: number; onEnd: (pages: string[]) => void 
   const [working, setWorking] = useState(false);
   // State updates are async, so a second tap in the same frame would still see working=false.
   const inFlight = useRef(false);
+
   async function step(task: () => Promise<void>, errorTitle: string) {
     if (inFlight.current) return;
     inFlight.current = true;
@@ -1137,7 +1138,7 @@ function Capture(props: { pagesBefore: number; onEnd: (pages: string[]) => void 
   return (
     <View style={styles.capture}>
       <View style={styles.flex}>
-        <CameraView ref={camera} style={styles.flex} facing="back" animateShutter />
+        <CameraView ref={camera} style={styles.flex} facing="back" />
         <View
           style={[StyleSheet.absoluteFill, styles.captureOverlay]}
           pointerEvents="none"
