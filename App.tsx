@@ -27,6 +27,7 @@ import {
 import Slider from '@react-native-community/slider';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { cleanPages, defaultFilter, filterPreviews, setDefaultFilter, sharedFilter, strengthPreview, type Filter } from './clean';
+import { liveImages } from './liveImages';
 import { cropPage, findPage, isConvex, previewCorners, type FoundPage, type Point, type Quad } from './crop';
 import { clearScannerCache, pagesToSave, pickOnLongPress, saveJpegs, savePdf } from './save';
 import { addPages, createScan, deleteScan, heldPhoto, listScans, type Scan } from './scans';
@@ -447,24 +448,28 @@ function Detail(props: {
     };
   }, [previewPage, turned]);
   // Runs when the images are replaced, and when the editor or filter panel closes or unmounts.
-  useEffect(() => () => disposeLater(Object.values(previews.images ?? {})), [previews]);
-  const strength = useStrengthPreview(previewPage, width * PixelRatio.get(), subjectKey);
+  // A frame later, as the Canvas may still draw them once (see useStrengthPreview).
+  useEffect(() => () => {
+    const replaced = Object.values(previews.images ?? {});
+    requestAnimationFrame(() => replaced.forEach((t) => t.dispose()));
+  }, [previews]);
+  const livePreview = useStrengthPreview(previewPage, width * PixelRatio.get(), subjectKey);
   // The slider can also vanish mid-drag (a second finger taps the thumbnail), and then no lift comes.
   const showStrengths = (open: boolean) => {
     // Opening starts the preview at the current strength, so the first move does not wait for the
     // photo, its analysis and the GPU's first draw (about 1.5 s on the Simulator).
-    if (open && recorded) strength.preview(recorded);
-    else strength.hide();
+    if (open && recorded) livePreview.preview(recorded);
+    else livePreview.hide();
     setStrengthsOpen(open);
   };
   // What both filter strips share; only where the filter is stored differs.
   const stripProps = {
     thumbs,
     recorded,
-    busy: busy || strength.finishing,
+    busy: busy || livePreview.finishing,
     strengthsOpen,
     onStrengths: showStrengths,
-    onPreview: strength.preview,
+    onPreview: livePreview.preview,
   };
   const data: Cell[] = [
     ...scan.pages.map((uri, i) => ({ key: uri, uri, n: i + 1 })),
@@ -706,6 +711,8 @@ function Detail(props: {
               initialScrollIndex={editorIndex ?? 0}
               getItemLayout={(_, i) => ({ length: width, offset: width * i, index: i })}
               scrollEventThrottle={16}
+              // The live preview sits over the pager, so it would cover the pages sliding under it.
+              onScrollBeginDrag={livePreview.hide}
               // Updated during the slide, not after it: Rotate turns this page and takes taps mid-slide.
               onScroll={(e) => {
                 const slid = Math.round(e.nativeEvent.contentOffset.x / width);
@@ -740,9 +747,9 @@ function Detail(props: {
                 </Pressable>
               )}
             />
-            {strength.image && !holding && (
+            {livePreview.image && !holding && (
               <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">
-                <SkiaImage image={strength.image} x={0} y={0} width={width} height={pagerHeight} fit="contain" />
+                <SkiaImage image={livePreview.image} x={0} y={0} width={width} height={pagerHeight} fit="contain" />
               </Canvas>
             )}
             {/* Over the pager's top edge, so the pager and strip never move. The grid's toast sits behind this Modal. */}
@@ -755,7 +762,7 @@ function Detail(props: {
             </View>
           </View>
           {editedPage && (
-            <FilterStrip {...stripProps} onFilter={(filter) => strength.store(filter, (f) => props.onFilterPage(editedPage, f))} />
+            <FilterStrip {...stripProps} onFilter={(filter) => livePreview.store(filter, (f) => props.onFilterPage(editedPage, f))} />
           )}
           <View style={styles.editorDone}>
             {recorded && scan.pages.length > 1 && (
@@ -801,9 +808,9 @@ function Detail(props: {
         {panel === 'filter' ? (
           <>
             {/* The first picked page at the strength under the finger, between the status bar and the panel. */}
-            {strength.image && (
+            {livePreview.image && (
               <Canvas style={[styles.panelPreview, { top: insets.top + 12 }, panelPreviewBox]} pointerEvents="none">
-                <SkiaImage image={strength.image} x={0} y={0} {...panelPreviewBox} fit="contain" />
+                <SkiaImage image={livePreview.image} x={0} y={0} {...panelPreviewBox} fit="contain" />
               </Canvas>
             )}
             <View
@@ -820,7 +827,7 @@ function Detail(props: {
               <Text style={styles.sheetHeading} accessibilityRole="header" maxFontSizeMultiplier={1.5}>
                 Filter {pagesLabel(pickedPages.length)}
               </Text>
-              <FilterStrip {...stripProps} onFilter={(filter) => strength.store(filter, (f) => props.onFilterPages(pickedPages, f))} />
+              <FilterStrip {...stripProps} onFilter={(filter) => livePreview.store(filter, (f) => props.onFilterPages(pickedPages, f))} />
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Done"
@@ -896,38 +903,27 @@ function Detail(props: {
   );
 }
 
-// A Canvas hands its new drawing to Skia a moment after React commits, and Skia replays the old drawing
-// first, so an image taken off the screen is freed a frame later, once nothing can draw it.
-const disposeLater = (images: SkImage[]) => {
-  if (images.length) requestAnimationFrame(() => images.forEach((image) => image.dispose()));
-};
-
 // The page at the strength under the finger, shown until the stored page replaces it. `finishing` is
 // true between a lift and the start of its store, while the preview catches up to the stored strength.
 function useStrengthPreview(page: string | undefined, width: number, subjectKey: string) {
-  // `upTo` counts the images handed over up to this one; a later one may not be drawn yet, so it is never freed here.
-  const [live, setLive] = useState<{ image: SkImage | null; upTo: number }>({ image: null, upTo: 0 });
+  // The image on screen, and the number of the last image handed over when it was set.
+  const [shown, setShown] = useState<{ image: SkImage | null; upTo: number }>({ image: null, upTo: 0 });
   const [finishing, setFinishing] = useState(false);
   const run = useRef<ReturnType<typeof strengthPreview> | null>(null);
-  // Every image handed to setLive: two can land in one render, so each is freed once a later one is on screen.
-  const images = useRef<{ image: SkImage; n: number }[]>([]);
-  const made = useRef(0);
+  const [images] = useState(() => liveImages<SkImage>());
   const hide = () => {
     run.current?.stop();
     run.current = null;
-    setLive({ image: null, upTo: made.current });
+    setShown({ image: null, upTo: images.last() });
   };
   const preview = (filter: Filter | null) => {
     if (!filter || !page) return hide();
-    run.current ??= strengthPreview(page, width, (image) => {
-      images.current.push({ image, n: ++made.current });
-      setLive({ image, upTo: made.current });
-    });
+    run.current ??= strengthPreview(page, width, (image) => setShown({ image, upTo: images.add(image) }));
     run.current.preview(filter);
   };
   const storing = useRef(false);
   // The preview's photo is freed before the store, which needs about 100 MB of its own. Slider events
-  // queued behind a slow preview step can still arrive after the lift; only the lift's own value is stored.
+  // can still arrive while the preview catches up after the lift; only the lift's own value is stored.
   const store = async (filter: Filter, apply: (filter: Filter) => void) => {
     if (storing.current) return;
     storing.current = true;
@@ -944,18 +940,18 @@ function useStrengthPreview(page: string | undefined, width: number, subjectKey:
       storing.current = false;
     }
   };
+  // A Canvas hands its new drawing to Skia a moment after React commits, and Skia replays the old one
+  // first, so an image taken off the screen is freed a frame later.
   useEffect(() => {
-    const freed = images.current.filter((e) => e.n <= live.upTo && e.image !== live.image);
-    images.current = images.current.filter((e) => !freed.includes(e));
-    disposeLater(freed.map((e) => e.image));
-  }, [live]);
-  useEffect(() => {
-    const all = images;
-    return () => disposeLater(all.current.map((e) => e.image));
-  }, []);
+    requestAnimationFrame(() => images.release(shown.upTo, shown.image));
+  }, [shown, images]);
+  useEffect(() => () => {
+    requestAnimationFrame(images.clear);
+  }, [images]);
   // Another page, closing, or the filter being stored (filterPages reloads its pages even when one fails) ends it.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- hide reads only a ref, a setter and `images`, which never changes
   useEffect(() => hide, [subjectKey]);
-  return { image: live.image, finishing, preview, hide, store };
+  return { image: shown.image, finishing, preview, hide, store };
 }
 
 // The filter strip of the page editor and of the Select sheet's filter panel; both sit on a dark background.

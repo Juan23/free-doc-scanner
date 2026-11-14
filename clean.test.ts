@@ -707,7 +707,7 @@ describe('the strength slider\'s live preview', () => {
     const direct = filterImage(source, { kind: 'gray', strength: 2 }, W);
     try {
       expect(shown.length).toBe(1);
-      expect(meanDifference(shown[0], direct)).toBeLessThan(0.5);
+      expect(meanDifference(shown[0], direct)).toBeLessThan(0.05);
     } finally {
       for (const image of [source, direct, ...shown]) image.dispose();
     }

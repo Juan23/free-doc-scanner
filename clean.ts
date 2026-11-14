@@ -337,6 +337,13 @@ function pastEdges(page: Uint8Array, fine: Uint8Array, w: number, h: number): Ui
   return out;
 }
 
+type MakeSurface = (width: number, height: number) => SkSurface;
+const cpuSurface: MakeSurface = (w, h) => Skia.Surface.Make(w, h)!;
+// Without a GPU (the tests' CanvasKit) this is a CPU surface.
+const gpuSurface: MakeSurface = (w, h) => Skia.Surface.MakeOffscreen(w, h) ?? cpuSurface(w, h);
+const clamp = (img: SkImage, mode: FilterMode, matrix?: SkMatrix, mipmap = MipmapMode.None) =>
+  img.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, mode, mipmap, matrix);
+
 /**
  * A new `outW` x `outH` copy of `image`, mipmapped so thin strokes are averaged in, not skipped.
  * A shader, because drawImageRectOptions skipped 1 to 3 px strokes in 1600 to 4032 px photos at 500 px.
@@ -346,9 +353,9 @@ export function shrunkCopy(
   image: SkImage,
   outW: number,
   outH: number,
-  makeSurface: (width: number, height: number) => SkSurface | null = (w, h) => Skia.Surface.Make(w, h),
+  makeSurface: MakeSurface = cpuSurface,
 ): SkImage {
-  const surface = makeSurface(outW, outH) ?? Skia.Surface.Make(outW, outH)!;
+  const surface = makeSurface(outW, outH);
   const shader = image.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, MipmapMode.Linear, Skia.Matrix().scale(outW / image.width(), outH / image.height()));
   const paint = Skia.Paint();
   paint.setShader(shader);
@@ -392,7 +399,7 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
 
   const analysis = analysePage(image);
   try {
-    return filterAnalysed(image, analysis, filter, outW, outH, (w, h) => Skia.Surface.Make(w, h));
+    return filterAnalysed(image, analysis, filter, outW, outH, cpuSurface);
   } finally {
     analysis.dispose();
   }
@@ -408,9 +415,8 @@ function analysePage(image: SkImage): Analysis {
   const scale = Math.min(1, SMALL_WIDTH / w);
   const sw = Math.ceil(w * scale);
   const sh = Math.ceil(h * scale);
-  const clamp = (img: SkImage) => img.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Nearest, MipmapMode.None);
 
-  const surface = Skia.Surface.Make(sw, sh)!;
+  const surface = cpuSurface(sw, sh);
   const canvas = surface.getCanvas();
   const smallPage = shrunkCopy(image, sw, sh);
 
@@ -422,8 +428,8 @@ function analysePage(image: SkImage): Analysis {
   wipeText.setImageFilter(Skia.ImageFilter.MakeErode(5, 5, Skia.ImageFilter.MakeDilate(5, 5, null)));
   canvas.drawImage(smallPage, 0, 0, wipeText);
   const fine = surface.makeImageSnapshot();
-  const coarseShader = clamp(coarse);
-  const fineShader = clamp(fine);
+  const coarseShader = clamp(coarse, FilterMode.Nearest);
+  const fineShader = clamp(fine, FilterMode.Nearest);
   const pickShader = paperEffect.makeShaderWithChildren([], [coarseShader, fineShader]);
   const pickPaper = Skia.Paint();
   pickPaper.setShader(pickShader);
@@ -452,26 +458,24 @@ function analysePage(image: SkImage): Analysis {
   };
 }
 
-// The strength's ink mask on the small copy, then the final pass at the output size on a surface from `makeSurface`.
+// The strength-dependent part of filterImage: the ink mask on the small copy, then the final pass at the output size.
 function filterAnalysed(
   image: SkImage,
-  a: Analysis,
+  analysis: Analysis,
   filter: Filter,
   outW: number,
   outH: number,
-  makeSurface: (width: number, height: number) => SkSurface | null,
+  makeSurface: MakeSurface,
 ): SkImage {
   const w = image.width();
   const h = image.height();
-  const { sw, sh } = a;
+  const { sw, sh } = analysis;
   const keep = keepAt(filter.strength);
   const toOut = Skia.Matrix().scale(outW / sw, outH / sh);
-  const clamp = (img: SkImage, mode: FilterMode, matrix?: SkMatrix, mipmap = MipmapMode.None) =>
-    img.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, mode, mipmap, matrix);
 
-  const surface = Skia.Surface.Make(sw, sh)!;
-  const smallPageShader = clamp(a.smallPage, FilterMode.Nearest);
-  const coarseShader = clamp(a.coarse, FilterMode.Nearest);
+  const surface = cpuSurface(sw, sh);
+  const smallPageShader = clamp(analysis.smallPage, FilterMode.Nearest);
+  const coarseShader = clamp(analysis.coarse, FilterMode.Nearest);
   const inkShader = inkEffect.makeShaderWithChildren([keep.inkThreshold], [smallPageShader, coarseShader]);
   const spreadInk = Skia.Paint();
   spreadInk.setShader(inkShader);
@@ -488,14 +492,14 @@ function filterAnalysed(
     Skia.Matrix().scale(outW / w, outH / h),
     shrinking ? MipmapMode.Linear : MipmapMode.None,
   );
-  const paperShader = clamp(a.paper, FilterMode.Linear, toOut);
+  const paperShader = clamp(analysis.paper, FilterMode.Linear, toOut);
   const textShader = clamp(ink, FilterMode.Linear, toOut);
-  const beyondShader = clamp(a.beyond, FilterMode.Linear, toOut);
+  const beyondShader = clamp(analysis.beyond, FilterMode.Linear, toOut);
   const cleanShader = cleanEffect.makeShaderWithChildren(
     [keep.whitePoint, filter.kind === 'gray' ? 1 : 0, outW >= PALE_LINE_WIDTH ? keep.paleLine : 1],
     [pageShader, paperShader, textShader, beyondShader],
   );
-  const out = makeSurface(outW, outH) ?? Skia.Surface.Make(outW, outH)!;
+  const out = makeSurface(outW, outH);
   const paint = Skia.Paint();
   paint.setShader(cleanShader);
   out.getCanvas().drawPaint(paint);
@@ -583,7 +587,6 @@ export function strengthPreview(uri: string, width: number, show: (image: SkImag
   let stopped = false;
   // Measured once: only the ink mask and the final pass depend on the strength.
   let analysis: Analysis | null = null;
-  const gpu = (w: number, h: number) => Skia.Surface.MakeOffscreen(w, h);
   const run = async () => {
     try {
       const image = await photo;
@@ -596,11 +599,10 @@ export function strengthPreview(uri: string, width: number, show: (image: SkImag
         await new Promise((r) => setTimeout(r, 0));
         if (stopped) break;
         analysis ??= analysePage(image);
-        // The page is filtered at full size, as stored (a narrower pass drops thin strokes the stored page
-        // keeps), and shrunk for the screen, both on the GPU. The screen draws on another thread, so it
-        // gets a CPU copy.
-        const full = filterAnalysed(image, analysis, filter, image.width(), image.height(), gpu);
-        const drawn = shrunkCopy(full, outW, outH, gpu);
+        // Full size on the GPU: a narrower pass drops thin strokes the stored page keeps.
+        // The screen draws on another thread, so it gets a CPU copy.
+        const full = filterAnalysed(image, analysis, filter, image.width(), image.height(), gpuSurface);
+        const drawn = shrunkCopy(full, outW, outH, gpuSurface);
         full.dispose();
         let copy: SkImage | null = null;
         try {
