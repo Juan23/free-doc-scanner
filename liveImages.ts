@@ -8,15 +8,13 @@ export function disposeNextFrame(images: Disposable[]) {
   if (images.length) requestAnimationFrame(() => images.forEach((image) => image.dispose()));
 }
 
-const disposeNow = (images: Disposable[]) => images.forEach((image) => image.dispose());
-
 /**
  * The preview images handed to the screen, freed (through `free`) only once they can no longer be
  * drawn. Two can be handed over before one render, so each gets a number; `release` frees the ones
  * up to the number a render showed, except the one it shows, and never a later one that render had
  * not seen.
  */
-export function liveImages<T extends Disposable>(free: (images: T[]) => void = disposeNow) {
+export function liveImages<T extends Disposable>(free: (images: T[]) => void) {
   let held: { image: T; n: number }[] = [];
   let handed = 0;
   return {

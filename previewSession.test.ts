@@ -84,7 +84,7 @@ it('in the editor, keeps the preview past the stored subject change until the pa
   expect(events.cleared).toBe(clearedBefore + 1);
 });
 
-it('warms one fresh run after a store, which hiding stops and leaving stops too', async () => {
+it('warms one fresh run after a store, which hiding stops', async () => {
   const { session, runs, start } = setup();
   session.preview(filter(1), start);
   const stored = session.store(filter(1), () => {});
@@ -96,7 +96,30 @@ it('warms one fresh run after a store, which hiding stops and leaving stops too'
   expect(runs.length).toBe(2);
   expect(runs[1].warmed).toEqual([1]);
 
+  session.hide();
+  expect(runs[1].stopped).toBe(true);
+});
+
+it('stops every run when the screen goes away', () => {
+  const { session, runs, start } = setup();
+  session.warm(filter(1), start);
   session.leave();
+  expect(runs[0].stopped).toBe(true);
+});
+
+it('ends the preview at a second subject change while waiting for the page, such as a turn', async () => {
+  const { session, runs, events, start } = setup();
+  session.preview(filter(1), start);
+  const stored = session.store(filter(1), () => {}, { untilPageLoads: true });
+  runs[0].endFinish();
+  await stored;
+  session.subjectChanged();
+  session.warm(filter(1), start);
+  const clearedBefore = events.cleared;
+
+  session.subjectChanged();
+
+  expect(events.cleared).toBe(clearedBefore + 1);
   expect(runs[1].stopped).toBe(true);
 });
 

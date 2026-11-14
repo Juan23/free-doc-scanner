@@ -577,12 +577,14 @@ export async function filterPreviews(
  * The page filtered as the strength slider moves, before anything is stored: each `preview` filters
  * the page's untouched photo at full size, as storing it would, and shrinks it to `width` (or the
  * photo's width), one at a time; while one runs only the latest waits. Each result goes to `show`,
- * which owns it from then on. `stop` ends it and frees the photo; nothing is shown after. `finish` is for the
+ * which owns it from then on; a photo that cannot be read or filtered shows `null` once and stops the
+ * run, so no earlier strength stays on screen. `stop` ends it and frees the photo; nothing is shown
+ * after. `finish` is for the
  * lift: it shows the strength being stored last, then stops, so the photo is freed before the store
  * needs its own memory. `warm` reads and measures the photo and runs one pass without showing it, so
  * the next `preview` does not wait for that.
  */
-export function strengthPreview(uri: string, width: number, show: (image: SkImage) => void) {
+export function strengthPreview(uri: string, width: number, show: (image: SkImage | null) => void) {
   const photo = readPage(heldPhoto(uri));
   let next: Filter | null = null;
   let silent = false;
@@ -606,18 +608,25 @@ export function strengthPreview(uri: string, width: number, show: (image: SkImag
         // Full size on the GPU: a narrower pass drops thin strokes the stored page keeps.
         // The screen draws on another thread, so it gets a CPU copy.
         const full = filterAnalysed(analysis, filter, image.width(), image.height(), gpuSurface);
-        const drawn = shrunkCopy(full, outW, outH, gpuSurface);
-        full.dispose();
-        if (quiet) {
-          drawn.dispose();
-          continue;
+        let drawn: SkImage;
+        try {
+          drawn = shrunkCopy(full, outW, outH, gpuSurface);
+        } finally {
+          full.dispose();
         }
-        const copy = drawn.makeNonTextureImage();
-        if (copy) drawn.dispose();
-        show(copy ?? drawn);
+        try {
+          const copy = quiet ? null : drawn.makeNonTextureImage();
+          if (copy) show(copy);
+        } finally {
+          drawn.dispose();
+        }
       }
     } catch {
-      // A photo that cannot be read or filtered shows no preview; the page is still filtered when stored.
+      // The page is still filtered when stored; the preview just ends.
+      if (!stopped) {
+        stop();
+        show(null);
+      }
     } finally {
       running = null;
     }

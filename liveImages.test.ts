@@ -1,9 +1,11 @@
 import { liveImages } from './liveImages';
 
+const disposeNow = (images: { dispose: () => void }[]) => images.forEach((image) => image.dispose());
+
 const image = (name: string) => ({ name, dispose: jest.fn() });
 
 it('frees the images handed over before the one on screen, and never a later one', () => {
-  const list = liveImages();
+  const list = liveImages(disposeNow);
   const a = image('a');
   const b = image('b');
   const c = image('c');
@@ -20,7 +22,7 @@ it('frees the images handed over before the one on screen, and never a later one
 });
 
 it('frees each image once, however often it is released', () => {
-  const list = liveImages();
+  const list = liveImages(disposeNow);
   const a = image('a');
   const b = image('b');
   list.add(a);
@@ -35,7 +37,7 @@ it('frees each image once, however often it is released', () => {
 });
 
 it('frees every image left when cleared', () => {
-  const list = liveImages();
+  const list = liveImages(disposeNow);
   const a = image('a');
   const b = image('b');
   list.add(a);

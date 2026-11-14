@@ -407,7 +407,7 @@ function Detail(props: {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [panel, setPanel] = useState<'actions' | 'filter'>('actions');
   const [panelHeight, setPanelHeight] = useState(0);
-  const panelPreviewBox = { width: width - 32, height: height - insets.top - panelHeight - 24 };
+  const panelPreviewBox = { width: width - 32, height: Math.max(0, height - insets.top - panelHeight - 24) };
   const pendingSave = useRef<'pdf' | 'jpeg' | null>(null);
   // Thumbnails and the page they were made for; another page shows empty boxes until its own arrive.
   const [previews, setPreviews] = useState<{ page: string; images: Record<Filter['kind'], SkImage> | null }>({
@@ -760,7 +760,7 @@ function Detail(props: {
             </View>
           </View>
           {editedPage && (
-            <FilterStrip {...stripProps} onFilter={(filter) => livePreview.storeAfterPreview(filter, (f) => props.onFilterPage(editedPage, f), { untilPageLoads: true })} />
+            <FilterStrip {...stripProps} onFilter={(filter) => livePreview.store(filter, (f) => props.onFilterPage(editedPage, f), { untilPageLoads: true })} />
           )}
           <View style={styles.editorDone}>
             {recorded && scan.pages.length > 1 && (
@@ -823,7 +823,7 @@ function Detail(props: {
                 Filter {pagesLabel(pickedPages.length)}
                 {livePreview.image && pickedPages.length > 1 ? ', the first shown' : ''}
               </Text>
-              <FilterStrip {...stripProps} onFilter={(filter) => livePreview.storeAfterPreview(filter, (f) => props.onFilterPages(pickedPages, f))} />
+              <FilterStrip {...stripProps} onFilter={(filter) => livePreview.store(filter, (f) => props.onFilterPages(pickedPages, f))} />
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Done"

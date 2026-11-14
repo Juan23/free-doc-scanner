@@ -19,9 +19,10 @@ export function previewSession(events: { clear: () => void; finishing: (on: bool
   // The run catching up to a lift's strength; hiding stops it too, so nothing shows after a close.
   let finishingRun: PreviewRun | null = null;
   let storing = false;
-  let awaitingPage = false;
+  // After an editor store: 'subject' until the store's own subject change, then 'page' until the pager shows it.
+  let awaiting: 'subject' | 'page' | null = null;
   const stopAll = () => {
-    awaitingPage = false;
+    awaiting = null;
     finishingRun?.stop();
     finishingRun = null;
     run?.stop();
@@ -57,20 +58,21 @@ export function previewSession(events: { clear: () => void; finishing: (on: bool
         }
         const stillShown = current !== null && finishingRun === current;
         finishingRun = null;
-        awaitingPage = !!options?.untilPageLoads && stillShown;
+        awaiting = options?.untilPageLoads && stillShown ? 'subject' : null;
         apply(filter);
       } finally {
         if (current) events.finishing(false);
         storing = false;
       }
     },
-    /** The edited page, another page, or a closed panel: ends the preview unless it waits for the page. */
+    /** The edited page, another page, a turn or a closed panel: ends the preview, except the store's own change. */
     subjectChanged() {
-      if (!awaitingPage) hide();
+      if (awaiting === 'subject') awaiting = 'page';
+      else hide();
     },
     pageLoaded() {
-      if (!awaitingPage) return;
-      awaitingPage = false;
+      if (awaiting !== 'page') return;
+      awaiting = null;
       events.clear();
     },
     /** The screen is going away: stops every run without clearing the screen. */

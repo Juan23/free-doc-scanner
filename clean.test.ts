@@ -656,7 +656,7 @@ describe('the strength slider\'s live preview', () => {
     mockFiles.set(PAGE1, photo);
     const files = new Map(mockFiles);
     const shown: SkImage[] = [];
-    const live = strengthPreview(PAGE1, 300, (image) => shown.push(image));
+    const live = strengthPreview(PAGE1, 300, (image) => image && shown.push(image));
 
     live.preview({ kind: 'clean', strength: 0 });
     live.preview({ kind: 'clean', strength: 0.5 });
@@ -681,7 +681,7 @@ describe('the strength slider\'s live preview', () => {
   it('shows nothing once stopped, even for a move asked for just before', async () => {
     mockFiles.set(PAGE1, photographedPage());
     const shown: SkImage[] = [];
-    const live = strengthPreview(PAGE1, 300, (image) => shown.push(image));
+    const live = strengthPreview(PAGE1, 300, (image) => image && shown.push(image));
 
     live.preview({ kind: 'clean', strength: 2 });
     live.stop();
@@ -695,7 +695,7 @@ describe('the strength slider\'s live preview', () => {
   it('warms up without drawing anything, then shows the next move', async () => {
     mockFiles.set(PAGE1, photographedPage());
     const shown: SkImage[] = [];
-    const live = strengthPreview(PAGE1, W, (image) => shown.push(image));
+    const live = strengthPreview(PAGE1, W, (image) => image && shown.push(image));
 
     live.warm({ kind: 'clean', strength: 1 });
     await settle();
@@ -709,10 +709,22 @@ describe('the strength slider\'s live preview', () => {
     for (const image of shown) image.dispose();
   }, 30000);
 
+  it('clears the screen and stops when the photo cannot be read', async () => {
+    const shown: (SkImage | null)[] = [];
+    const live = strengthPreview(PAGE1, W, (image) => shown.push(image));
+
+    live.preview({ kind: 'clean', strength: 1 });
+    await settle();
+    live.preview({ kind: 'clean', strength: 2 });
+    await settle();
+
+    expect(shown).toEqual([null]);
+  }, 30000);
+
   it('on finish with the strength already shown, draws no extra pass', async () => {
     mockFiles.set(PAGE1, photographedPage());
     const shown: SkImage[] = [];
-    const live = strengthPreview(PAGE1, W, (image) => shown.push(image));
+    const live = strengthPreview(PAGE1, W, (image) => image && shown.push(image));
 
     live.preview({ kind: 'clean', strength: 1.5 });
     while (!shown.length) await settle();
@@ -727,7 +739,7 @@ describe('the strength slider\'s live preview', () => {
     const photo = photographedPage();
     mockFiles.set(PAGE1, photo);
     const shown: SkImage[] = [];
-    const live = strengthPreview(PAGE1, W, (image) => shown.push(image));
+    const live = strengthPreview(PAGE1, W, (image) => image && shown.push(image));
 
     live.preview({ kind: 'clean', strength: 0 });
     await live.finish({ kind: 'gray', strength: 2 });
@@ -1096,7 +1108,7 @@ describe('table lines', () => {
     drawn.dispose();
     mockFiles.set(PAGE1, bytes);
     const shown: SkImage[] = [];
-    const live = strengthPreview(PAGE1, 400, (image) => shown.push(image));
+    const live = strengthPreview(PAGE1, 400, (image) => image && shown.push(image));
     live.preview({ kind: 'clean', strength: 1 });
     while (!shown.length) await settle();
     live.stop();

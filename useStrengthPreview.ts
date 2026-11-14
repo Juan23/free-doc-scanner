@@ -7,8 +7,8 @@ import { previewSession } from './previewSession';
 
 /**
  * The page at the strength under the finger, shown until the stored page replaces it (the order is
- * previewSession's). While `warmAt` is set (the slider is open), a fresh run is warmed up after each
- * store, so the next drag does not wait for the photo to be read and measured again.
+ * previewSession's). While `warmAt` is set (the slider is open), a fresh run is warmed up whenever
+ * none is going, so the next drag does not wait for the photo to be read and measured again.
  */
 export function useStrengthPreview(page: string | undefined, width: number, subjectKey: string, warmAt: Filter | null) {
   // `upTo` is the number of the last image handed over when `image` was set; see liveImages.
@@ -19,7 +19,7 @@ export function useStrengthPreview(page: string | undefined, width: number, subj
     previewSession({ clear: () => setShown({ image: null, upTo: images.lastNumber() }), finishing: setFinishing }),
   );
   const start = useCallback(
-    () => strengthPreview(page!, width, (image) => setShown({ image, upTo: images.add(image) })),
+    () => strengthPreview(page!, width, (image) => setShown({ image, upTo: image ? images.add(image) : images.lastNumber() })),
     [page, width, images],
   );
   const preview = (filter: Filter | null) => (filter && page ? session.preview(filter, start) : session.hide());
@@ -34,16 +34,17 @@ export function useStrengthPreview(page: string | undefined, width: number, subj
     [session, images],
   );
   useEffect(() => () => session.subjectChanged(), [subjectKey, session]);
-  // A new subject (a store, a turn) has ended the last run; warm the next one while the slider is open.
+  // After every render: a store, a turn or a hide has ended the last run; warm the next one while the
+  // slider is open (warm does nothing while a run is going).
   useEffect(() => {
     if (warmAt && page) session.warm(warmAt, start);
-  }, [subjectKey, warmAt, page, session, start]);
+  });
   return {
     image: shown.image,
     finishing,
     preview,
     hide: session.hide,
-    storeAfterPreview: session.store,
+    store: session.store,
     pageLoaded: session.pageLoaded,
   };
 }
