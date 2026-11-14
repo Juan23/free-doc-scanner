@@ -414,7 +414,7 @@ function Detail(props: {
     images: null,
   });
   const cell = (width - 40 - 16) / 2;
-  const { scan, busy, picked } = props;
+  const { scan, picked } = props;
   const editing = editorIndex !== null;
   const editedPage = scan.pages[current] as string | undefined;
   const pickedPages = useMemo(() => scan.pages.filter((p) => picked?.includes(p)), [scan.pages, picked]);
@@ -454,6 +454,8 @@ function Detail(props: {
     requestAnimationFrame(() => replaced.forEach((t) => t.dispose()));
   }, [previews]);
   const livePreview = useStrengthPreview(previewPage, width * PixelRatio.get(), subjectKey);
+  // Until a lift's store starts, another action would take its turn in Root's queue and drop it.
+  const busy = props.busy || livePreview.finishing;
   // The slider can also vanish mid-drag (a second finger taps the thumbnail), and then no lift comes.
   const showStrengths = (open: boolean) => {
     // Opening starts the preview at the current strength, so the first move does not wait for the
@@ -465,7 +467,7 @@ function Detail(props: {
   const stripProps = {
     thumbs,
     recorded,
-    busy: busy || livePreview.finishing,
+    busy,
     strengthsOpen,
     onStrengths: showStrengths,
     onPreview: livePreview.preview,
@@ -742,6 +744,7 @@ function Detail(props: {
                     }}
                     style={{ width, height: pagerHeight }}
                     resizeMode="contain"
+                    onLoadEnd={index === current ? livePreview.pageLoaded : undefined}
                   />
                 </Pressable>
               )}
@@ -759,7 +762,7 @@ function Detail(props: {
             </View>
           </View>
           {editedPage && (
-            <FilterStrip {...stripProps} onFilter={(filter) => livePreview.storeAfterPreview(filter, (f) => props.onFilterPage(editedPage, f))} />
+            <FilterStrip {...stripProps} onFilter={(filter) => livePreview.storeAfterPreview(filter, (f) => props.onFilterPage(editedPage, f), true)} />
           )}
           <View style={styles.editorDone}>
             {recorded && scan.pages.length > 1 && (
@@ -915,6 +918,7 @@ function useStrengthPreview(page: string | undefined, width: number, subjectKey:
   const run = useRef<ReturnType<typeof strengthPreview> | null>(null);
   const [images] = useState(() => liveImages<SkImage>());
   const hide = () => {
+    awaitingPage.current = false;
     run.current?.stop();
     run.current = null;
     setShown({ image: null, upTo: images.lastNumber() });
@@ -925,9 +929,11 @@ function useStrengthPreview(page: string | undefined, width: number, subjectKey:
     run.current.preview(filter);
   };
   const storing = useRef(false);
+  // In the editor the preview stays after a store until the pager has loaded the stored page.
+  const awaitingPage = useRef(false);
   // The preview's photo is freed before the store, which needs about 100 MB of its own. Slider events
   // can still arrive while the preview catches up after the lift; only the lift's own value is stored.
-  const storeAfterPreview = async (filter: Filter, apply: (filter: Filter) => void) => {
+  const storeAfterPreview = async (filter: Filter, apply: (filter: Filter) => void, untilPageLoads = false) => {
     if (storing.current) return;
     storing.current = true;
     const current = run.current;
@@ -937,6 +943,7 @@ function useStrengthPreview(page: string | undefined, width: number, subjectKey:
         setFinishing(true);
         await current.finish(filter);
       }
+      awaitingPage.current = untilPageLoads && !!current;
       apply(filter);
     } finally {
       setFinishing(false);
@@ -952,9 +959,19 @@ function useStrengthPreview(page: string | undefined, width: number, subjectKey:
     requestAnimationFrame(images.clear);
   }, [images]);
   // Another page, closing, or the filter being stored (filterPages reloads its pages even when one fails) ends it.
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- hide reads only a ref, a setter and `images`, which never changes
-  useEffect(() => hide, [subjectKey]);
-  return { image: shown.image, finishing, preview, hide, storeAfterPreview };
+  const pageLoaded = () => {
+    if (!awaitingPage.current) return;
+    awaitingPage.current = false;
+    hide();
+  };
+  useEffect(
+    () => () => {
+      if (!awaitingPage.current) hide();
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- hide reads only refs, a setter and `images`, which never changes
+    [subjectKey],
+  );
+  return { image: shown.image, finishing, preview, hide, storeAfterPreview, pageLoaded };
 }
 
 // The filter strip of the page editor and of the Select sheet's filter panel; both sit on a dark background.
