@@ -105,9 +105,9 @@ function Root() {
     toastTimer.current = setTimeout(() => setMessage(''), 2500);
   }, []);
 
-  // Runs one scan/save/delete action at a time.
+  // Runs one scan/save/delete action at a time; resolves to false when another one turned it away.
   async function guarded(task: () => Promise<void>, errorTitle: string) {
-    if (inFlight.current) return;
+    if (inFlight.current) return false;
     inFlight.current = true;
     setBusy(true);
     try {
@@ -118,6 +118,7 @@ function Root() {
       inFlight.current = false;
       setBusy(false);
     }
+    return true;
   }
 
   // Re-reads the list and the open scan, so pages moved before a failure show up. Its pages changed, so Select mode ends.
@@ -391,8 +392,8 @@ function Detail(props: {
   onDelete: () => void;
   onAdd: () => void;
   onRotate: (page: string) => void;
-  onFilterPage: (page: string, filter: Filter) => void;
-  onFilterPages: (pages: string[], filter: Filter) => void;
+  onFilterPage: (page: string, filter: Filter) => Promise<boolean>;
+  onFilterPages: (pages: string[], filter: Filter) => Promise<boolean>;
   onSave: (kind: 'pdf' | 'jpeg') => void;
 }) {
   const { width, height } = useWindowDimensions();
@@ -760,7 +761,7 @@ function Detail(props: {
             </View>
           </View>
           {editedPage && (
-            <FilterStrip {...stripProps} onFilter={(filter) => livePreview.store(filter, (f) => props.onFilterPage(editedPage, f), { untilPageLoads: true })} />
+            <FilterStrip {...stripProps} onFilter={(filter) => livePreview.store(filter, (f) => props.onFilterPage(editedPage, f), { keep: 'untilPageLoads' })} />
           )}
           <View style={styles.editorDone}>
             {recorded && scan.pages.length > 1 && (
@@ -823,7 +824,7 @@ function Detail(props: {
                 Filter {pagesLabel(pickedPages.length)}
                 {livePreview.image && pickedPages.length > 1 ? ', the first shown' : ''}
               </Text>
-              <FilterStrip {...stripProps} onFilter={(filter) => livePreview.store(filter, (f) => props.onFilterPages(pickedPages, f))} />
+              <FilterStrip {...stripProps} onFilter={(filter) => livePreview.store(filter, (f) => props.onFilterPages(pickedPages, f), { keep: 'untilNextChange' })} />
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Done"

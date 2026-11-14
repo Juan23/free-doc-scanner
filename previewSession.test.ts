@@ -11,6 +11,7 @@ function fakeRun() {
     preview: (f: { strength: number }) => void run.previews.push(f.strength),
     warm: (f: { strength: number }) => void run.warmed.push(f.strength),
     stop: () => void (run.stopped = true),
+    isStopped: () => run.stopped,
     finish: (f: { strength: number }) => {
       run.finished.push(f.strength);
       return new Promise<void>((r) => (resolveFinish = r));
@@ -56,7 +57,7 @@ it('stops the catching-up preview when hidden mid-store, still stores, and does 
   const { session, runs, events, start } = setup();
   const applied: number[] = [];
   session.preview(filter(1), start);
-  const stored = session.store(filter(1), (f) => applied.push(f.strength), { untilPageLoads: true });
+  const stored = session.store(filter(1), (f) => applied.push(f.strength), { keep: 'untilPageLoads' });
 
   session.hide();
   runs[0].endFinish();
@@ -73,7 +74,7 @@ it('stops the catching-up preview when hidden mid-store, still stores, and does 
 it('in the editor, keeps the preview past the stored subject change until the page loads', async () => {
   const { session, runs, events, start } = setup();
   session.preview(filter(1), start);
-  const stored = session.store(filter(1), () => {}, { untilPageLoads: true });
+  const stored = session.store(filter(1), () => {}, { keep: 'untilPageLoads' });
   runs[0].endFinish();
   await stored;
   const clearedBefore = events.cleared;
@@ -110,7 +111,7 @@ it('stops every run when the screen goes away', () => {
 it('ends the preview at a second subject change while waiting for the page, such as a turn', async () => {
   const { session, runs, events, start } = setup();
   session.preview(filter(1), start);
-  const stored = session.store(filter(1), () => {}, { untilPageLoads: true });
+  const stored = session.store(filter(1), () => {}, { keep: 'untilPageLoads' });
   runs[0].endFinish();
   await stored;
   session.subjectChanged();
@@ -131,4 +132,60 @@ it('reports finishing on while a lift catches up and off once its store starts',
   runs[0].endFinish();
   await stored;
   expect(events.finishing).toEqual([true, false]);
+});
+
+it('warms nothing while a store runs, through the save itself', async () => {
+  const { session, runs, start } = setup();
+  let endSave!: () => void;
+  session.preview(filter(1), start);
+  const stored = session.store(filter(1), () => new Promise<void>((r) => (endSave = r)));
+  session.warm(filter(1), start);
+  runs[0].endFinish();
+  await Promise.resolve();
+  session.warm(filter(1), start);
+  expect(runs.length).toBe(1);
+
+  endSave();
+  await stored;
+  session.warm(filter(1), start);
+  expect(runs.length).toBe(2);
+});
+
+it('replaces a run that stopped by itself, such as after a failed pass', () => {
+  const { session, runs, start } = setup();
+  session.preview(filter(1), start);
+  runs[0].stopped = true;
+
+  session.preview(filter(2), start);
+
+  expect(runs.length).toBe(2);
+  expect(runs[1].previews).toEqual([2]);
+});
+
+it('in Select mode, keeps the stored strength shown past the store until the next change', async () => {
+  const { session, runs, events, start } = setup();
+  session.preview(filter(1), start);
+  const stored = session.store(filter(1), () => {}, { keep: 'untilNextChange' });
+  runs[0].endFinish();
+  await stored;
+  const clearedBefore = events.cleared;
+
+  session.subjectChanged();
+  expect(events.cleared).toBe(clearedBefore);
+  session.subjectChanged();
+  expect(events.cleared).toBe(clearedBefore + 1);
+});
+
+it('clears the preview when the store is turned away', async () => {
+  const { session, runs, events, start } = setup();
+  session.preview(filter(1), start);
+  const stored = session.store(filter(1), async () => false, { keep: 'untilPageLoads' });
+  runs[0].endFinish();
+  const clearedBefore = events.cleared;
+  await stored;
+
+  expect(events.cleared).toBe(clearedBefore + 1);
+  session.subjectChanged();
+  session.pageLoaded();
+  expect(events.cleared).toBe(clearedBefore + 2);
 });

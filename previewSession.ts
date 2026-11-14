@@ -5,22 +5,29 @@ export type PreviewRun = {
   preview(filter: Filter): void;
   warm(filter: Filter): void;
   stop(): void;
+  /** True once stopped, by `stop` or by a failed pass. */
+  isStopped(): boolean;
   finish(filter: Filter): Promise<void>;
 };
 
 /**
  * The order of a strength preview's life around the store that a lift starts: one run at a time, the
  * lift's own strength drawn before the photo is freed for the store, only the first lift stored while
- * its preview catches up, and in the editor the preview kept until the pager has loaded the stored
- * page. `clear` takes the preview off the screen; `finishing` reports the catch-up after a lift.
+ * its preview catches up and its save runs, and the preview then kept until the pager has loaded the
+ * stored page (the editor) or until the next change (Select mode). `clear` takes the preview off the
+ * screen; `finishing` reports the catch-up after a lift.
  */
+type Keep = 'untilPageLoads' | 'untilNextChange';
+
 export function previewSession(events: { clear: () => void; finishing: (on: boolean) => void }) {
   let run: PreviewRun | null = null;
   // The run catching up to a lift's strength; hiding stops it too, so nothing shows after a close.
   let finishingRun: PreviewRun | null = null;
   let storing = false;
-  // After an editor store: 'subject' until the store's own subject change, then 'page' until the pager shows it.
+  // After a store: 'subject' until the store's own subject change, then 'page' until the pager shows it.
   let awaiting: 'subject' | 'page' | null = null;
+  let keep: Keep | null = null;
+  const current = () => (run?.isStopped() ? null : run);
   const stopAll = () => {
     awaiting = null;
     finishingRun?.stop();
@@ -34,41 +41,43 @@ export function previewSession(events: { clear: () => void; finishing: (on: bool
   };
   return {
     preview(filter: Filter, start: () => PreviewRun) {
-      run ??= start();
+      run = current() ?? start();
       run.preview(filter);
     },
-    /** Starts a run that measures the photo without drawing, unless one is running. */
+    /** Starts a run that measures the photo without drawing, unless one is running or a store is. */
     warm(filter: Filter, start: () => PreviewRun) {
-      if (run) return;
+      if (current() || storing) return;
       run = start();
       run.warm(filter);
     },
     hide,
     // Slider events can still arrive while the preview catches up after the lift; only the lift's own value is stored.
-    async store(filter: Filter, apply: (filter: Filter) => void, options?: { untilPageLoads: boolean }) {
+    // `apply` resolves to false when the store was turned away (another action held the queue).
+    async store(filter: Filter, apply: (filter: Filter) => unknown, options?: { keep: Keep }) {
       if (storing) return;
       storing = true;
-      const current = run;
+      const lifted = run;
       run = null;
-      finishingRun = current;
+      finishingRun = lifted;
       try {
-        if (current) {
+        if (lifted) {
           events.finishing(true);
-          await current.finish(filter);
+          await lifted.finish(filter);
         }
-        const stillShown = current !== null && finishingRun === current;
+        const stillShown = lifted !== null && finishingRun === lifted;
         finishingRun = null;
-        awaiting = options?.untilPageLoads && stillShown ? 'subject' : null;
-        apply(filter);
+        keep = options?.keep ?? null;
+        awaiting = keep && stillShown ? 'subject' : null;
+        if ((await apply(filter)) === false) hide();
       } finally {
-        if (current) events.finishing(false);
+        if (lifted) events.finishing(false);
         storing = false;
       }
     },
     /** The edited page, another page, a turn or a closed panel: ends the preview, except the store's own change. */
     subjectChanged() {
-      if (awaiting === 'subject') awaiting = 'page';
-      else hide();
+      if (awaiting !== 'subject') return hide();
+      awaiting = keep === 'untilPageLoads' ? 'page' : null;
     },
     pageLoaded() {
       if (awaiting !== 'page') return;

@@ -574,15 +574,16 @@ export async function filterPreviews(
 }
 
 /**
- * The page filtered as the strength slider moves, before anything is stored: each `preview` filters
- * the page's untouched photo at full size, as storing it would, and shrinks it to `width` (or the
- * photo's width), one at a time; while one runs only the latest waits. Each result goes to `show`,
- * which owns it from then on; a photo that cannot be read or filtered shows `null` once and stops the
- * run, so no earlier strength stays on screen. `stop` ends it and frees the photo; nothing is shown
- * after. `finish` is for the
- * lift: it shows the strength being stored last, then stops, so the photo is freed before the store
- * needs its own memory. `warm` reads and measures the photo and runs one pass without showing it, so
- * the next `preview` does not wait for that.
+ * The page filtered as the strength slider moves, before anything is stored. Each `preview` filters
+ * the page's untouched photo at full size, as storing it would, and shrinks it to `width` (at most
+ * the photo's width), one at a time; while one runs, only the latest waits. Each result goes to
+ * `show`, which owns it from then on. A photo that cannot be read or filtered shows `null` once and
+ * stops the run, so no earlier strength stays on screen.
+ *
+ * `stop` ends the run and frees the photo; nothing is shown after. `finish` is for the lift: it shows
+ * the strength being stored, unless that is already on screen or nothing is, then stops, so the
+ * photo is freed before the store needs its own memory. `warm` reads and measures the photo and runs
+ * one pass without showing it, so the next `preview` does not wait for that.
  */
 export function strengthPreview(uri: string, width: number, show: (image: SkImage | null) => void) {
   const photo = readPage(heldPhoto(uri));
@@ -654,8 +655,10 @@ export function strengthPreview(uri: string, width: number, show: (image: SkImag
     preview: (filter: Filter) => queue(filter, false),
     warm: (filter: Filter) => queue(filter, true),
     stop,
+    isStopped: () => stopped,
     async finish(filter: Filter) {
-      if (lastAsked?.kind !== filter.kind || lastAsked.strength !== filter.strength) queue(filter, false);
+      // Nothing on screen (a screen reader's step) needs no last pass; nor does the strength already asked for.
+      if (lastAsked && (lastAsked.kind !== filter.kind || lastAsked.strength !== filter.strength)) queue(filter, false);
       await running;
       stop();
     },
