@@ -5,17 +5,30 @@ import { File, Paths } from 'expo-file-system';
 
 import { copyPage, heldPhoto, keepOriginal, originalOf, readPage, replacePage } from './scans';
 
-/** How to treat a page: leave it as photographed, clean it, or clean it to grey. Light, Normal and Strong set how much clean-up keeps. */
-export type Filter = { kind: 'original' | 'clean' | 'gray'; strength: 0 | 1 | 2 };
+/**
+ * How to treat a page: leave it as photographed, clean it, or clean it to grey. `strength`, from 0
+ * to 2, sets how much clean-up keeps: 0 Light, 1 Normal, 2 Strong, and in between, between them.
+ */
+export type Filter = { kind: 'original' | 'clean' | 'gray'; strength: number };
 
 // How much clean-up keeps, per strength. `whitePoint`: a pixel at this share of the paper's
 // brightness turns white. `inkThreshold`: a mark at this share or darker counts as writing. Light
-// keeps faint pencil; Strong treats more faint marks as dirt.
+// keeps faint pencil; Strong treats more faint marks as dirt. `paleLine`: how dark, as Light shows
+// it, a 1 or 2 px line must be to stay as print (a table line); Strong keeps grey 130 and darker.
 const KEEP = [
-  { whitePoint: 0.95, inkThreshold: 0.97 },
-  { whitePoint: 0.85, inkThreshold: 0.9 },
-  { whitePoint: 0.8, inkThreshold: 0.87 },
+  { whitePoint: 0.95, inkThreshold: 0.97, paleLine: 0.15 },
+  { whitePoint: 0.85, inkThreshold: 0.9, paleLine: 0.15 },
+  { whitePoint: 0.8, inkThreshold: 0.87, paleLine: 0.55 },
 ];
+
+// A strength's KEEP numbers, each straight between the two steps around it; exactly a row at 0, 1 and 2.
+function keepAt(strength: number): (typeof KEEP)[number] {
+  const i = Math.min(1, Math.floor(strength));
+  const t = strength - i;
+  const [a, b] = [KEEP[i], KEEP[i + 1]];
+  const mix = (k: keyof typeof a) => (1 - t) * a[k] + t * b[k];
+  return { whitePoint: mix('whitePoint'), inkThreshold: mix('inkThreshold'), paleLine: mix('paleLine') };
+}
 
 const NORMAL: Filter = { kind: 'clean', strength: 1 };
 const ORIGINAL: Filter = { kind: 'original', strength: 1 };
@@ -29,7 +42,7 @@ function parseFilter(text: string): Filter | null {
   try {
     const f = JSON.parse(text);
     const kinds = ['original', 'clean', 'gray'];
-    if (kinds.includes(f.kind) && [0, 1, 2].includes(f.strength)) return f;
+    if (kinds.includes(f.kind) && typeof f.strength === 'number' && f.strength >= 0 && f.strength <= 2) return f;
   } catch {}
   return null;
 }
@@ -101,6 +114,11 @@ half4 main(float2 xy) {
 // darkest, such as a 1.2 px line) gets the low `least` and 0.4 more ink at most. Specks, creases 3 px
 // or wider (all three pixels dark) and shadow edges fail. A 2 px crease at alpha A has the pixels of
 // an (A * 2.3) px line: it stays at Normal from 0.3 alpha, and at Strong from 0.4.
+// A pale printed line (a table's grey rules) holds too little ink for that, so on a page at least
+// PALE_LINE_WIDTH wide a pixel also stays, as dark as Light shows it, when it is at least
+// `paleFloor` dark at Light, no pixel two away and not both beside it are much dark, and the line
+// runs on 4 and 8 px both ways. A crease 3 px or wider fails; at Strong the floor sits between a
+// 0.35 alpha crease and grey 130.
 const cleanEffect = Skia.RuntimeEffect.Make(`
 uniform shader page;
 uniform shader paper;
@@ -108,14 +126,32 @@ uniform shader ink;
 uniform shader beyond;
 uniform float whitePoint;
 uniform float grey;
+uniform float paleFloor;
+half3 levelsAt(float2 xy, half3 p, half white) {
+  return saturate((page.eval(xy).rgb / p - (white - 0.6)) / 0.6);
+}
 half3 levels(float2 xy, half3 p) {
-  return saturate((page.eval(xy).rgb / p - (half(whitePoint) - 0.6)) / 0.6);
+  return levelsAt(xy, p, half(whitePoint));
 }
 half darkOf(half3 c) {
   return 1 - min(min(c.r, c.g), c.b);
 }
 half darkAt(float2 xy, half3 p) {
   return darkOf(levels(xy, p));
+}
+half paleAt(float2 xy, half3 p) {
+  return darkOf(levelsAt(xy, p, 0.95));
+}
+half paleAcross(float2 xy, half3 p, float2 across) {
+  return max(paleAt(xy - across, p), max(paleAt(xy, p), paleAt(xy + across, p)));
+}
+half paleLine(float2 xy, half3 p, float2 across, half b) {
+  float2 along = across.yx;
+  half side = max(min(paleAt(xy - across, p), paleAt(xy + across, p)), max(paleAt(xy - 2 * across, p), paleAt(xy + 2 * across, p)));
+  half runs = min(min(paleAcross(xy - 4 * along, p, across), paleAcross(xy + 4 * along, p, across)),
+                  min(paleAcross(xy - 8 * along, p, across), paleAcross(xy + 8 * along, p, across)));
+  half f = half(paleFloor);
+  return smoothstep(f, f + 0.05, b) * smoothstep(f, f + 0.05, runs) * (1 - smoothstep(0.25, 0.4, side / max(b, 0.01)));
 }
 half sumAcross(float2 xy, half3 p, float2 across) {
   return darkAt(xy - across, p) + darkAt(xy, p) + darkAt(xy + across, p);
@@ -142,6 +178,12 @@ half4 main(float2 xy) {
   half dark = darkOf(c);
   half keep = max(smoothstep(0.45, 0.65, dark), smoothstep(0.02, 0.05, ink.eval(xy).a));
   if (keep < 1 && dark > 0.1) keep = max(keep, max(ridge(xy, p, float2(1, 0)), ridge(xy, p, float2(0, 1))));
+  half b = paleAt(xy, p);
+  if (keep < 1 && b > half(paleFloor)) {
+    half pale = max(paleLine(xy, p, float2(1, 0), b), paleLine(xy, p, float2(0, 1), b));
+    c = mix(c, levelsAt(xy, p, 0.95), pale);
+    keep = max(keep, pale);
+  }
   half3 cleaned = mix(half3(1), c, keep * (1 - beyond.eval(xy).a));
   half greyed = dot(cleaned, half3(0.2126, 0.7152, 0.0722));
   return half4(mix(cleaned, half3(greyed), half(grey)), 1);
@@ -149,6 +191,10 @@ half4 main(float2 xy) {
 
 // Paper and text are found on a copy this wide.
 const SMALL_WIDTH = 500;
+
+// Pale lines are kept only on pages at least this wide, as a phone photo always is: there a crease
+// spreads over 3 px or more, so a 1 or 2 px pale line is print. On a smaller page a crease can be 1 px.
+const PALE_LINE_WIDTH = 1000;
 
 // Past a bent or curled edge, table shows along the borders: never deeper into the page than this
 // share of its short side. Anything deeper (a picture printed off the edge, a whole table) stays.
@@ -339,6 +385,7 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
     }
   }
 
+  const keep = keepAt(filter.strength);
   const scale = Math.min(1, SMALL_WIDTH / w);
   const sw = Math.ceil(w * scale);
   const sh = Math.ceil(h * scale);
@@ -368,7 +415,7 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
 
   const smallPageShader = clamp(smallPage, FilterMode.Nearest);
   const inkShader = inkEffect.makeShaderWithChildren(
-    [KEEP[filter.strength].inkThreshold],
+    [keep.inkThreshold],
     [smallPageShader, coarseShader],
   );
   const spreadInk = Skia.Paint();
@@ -403,7 +450,7 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
   const textShader = clamp(ink, FilterMode.Linear, toOut);
   const beyondShader = clamp(beyond, FilterMode.Linear, toOut);
   const cleanShader = cleanEffect.makeShaderWithChildren(
-    [KEEP[filter.strength].whitePoint, filter.kind === 'gray' ? 1 : 0],
+    [keep.whitePoint, filter.kind === 'gray' ? 1 : 0, outW >= PALE_LINE_WIDTH ? keep.paleLine : 1],
     [pageShader, paperShader, textShader, beyondShader],
   );
   const out = Skia.Surface.Make(outW, outH)!;

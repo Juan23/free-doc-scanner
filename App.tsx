@@ -23,9 +23,10 @@ import {
   type ViewStyle,
   View,
 } from 'react-native';
+import Slider from '@react-native-community/slider';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { cleanPages, defaultFilter, filterPreviews, setDefaultFilter, sharedFilter, type Filter } from './clean';
-import { cropPage, findPage, isConvex, type FoundPage, type Point, type Quad } from './crop';
+import { cropPage, findPage, isConvex, previewCorners, type FoundPage, type Point, type Quad } from './crop';
 import { clearScannerCache, pagesToSave, pickOnLongPress, saveJpegs, savePdf } from './save';
 import { addPages, createScan, deleteScan, heldPhoto, listScans, type Scan } from './scans';
 import { rotatePage, uprightPages } from './upright';
@@ -401,11 +402,11 @@ const FILTER_KINDS: { kind: Filter['kind']; label: string }[] = [
   { kind: 'gray', label: 'Grayscale' },
 ];
 
-const FILTER_STRENGTHS: { strength: Filter['strength']; label: string }[] = [
-  { strength: 0, label: 'Light' },
-  { strength: 1, label: 'Normal' },
-  { strength: 2, label: 'Strong' },
-];
+const STRENGTH_NAMES = ['Light', 'Normal', 'Strong'];
+
+// What a screen reader says for a strength: its name at 0, 1 and 2, else the two it lies between.
+const strengthText = (s: number) =>
+  Number.isInteger(s) ? STRENGTH_NAMES[s] : `Between ${STRENGTH_NAMES[Math.floor(s)]} and ${STRENGTH_NAMES[Math.ceil(s)]}`;
 
 type Cell = { key: string; uri?: string; n?: number };
 
@@ -919,29 +920,50 @@ function FilterStrip(props: {
 }) {
   const { recorded, busy, thumbs } = props;
   const disabled = busy && styles.disabled;
+  // Bumped to put the thumb back when a release changes nothing.
+  const [resets, setResets] = useState(0);
+  const touching = useRef(false);
+  const release = (v: number, snap: boolean) => {
+    if (!recorded) return;
+    // A finger snaps to Normal near the middle mark. A screen reader's or keyboard's step is smaller than that zone, so it would never leave Normal.
+    const strength = snap && Math.abs(v - 1) < 0.1 ? 1 : v;
+    // A release while a filter runs is not applied, so the thumb goes back; so does one that snaps to where it was.
+    if (busy || strength === recorded.strength) setResets(resets + 1);
+    else props.onFilter({ kind: recorded.kind, strength });
+  };
   return (
     <View style={styles.strip}>
       {props.strengthsOpen && recorded && recorded.kind !== 'original' && (
-        <View style={styles.strengths} accessibilityRole="radiogroup" accessibilityLabel="Clean-up strength">
-          {FILTER_STRENGTHS.map(({ strength, label }) => {
-            const checked = recorded.strength === strength;
-            return (
-              <Pressable
-                key={label}
-                accessibilityRole="radio"
-                accessibilityLabel={label}
-                accessibilityState={{ checked, disabled: busy }}
-                disabled={busy}
-                onPress={() => {
-                  if (!checked) props.onFilter({ kind: recorded.kind, strength });
-                }}
-                style={[styles.strength, checked && styles.strengthOn, disabled]}>
-                <Text style={[styles.strengthText, checked && styles.strengthTextOn]} maxFontSizeMultiplier={1.5}>
-                  {label}
-                </Text>
-              </Pressable>
-            );
-          })}
+        <View style={[styles.strengths, disabled]}>
+          <Text style={styles.strengthText} maxFontSizeMultiplier={1.5}>Light</Text>
+          <View style={styles.strengthTrack}>
+            <View style={styles.strengthMark} />
+            <Slider
+              // Remounted when the strength changes elsewhere (another page): the slider only reads value as it mounts, and 0 not at all.
+              key={`${recorded.strength}:${resets}`}
+              style={styles.strengthSlider}
+              minimumValue={0}
+              maximumValue={2}
+              value={recorded.strength}
+              disabled={busy}
+              minimumTrackTintColor="#fff"
+              maximumTrackTintColor="#5A5F69"
+              thumbTintColor="#fff"
+              accessibilityLabel="Clean-up strength"
+              accessibilityValue={{ text: strengthText(recorded.strength) }}
+              // Each page clean holds about 100 MB of bitmaps, so pages are filtered when the finger lifts, not as it moves.
+              onSlidingStart={() => (touching.current = true)}
+              onSlidingComplete={(v) => {
+                touching.current = false;
+                release(v, true);
+              }}
+              // A screen reader or a keyboard moves the thumb with no touch, so no lift follows: each step is applied.
+              onValueChange={(v) => {
+                if (!touching.current) release(v, false);
+              }}
+            />
+          </View>
+          <Text style={styles.strengthText} maxFontSizeMultiplier={1.5}>Strong</Text>
         </View>
       )}
       <View style={styles.thumbs} accessibilityRole="radiogroup" accessibilityLabel="Filter">
@@ -953,7 +975,7 @@ function FilterStrip(props: {
               key={kind}
               accessibilityRole="radio"
               accessibilityLabel={label}
-              accessibilityHint={hasStrengths ? 'Tap again to show or hide the strengths' : undefined}
+              accessibilityHint={hasStrengths ? 'Tap again to show or hide the strength slider' : undefined}
               accessibilityState={{ checked, disabled: busy }}
               disabled={busy}
               onPress={() => {
@@ -1037,6 +1059,33 @@ function Capture(props: { pagesBefore: number; onEnd: (pages: string[]) => void 
   const [working, setWorking] = useState(false);
   // State updates are async, so a second tap in the same frame would still see working=false.
   const inFlight = useRef(false);
+  const [found, setFound] = useState<FoundPage | null>(null);
+  const [view, setView] = useState({ width: 0, height: 0 });
+
+  // While the camera is idle, small photos taken one after another show where the page is. expo-camera has no live frames.
+  useEffect(() => {
+    if (working || photo) return;
+    let stopped = false;
+    (async () => {
+      while (!stopped) {
+        let uri: string | undefined;
+        let failed = true;
+        try {
+          uri = (await camera.current?.takePictureAsync({ quality: 0.2, shutterSound: false }))?.uri;
+          const page = uri ? await findPage(uri) : null;
+          if (!stopped) setFound(page?.found ? page : null);
+          failed = !page;
+        } catch {}
+        if (uri) deleteQuietly(uri);
+        // The camera may not be ready yet: try again shortly.
+        if (failed) await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    })();
+    return () => {
+      stopped = true;
+      setFound(null);
+    };
+  }, [working, photo]);
 
   async function step(task: () => Promise<void>, errorTitle: string) {
     if (inFlight.current) return;
@@ -1153,14 +1202,21 @@ function Capture(props: { pagesBefore: number; onEnd: (pages: string[]) => void 
   const last = pages[pages.length - 1];
   return (
     <View style={styles.capture}>
-      <View style={styles.flex}>
-        <CameraView ref={camera} style={styles.flex} facing="back" animateShutter />
+      <View style={styles.flex} onLayout={(e) => setView(e.nativeEvent.layout)}>
+        {/* No shutter flash: it would blink on every preview photo. */}
+        <CameraView ref={camera} style={styles.flex} facing="back" animateShutter={false} />
         <View
           style={[StyleSheet.absoluteFill, styles.captureOverlay]}
           pointerEvents="none"
           accessibilityElementsHidden
           importantForAccessibility="no-hide-descendants">
-          <View style={styles.guide} />
+          {found ? (
+            <Canvas style={StyleSheet.absoluteFill}>
+              <Path path={`M ${previewCorners(found.corners, found, view).map((p) => `${p.x} ${p.y}`).join(' L ')} Z`} style="stroke" strokeWidth={3} color="#6E97FF" />
+            </Canvas>
+          ) : (
+            <View style={styles.guide} />
+          )}
         </View>
         <View style={[styles.captureTop, { top: insets.top + 8 }]} pointerEvents="none">
           <Text style={styles.captureChip} maxFontSizeMultiplier={1.5}>{pageLabel}</Text>
@@ -1525,11 +1581,11 @@ const styles = StyleSheet.create({
   editorCount: { flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '600', color: '#fff' },
   editorAction: { fontSize: 16, fontWeight: '500', color: '#fff' },
   strip: { paddingTop: 12, gap: 12 },
-  strengths: { flexDirection: 'row', alignSelf: 'center', backgroundColor: '#22252B', borderRadius: 12, padding: 3 },
-  strength: { height: 38, minWidth: 84, borderRadius: 10, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12 },
-  strengthOn: { backgroundColor: '#fff' },
+  strengths: { flexDirection: 'row', alignItems: 'center', alignSelf: 'center', gap: 10, backgroundColor: '#22252B', borderRadius: 12, height: 44, paddingHorizontal: 14 },
   strengthText: { fontSize: 15, color: '#C9CDD4' },
-  strengthTextOn: { fontWeight: '700', color: C.text },
+  strengthTrack: { width: 190, height: 40, justifyContent: 'center' },
+  strengthMark: { position: 'absolute', left: 94, top: 8, width: 2, height: 24, borderRadius: 1, backgroundColor: '#5A5F69' },
+  strengthSlider: { width: 190, height: 40 },
   thumbs: { flexDirection: 'row', justifyContent: 'center', gap: 18 },
   thumb: { width: 84, alignItems: 'center', gap: 6 },
   thumbBox: { padding: 3, borderRadius: 10, borderWidth: 2, borderColor: 'transparent' },
