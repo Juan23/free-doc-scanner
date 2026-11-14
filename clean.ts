@@ -532,14 +532,15 @@ export async function filterPreviews(
  * the page's untouched photo, one at a time, and while one runs only the latest waits. Each result
  * goes to `show`, which disposes it. At least 1000 px wide (or the photo's width), so pale table
  * lines show as on the stored page. `stop` ends it and frees the photo; nothing is shown after.
+ * `finish` is for the lift: it shows the strength being stored last, then stops, so the photo is
+ * freed before the store needs its own memory.
  */
 export function strengthPreview(uri: string, width: number, show: (image: SkImage) => void) {
   const photo = readPage(heldPhoto(uri));
   let next: Filter | null = null;
-  let running = false;
+  let running: Promise<void> | null = null;
   let stopped = false;
   const run = async () => {
-    running = true;
     try {
       const image = await photo;
       while (next && !stopped) {
@@ -551,18 +552,27 @@ export function strengthPreview(uri: string, width: number, show: (image: SkImag
         show(filterImage(image, filter, Math.min(image.width(), Math.max(PALE_LINE_WIDTH, width))));
       }
     } catch {
+      // A photo that cannot be read or filtered shows no preview; the page is still filtered when stored.
     } finally {
-      running = false;
+      running = null;
     }
   };
+  const preview = (filter: Filter) => {
+    next = filter;
+    running ??= run();
+  };
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    photo.then((image) => image.dispose(), () => {});
+  };
   return {
-    preview(filter: Filter) {
-      next = filter;
-      if (!running) run();
-    },
-    stop() {
-      stopped = true;
-      photo.then((image) => image.dispose(), () => {});
+    preview,
+    stop,
+    async finish(filter: Filter) {
+      preview(filter);
+      await running;
+      stop();
     },
   };
 }

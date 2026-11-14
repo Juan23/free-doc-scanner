@@ -430,7 +430,7 @@ function Detail(props: {
   onFilterPages: (pages: string[], filter: Filter) => void;
   onSave: (kind: 'pdf' | 'jpeg') => void;
 }) {
-  const { width } = useWindowDimensions();
+  const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const [editorIndex, setEditorIndex] = useState<number | null>(null);
   const [current, setCurrent] = useState(0);
@@ -441,6 +441,7 @@ function Detail(props: {
   // Over the grid while selecting. Closing keeps `panel`, so the fade-out never shows the white rows.
   const [sheetOpen, setSheetOpen] = useState(false);
   const [panel, setPanel] = useState<'actions' | 'filter'>('actions');
+  const [panelHeight, setPanelHeight] = useState(0);
   const pendingSave = useRef<'pdf' | 'jpeg' | null>(null);
   // Thumbnails and the page they were made for; another page shows empty boxes until its own arrive.
   const [previews, setPreviews] = useState<{ page: string; images: Record<Filter['kind'], SkImage> | null }>({
@@ -489,23 +490,26 @@ function Detail(props: {
   const liveRun = useRef<ReturnType<typeof strengthPreview> | null>(null);
   // Every image handed to setLive: two can land in one render, so each is freed once a later one is on screen.
   const liveImages = useRef<{ image: SkImage; n: number }[]>([]);
-  const handed = useRef(0);
-  // Frees the photo it filters from; the last image stays on screen.
-  const endRun = () => {
+  const imagesMade = useRef(0);
+  const hidePreview = () => {
     liveRun.current?.stop();
     liveRun.current = null;
-  };
-  const stopLive = () => {
-    endRun();
-    setLive({ image: null, upTo: handed.current });
+    setLive({ image: null, upTo: imagesMade.current });
   };
   const previewStrength = (filter: Filter | null) => {
-    if (!filter || !previewPage) return stopLive();
+    if (!filter || !previewPage) return hidePreview();
     liveRun.current ??= strengthPreview(previewPage, width * PixelRatio.get(), (image) => {
-      liveImages.current.push({ image, n: ++handed.current });
-      setLive({ image, upTo: handed.current });
+      liveImages.current.push({ image, n: ++imagesMade.current });
+      setLive({ image, upTo: imagesMade.current });
     });
     liveRun.current.preview(filter);
+  };
+  // On lift, the strength being stored shows first, and the preview's photo is freed before the store needs its own memory.
+  const storeFilter = async (filter: Filter, store: (filter: Filter) => void) => {
+    const run = liveRun.current;
+    liveRun.current = null;
+    await run?.finish(filter);
+    store(filter);
   };
   useEffect(() => {
     liveImages.current = liveImages.current.filter((e) => e.n > live.upTo || e.image === live.image || (e.image.dispose(), false));
@@ -515,11 +519,10 @@ function Detail(props: {
     return () => images.current.forEach((e) => e.image.dispose());
   }, []);
   // Another page, closing, or the filter being stored (filterPages reloads its pages even when one fails) ends it.
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- stopLive reads only a ref and a setter, so any render's copy does
-  useEffect(() => stopLive, [subjectKey]);
+  useEffect(() => hidePreview, [subjectKey]);
   // The slider can also vanish mid-drag (a second finger taps the thumbnail), and then no lift comes.
   const showStrengths = (open: boolean) => {
-    if (!open) stopLive();
+    if (!open) hidePreview();
     setStrengthsOpen(open);
   };
   const available = scannerAvailable();
@@ -529,7 +532,7 @@ function Detail(props: {
   ];
   const disabled = busy && styles.disabled;
   const releasePreviews = () => {
-    setStrengthsOpen(false);
+    showStrengths(false);
     setPreviews({ page: '', images: null });
   };
   const closeSheet = () => {
@@ -820,11 +823,7 @@ function Detail(props: {
               strengthsOpen={strengthsOpen}
               onStrengths={showStrengths}
               onPreview={previewStrength}
-              onFilter={(filter) => {
-                // A store holds about 100 MB of bitmaps of its own: free the preview's photo first.
-                endRun();
-                props.onFilterPage(editedPage, filter);
-              }}
+              onFilter={(filter) => storeFilter(filter, (f) => props.onFilterPage(editedPage, f))}
             />
           )}
           <View style={styles.editorDone}>
@@ -869,39 +868,53 @@ function Detail(props: {
           style={[StyleSheet.absoluteFill, styles.backdrop]}
         />
         {panel === 'filter' ? (
-          <View style={[styles.sheet, styles.sheetDark, { paddingBottom: bottomPad(insets.bottom) }]}>
-            {/* Above the panel's top edge, so the heading and strip never move. */}
+          <>
+            {/* The first picked page at the strength under the finger, between the status bar and the panel. */}
+            {live.image && (
+              <Canvas style={[styles.panelPreview, { top: insets.top + 12, bottom: panelHeight + 12 }]} pointerEvents="none">
+                <SkiaImage
+                  image={live.image}
+                  x={0}
+                  y={0}
+                  width={width - 32}
+                  height={height - insets.top - panelHeight - 24}
+                  fit="contain"
+                />
+              </Canvas>
+            )}
             <View
-              style={[styles.editorToastSlot, styles.sheetToastSlot]}
-              pointerEvents="none"
-              accessibilityLiveRegion="polite"
-              collapsable={false}>
-              {!!props.message && <Toast message={props.message} style={styles.editorToast} />}
+              style={[styles.sheet, styles.sheetDark, { paddingBottom: bottomPad(insets.bottom) }]}
+              onLayout={(e) => setPanelHeight(e.nativeEvent.layout.height)}>
+              {/* Above the panel's top edge, so the heading and strip never move. */}
+              <View
+                style={[styles.editorToastSlot, styles.sheetToastSlot]}
+                pointerEvents="none"
+                accessibilityLiveRegion="polite"
+                collapsable={false}>
+                {!!props.message && <Toast message={props.message} style={styles.editorToast} />}
+              </View>
+              <Text style={styles.sheetHeading} accessibilityRole="header" maxFontSizeMultiplier={1.5}>
+                Filter {pagesLabel(pickedPages.length)}
+              </Text>
+              <FilterStrip
+                thumbs={thumbs}
+                recorded={recorded}
+                busy={busy}
+                live={live.image}
+                strengthsOpen={strengthsOpen}
+                onStrengths={showStrengths}
+                onPreview={previewStrength}
+                onFilter={(filter) => storeFilter(filter, (f) => props.onFilterPages(pickedPages, f))}
+              />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Done"
+                onPress={closeSheet}
+                style={[styles.doneButton, styles.sheetPill, styles.sheetDone]}>
+                <Text style={styles.doneText} maxFontSizeMultiplier={1.5}>Done</Text>
+              </Pressable>
             </View>
-            <Text style={styles.sheetHeading} accessibilityRole="header" maxFontSizeMultiplier={1.5}>
-              Filter {pagesLabel(pickedPages.length)}
-            </Text>
-            <FilterStrip
-              thumbs={thumbs}
-              recorded={recorded}
-              busy={busy}
-              live={live.image}
-              strengthsOpen={strengthsOpen}
-              onStrengths={showStrengths}
-              onPreview={previewStrength}
-              onFilter={(filter) => {
-                endRun();
-                props.onFilterPages(pickedPages, filter);
-              }}
-            />
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Done"
-              onPress={closeSheet}
-              style={[styles.doneButton, styles.sheetPill, styles.sheetDone]}>
-              <Text style={styles.doneText} maxFontSizeMultiplier={1.5}>Done</Text>
-            </Pressable>
-          </View>
+          </>
         ) : (
           <View style={[styles.sheet, { paddingBottom: bottomPad(insets.bottom) }]}>
             <View style={styles.grabber} />
@@ -1787,6 +1800,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   sheetDark: { backgroundColor: C.text, paddingHorizontal: 0, paddingTop: 20 },
+  panelPreview: { position: 'absolute', left: 16, right: 16 },
   grabber: { alignSelf: 'center', width: 36, height: 5, borderRadius: 3, marginTop: 8, backgroundColor: '#D5D9DF' },
   sheetTitle: { paddingTop: 16, paddingBottom: 8, fontSize: 17, fontWeight: '700', color: C.text },
   sheetHeading: { textAlign: 'center', fontSize: 17, fontWeight: '600', color: '#fff' },

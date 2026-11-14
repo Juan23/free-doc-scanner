@@ -690,6 +690,27 @@ describe('the strength slider\'s live preview', () => {
 
     expect(shown.length).toBe(0);
   }, 30000);
+
+  it('on finish, shows the strength being stored last, then nothing more', async () => {
+    const photo = photographedPage();
+    mockFiles.set(PAGE1, photo);
+    const shown: SkImage[] = [];
+    const live = strengthPreview(PAGE1, 300, (image) => shown.push(image));
+
+    live.preview({ kind: 'clean', strength: 0 });
+    await live.finish({ kind: 'gray', strength: 2 });
+    live.preview({ kind: 'clean', strength: 1 });
+    await settle();
+
+    const source = decode(photo);
+    const direct = filterImage(source, { kind: 'gray', strength: 2 }, W);
+    try {
+      expect(shown.length).toBe(1);
+      expect(meanDifference(shown[0], direct)).toBeLessThan(0.5);
+    } finally {
+      for (const image of [source, direct, ...shown]) image.dispose();
+    }
+  }, 30000);
 });
 
 describe('using one page\'s filter on every page', () => {
