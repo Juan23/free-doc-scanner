@@ -923,10 +923,10 @@ function FilterStrip(props: {
   // Bumped to put the thumb back when a release changes nothing.
   const [resets, setResets] = useState(0);
   const touching = useRef(false);
-  const release = (v: number) => {
+  const release = (v: number, snap: boolean) => {
     if (!recorded) return;
-    // Snaps to Normal near the middle mark.
-    const strength = Math.abs(v - 1) < 0.1 ? 1 : v;
+    // A finger snaps to Normal near the middle mark. A screen reader's or keyboard's step is smaller than that zone, so it would never leave Normal.
+    const strength = snap && Math.abs(v - 1) < 0.1 ? 1 : v;
     // A release while a filter runs is not applied, so the thumb goes back; so does one that snaps to where it was.
     if (busy || strength === recorded.strength) setResets(resets + 1);
     else props.onFilter({ kind: recorded.kind, strength });
@@ -955,11 +955,11 @@ function FilterStrip(props: {
               onSlidingStart={() => (touching.current = true)}
               onSlidingComplete={(v) => {
                 touching.current = false;
-                release(v);
+                release(v, true);
               }}
               // A screen reader or a keyboard moves the thumb with no touch, so no lift follows: each step is applied.
               onValueChange={(v) => {
-                if (!touching.current) release(v);
+                if (!touching.current) release(v, false);
               }}
             />
           </View>
