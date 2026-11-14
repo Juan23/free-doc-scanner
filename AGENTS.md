@@ -37,6 +37,8 @@ npx expo run:android --device
 
 This Mac has no Java 17, so `/usr/libexec/java_home -v 17` fails; Homebrew's Java 21 builds debug and release (checked 2026-11-12, build 12).
 
+A successful `expo run:ios|android` never exits: it keeps the dev server open after installing. The build is done when the log prints `› Opening <app> on <device>`; a failed build exits with an error. Run it in the background and wait on that line with Monitor.
+
 For a store build, bump `ios.buildNumber` and `android.versionCode` in `app.json`, run `npx expo prebuild --clean`, then `./gradlew bundleRelease` in `android/` and `xcodebuild … archive` and `-exportArchive` in `ios/`. Run `xcodebuild -exportArchive` with `PATH=/usr/bin:/bin:/usr/sbin:/sbin`: Homebrew's `rsync` comes first otherwise, and the export stops with "Copy failed".
 
 The iOS Simulator has no camera, so scanning on iOS needs a real iPhone. An Android emulator can run the camera screen, but its camera saves black photos.
