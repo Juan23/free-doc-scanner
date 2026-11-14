@@ -651,7 +651,7 @@ it('previews a page that has no original from the page itself', async () => {
 describe('the strength slider\'s live preview', () => {
   const settle = () => new Promise((r) => setTimeout(r, 50));
 
-  it('filters only the latest of quick moves, at the photo\'s width under 1000 px, as storing it would look', async () => {
+  it('filters only the latest of quick moves, and shows the page storing it would give, shrunk to the screen', async () => {
     const photo = photographedPage();
     mockFiles.set(PAGE1, photo);
     const files = new Map(mockFiles);
@@ -665,15 +665,16 @@ describe('the strength slider\'s live preview', () => {
     await settle();
 
     const source = decode(photo);
-    const direct = filterImage(source, { kind: 'gray', strength: 2 }, W);
+    const stored = filterImage(source, { kind: 'gray', strength: 2 });
+    const onScreen = shrunkCopy(stored, 300, 400);
     try {
       expect(shown.length).toBe(1);
-      expect(shown[0].width()).toBe(W);
-      expect(meanDifference(shown[0], direct)).toBeLessThan(0.5);
+      expect(shown[0].width()).toBe(300);
+      expect(meanDifference(shown[0], onScreen)).toBeLessThan(0.05);
       expect(mockFiles).toEqual(files);
     } finally {
       live.stop();
-      for (const image of [source, direct, ...shown]) image.dispose();
+      for (const image of [source, stored, onScreen, ...shown]) image.dispose();
     }
   }, 30000);
 
@@ -695,7 +696,7 @@ describe('the strength slider\'s live preview', () => {
     const photo = photographedPage();
     mockFiles.set(PAGE1, photo);
     const shown: SkImage[] = [];
-    const live = strengthPreview(PAGE1, 300, (image) => shown.push(image));
+    const live = strengthPreview(PAGE1, W, (image) => shown.push(image));
 
     live.preview({ kind: 'clean', strength: 0 });
     await live.finish({ kind: 'gray', strength: 2 });
@@ -1057,6 +1058,28 @@ describe('table lines', () => {
     const kept = lines.map((l, i) => [l.grey, l.width, strength < 2 || l.grey <= 130 ? darkest[i] <= 200 : true]);
     expect(kept).toEqual(lines.map((l) => [l.grey, l.width, true]));
   }, 60000);
+
+  it('previews pale table lines a narrow screen alone would whiten, as the stored page keeps them', async () => {
+    const drawn = tablePhoto();
+    const bytes = drawn.encodeToBytes(ImageFormat.JPEG, 95);
+    drawn.dispose();
+    mockFiles.set(PAGE1, bytes);
+    const shown: SkImage[] = [];
+    const live = strengthPreview(PAGE1, 400, (image) => shown.push(image));
+    live.preview({ kind: 'clean', strength: 1 });
+    while (!shown.length) await new Promise((r) => setTimeout(r, 50));
+    live.stop();
+
+    const source = decode(bytes);
+    const stored = filterImage(source, { kind: 'clean', strength: 1 });
+    const onScreen = shrunkCopy(stored, 400, 500);
+    try {
+      // Filtering at the screen's 400 px instead whitens every pale line, which pages under 1000 px get.
+      expect(meanDifference(shown[0], onScreen)).toBeLessThan(0.05);
+    } finally {
+      for (const image of [source, stored, onScreen, ...shown]) image.dispose();
+    }
+  }, 120000);
 
   // FNV-1a over an image's pixels.
   const hash = (image: SkImage) => readPixels(image).reduce((h, v) => Math.imul(h ^ v, 16777619) >>> 0, 2166136261);

@@ -1,5 +1,5 @@
 import {
-  AlphaType, ColorType, FilterMode, MipmapMode, Skia, TileMode, type SkImage, type SkMatrix,
+  AlphaType, ColorType, FilterMode, MipmapMode, Skia, TileMode, type SkImage, type SkMatrix, type SkSurface,
 } from '@shopify/react-native-skia';
 import { File, Paths } from 'expo-file-system';
 
@@ -342,8 +342,13 @@ function pastEdges(page: Uint8Array, fine: Uint8Array, w: number, h: number): Ui
  * A shader, because drawImageRectOptions skipped 1 to 3 px strokes in 1600 to 4032 px photos at 500 px.
  * The caller disposes the result.
  */
-export function shrunkCopy(image: SkImage, outW: number, outH: number): SkImage {
-  const surface = Skia.Surface.Make(outW, outH)!;
+export function shrunkCopy(
+  image: SkImage,
+  outW: number,
+  outH: number,
+  makeSurface: (width: number, height: number) => SkSurface | null = (w, h) => Skia.Surface.Make(w, h),
+): SkImage {
+  const surface = makeSurface(outW, outH) ?? Skia.Surface.Make(outW, outH)!;
   const shader = image.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, MipmapMode.Linear, Skia.Matrix().scale(outW / image.width(), outH / image.height()));
   const paint = Skia.Paint();
   paint.setShader(shader);
@@ -385,13 +390,25 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
     }
   }
 
-  const keep = keepAt(filter.strength);
+  const analysis = analysePage(image);
+  try {
+    return filterAnalysed(image, analysis, filter, outW, outH, (w, h) => Skia.Surface.Make(w, h));
+  } finally {
+    analysis.dispose();
+  }
+}
+
+// What the clean-up measures on a small copy of the photo, the same at every strength: the copy, the
+// paper's colour, the text-free copy the ink is measured against, and what shows past bent edges.
+type Analysis = { sw: number; sh: number; smallPage: SkImage; coarse: SkImage; paper: SkImage; beyond: SkImage; dispose: () => void };
+
+function analysePage(image: SkImage): Analysis {
+  const w = image.width();
+  const h = image.height();
   const scale = Math.min(1, SMALL_WIDTH / w);
   const sw = Math.ceil(w * scale);
   const sh = Math.ceil(h * scale);
-  const toOut = Skia.Matrix().scale(outW / sw, outH / sh);
-  const clamp = (img: SkImage, mode: FilterMode, matrix?: SkMatrix, mipmap = MipmapMode.None) =>
-    img.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, mode, mipmap, matrix);
+  const clamp = (img: SkImage) => img.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Nearest, MipmapMode.None);
 
   const surface = Skia.Surface.Make(sw, sh)!;
   const canvas = surface.getCanvas();
@@ -405,25 +422,13 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
   wipeText.setImageFilter(Skia.ImageFilter.MakeErode(5, 5, Skia.ImageFilter.MakeDilate(5, 5, null)));
   canvas.drawImage(smallPage, 0, 0, wipeText);
   const fine = surface.makeImageSnapshot();
-  const coarseShader = clamp(coarse, FilterMode.Nearest);
-  const fineShader = clamp(fine, FilterMode.Nearest);
+  const coarseShader = clamp(coarse);
+  const fineShader = clamp(fine);
   const pickShader = paperEffect.makeShaderWithChildren([], [coarseShader, fineShader]);
   const pickPaper = Skia.Paint();
   pickPaper.setShader(pickShader);
   canvas.drawRect(Skia.XYWHRect(0, 0, sw, sh), pickPaper);
   const paper = surface.makeImageSnapshot();
-
-  const smallPageShader = clamp(smallPage, FilterMode.Nearest);
-  const inkShader = inkEffect.makeShaderWithChildren(
-    [keep.inkThreshold],
-    [smallPageShader, coarseShader],
-  );
-  const spreadInk = Skia.Paint();
-  spreadInk.setShader(inkShader);
-  spreadInk.setImageFilter(Skia.ImageFilter.MakeBlur(6, 6, TileMode.Clamp, null));
-  canvas.clear(Skia.Color('transparent'));
-  canvas.drawRect(Skia.XYWHRect(0, 0, sw, sh), spreadInk);
-  const ink = surface.makeImageSnapshot();
 
   const rgba = { width: sw, height: sh, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul };
   const pagePixels = smallPage.readPixels(0, 0, rgba) as Uint8Array | null;
@@ -438,6 +443,43 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
   canvas.drawImage(beyondMask, 0, 0, feather);
   const beyond = surface.makeImageSnapshot();
 
+  for (const o of [surface, wipeInk, wipeText, fine, coarseShader, fineShader, pickShader, pickPaper, beyondData, beyondMask, feather]) {
+    o.dispose();
+  }
+  return {
+    sw, sh, smallPage, coarse, paper, beyond,
+    dispose: () => [smallPage, coarse, paper, beyond].forEach((o) => o.dispose()),
+  };
+}
+
+// The strength's ink mask on the small copy, then the final pass at the output size on a surface from `makeSurface`.
+function filterAnalysed(
+  image: SkImage,
+  a: Analysis,
+  filter: Filter,
+  outW: number,
+  outH: number,
+  makeSurface: (width: number, height: number) => SkSurface | null,
+): SkImage {
+  const w = image.width();
+  const h = image.height();
+  const { sw, sh } = a;
+  const keep = keepAt(filter.strength);
+  const toOut = Skia.Matrix().scale(outW / sw, outH / sh);
+  const clamp = (img: SkImage, mode: FilterMode, matrix?: SkMatrix, mipmap = MipmapMode.None) =>
+    img.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, mode, mipmap, matrix);
+
+  const surface = Skia.Surface.Make(sw, sh)!;
+  const smallPageShader = clamp(a.smallPage, FilterMode.Nearest);
+  const coarseShader = clamp(a.coarse, FilterMode.Nearest);
+  const inkShader = inkEffect.makeShaderWithChildren([keep.inkThreshold], [smallPageShader, coarseShader]);
+  const spreadInk = Skia.Paint();
+  spreadInk.setShader(inkShader);
+  spreadInk.setImageFilter(Skia.ImageFilter.MakeBlur(6, 6, TileMode.Clamp, null));
+  surface.getCanvas().clear(Skia.Color('transparent'));
+  surface.getCanvas().drawRect(Skia.XYWHRect(0, 0, sw, sh), spreadInk);
+  const ink = surface.makeImageSnapshot();
+
   const shrinking = outW < w;
   // Only the final pass is drawn at the output size; a shrunk preview samples the photo mipmapped, as shrunkCopy does.
   const pageShader = clamp(
@@ -446,22 +488,21 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
     Skia.Matrix().scale(outW / w, outH / h),
     shrinking ? MipmapMode.Linear : MipmapMode.None,
   );
-  const paperShader = clamp(paper, FilterMode.Linear, toOut);
+  const paperShader = clamp(a.paper, FilterMode.Linear, toOut);
   const textShader = clamp(ink, FilterMode.Linear, toOut);
-  const beyondShader = clamp(beyond, FilterMode.Linear, toOut);
+  const beyondShader = clamp(a.beyond, FilterMode.Linear, toOut);
   const cleanShader = cleanEffect.makeShaderWithChildren(
     [keep.whitePoint, filter.kind === 'gray' ? 1 : 0, outW >= PALE_LINE_WIDTH ? keep.paleLine : 1],
     [pageShader, paperShader, textShader, beyondShader],
   );
-  const out = Skia.Surface.Make(outW, outH)!;
+  const out = makeSurface(outW, outH) ?? Skia.Surface.Make(outW, outH)!;
   const paint = Skia.Paint();
   paint.setShader(cleanShader);
   out.getCanvas().drawPaint(paint);
   const snapshot = out.makeImageSnapshot();
   // A page holds about 100 MB of bitmaps: free them now, not whenever the garbage collector runs.
   for (const o of [
-    surface, smallPage, wipeInk, coarse, wipeText, fine, coarseShader, fineShader, pickShader,
-    pickPaper, paper, smallPageShader, inkShader, spreadInk, ink, beyondData, beyondMask, feather, beyond,
+    surface, smallPageShader, coarseShader, inkShader, spreadInk, ink,
     pageShader, paperShader, textShader, beyondShader, cleanShader, out, paint,
   ]) {
     o.dispose();
@@ -529,27 +570,46 @@ export async function filterPreviews(
 
 /**
  * The page filtered as the strength slider moves, before anything is stored: each `preview` filters
- * the page's untouched photo, one at a time, and while one runs only the latest waits. Each result
- * goes to `show`, which disposes it. At least 1000 px wide (or the photo's width), so pale table
- * lines show as on the stored page. `stop` ends it and frees the photo; nothing is shown after.
- * `finish` is for the lift: it shows the strength being stored last, then stops, so the photo is
- * freed before the store needs its own memory.
+ * the page's untouched photo at full size, as storing it would, and shrinks it to `width` (or the
+ * photo's width), one at a time; while one runs only the latest waits. Each result goes to `show`,
+ * which disposes it. `stop` ends it and frees the photo; nothing is shown after. `finish` is for the
+ * lift: it shows the strength being stored last, then stops, so the photo is freed before the store
+ * needs its own memory.
  */
 export function strengthPreview(uri: string, width: number, show: (image: SkImage) => void) {
   const photo = readPage(heldPhoto(uri));
   let next: Filter | null = null;
   let running: Promise<void> | null = null;
   let stopped = false;
+  // Measured once: only the ink mask and the final pass depend on the strength.
+  let analysis: Analysis | null = null;
+  const gpu = (w: number, h: number) => Skia.Surface.MakeOffscreen(w, h);
   const run = async () => {
     try {
       const image = await photo;
+      const outW = Math.round(Math.min(image.width(), width));
+      const outH = Math.max(1, Math.round((outW * image.height()) / image.width()));
       while (next && !stopped) {
         const filter = next;
         next = null;
         // Lets the slider move between the heavy steps.
         await new Promise((r) => setTimeout(r, 0));
         if (stopped) break;
-        show(filterImage(image, filter, Math.min(image.width(), Math.max(PALE_LINE_WIDTH, width))));
+        analysis ??= analysePage(image);
+        // The page is filtered at full size, as stored (a narrower pass drops thin strokes the stored page
+        // keeps), and shrunk for the screen, both on the GPU. The screen draws on another thread, so it
+        // gets a CPU copy.
+        const full = filterAnalysed(image, analysis, filter, image.width(), image.height(), gpu);
+        const drawn = shrunkCopy(full, outW, outH, gpu);
+        full.dispose();
+        let copy: SkImage | null = null;
+        try {
+          copy = drawn.makeNonTextureImage();
+        } catch {
+          // Without a GPU (the tests' CanvasKit) the surface is on the CPU already and needs no copy.
+        }
+        if (copy) drawn.dispose();
+        show(copy ?? drawn);
       }
     } catch {
       // A photo that cannot be read or filtered shows no preview; the page is still filtered when stored.
@@ -564,7 +624,13 @@ export function strengthPreview(uri: string, width: number, show: (image: SkImag
   const stop = () => {
     if (stopped) return;
     stopped = true;
-    photo.then((image) => image.dispose(), () => {});
+    photo.then(
+      (image) => {
+        image.dispose();
+        analysis?.dispose();
+      },
+      () => {},
+    );
   };
   return {
     preview,
