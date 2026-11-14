@@ -462,7 +462,6 @@ function Detail(props: {
     else livePreview.hide();
     setStrengthsOpen(open);
   };
-  // What both filter strips share; only where the filter is stored differs.
   const stripProps = {
     thumbs,
     recorded,
@@ -748,9 +747,7 @@ function Detail(props: {
               )}
             />
             {livePreview.image && !holding && (
-              <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">
-                <SkiaImage image={livePreview.image} x={0} y={0} width={width} height={pagerHeight} fit="contain" />
-              </Canvas>
+              <LivePage image={livePreview.image} style={StyleSheet.absoluteFill} width={width} height={pagerHeight} />
             )}
             {/* Over the pager's top edge, so the pager and strip never move. The grid's toast sits behind this Modal. */}
             <View
@@ -762,7 +759,7 @@ function Detail(props: {
             </View>
           </View>
           {editedPage && (
-            <FilterStrip {...stripProps} onFilter={(filter) => livePreview.store(filter, (f) => props.onFilterPage(editedPage, f))} />
+            <FilterStrip {...stripProps} onFilter={(filter) => livePreview.storeAfterPreview(filter, (f) => props.onFilterPage(editedPage, f))} />
           )}
           <View style={styles.editorDone}>
             {recorded && scan.pages.length > 1 && (
@@ -809,9 +806,7 @@ function Detail(props: {
           <>
             {/* The first picked page at the strength under the finger, between the status bar and the panel. */}
             {livePreview.image && (
-              <Canvas style={[styles.panelPreview, { top: insets.top + 12 }, panelPreviewBox]} pointerEvents="none">
-                <SkiaImage image={livePreview.image} x={0} y={0} {...panelPreviewBox} fit="contain" />
-              </Canvas>
+              <LivePage image={livePreview.image} style={[styles.panelPreview, { top: insets.top + 12 }, panelPreviewBox]} {...panelPreviewBox} />
             )}
             <View
               style={[styles.sheet, styles.sheetDark, { paddingBottom: bottomPad(insets.bottom) }]}
@@ -827,7 +822,7 @@ function Detail(props: {
               <Text style={styles.sheetHeading} accessibilityRole="header" maxFontSizeMultiplier={1.5}>
                 Filter {pagesLabel(pickedPages.length)}
               </Text>
-              <FilterStrip {...stripProps} onFilter={(filter) => livePreview.store(filter, (f) => props.onFilterPages(pickedPages, f))} />
+              <FilterStrip {...stripProps} onFilter={(filter) => livePreview.storeAfterPreview(filter, (f) => props.onFilterPages(pickedPages, f))} />
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Done"
@@ -903,6 +898,14 @@ function Detail(props: {
   );
 }
 
+function LivePage(props: { image: SkImage; style: StyleProp<ViewStyle>; width: number; height: number }) {
+  return (
+    <Canvas style={props.style} pointerEvents="none">
+      <SkiaImage image={props.image} x={0} y={0} width={props.width} height={props.height} fit="contain" />
+    </Canvas>
+  );
+}
+
 // The page at the strength under the finger, shown until the stored page replaces it. `finishing` is
 // true between a lift and the start of its store, while the preview catches up to the stored strength.
 function useStrengthPreview(page: string | undefined, width: number, subjectKey: string) {
@@ -914,7 +917,7 @@ function useStrengthPreview(page: string | undefined, width: number, subjectKey:
   const hide = () => {
     run.current?.stop();
     run.current = null;
-    setShown({ image: null, upTo: images.last() });
+    setShown({ image: null, upTo: images.lastNumber() });
   };
   const preview = (filter: Filter | null) => {
     if (!filter || !page) return hide();
@@ -924,7 +927,7 @@ function useStrengthPreview(page: string | undefined, width: number, subjectKey:
   const storing = useRef(false);
   // The preview's photo is freed before the store, which needs about 100 MB of its own. Slider events
   // can still arrive while the preview catches up after the lift; only the lift's own value is stored.
-  const store = async (filter: Filter, apply: (filter: Filter) => void) => {
+  const storeAfterPreview = async (filter: Filter, apply: (filter: Filter) => void) => {
     if (storing.current) return;
     storing.current = true;
     const current = run.current;
@@ -951,7 +954,7 @@ function useStrengthPreview(page: string | undefined, width: number, subjectKey:
   // Another page, closing, or the filter being stored (filterPages reloads its pages even when one fails) ends it.
   // eslint-disable-next-line react-hooks/exhaustive-deps -- hide reads only a ref, a setter and `images`, which never changes
   useEffect(() => hide, [subjectKey]);
-  return { image: shown.image, finishing, preview, hide, store };
+  return { image: shown.image, finishing, preview, hide, storeAfterPreview };
 }
 
 // The filter strip of the page editor and of the Select sheet's filter panel; both sit on a dark background.
@@ -973,7 +976,8 @@ function FilterStrip(props: {
     if (!recorded) return;
     const strength = snap ? snapped(v) : v;
     // A release while a filter runs is not applied, so the thumb goes back; so does one that snaps to where it was.
-    if (busy || strength === recorded.strength) {
+    if (busy) setResets(resets + 1);
+    else if (strength === recorded.strength) {
       setResets(resets + 1);
       props.onPreview(null);
     } else props.onFilter({ kind: recorded.kind, strength });

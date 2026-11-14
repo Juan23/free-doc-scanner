@@ -648,9 +648,9 @@ it('previews a page that has no original from the page itself', async () => {
   expect([...mockFiles.keys()]).toEqual([PAGE1]);
 }, 30000);
 
-describe('the strength slider\'s live preview', () => {
-  const settle = () => new Promise((r) => setTimeout(r, 50));
+const settle = () => new Promise((r) => setTimeout(r, 50));
 
+describe('the strength slider\'s live preview', () => {
   it('filters only the latest of quick moves, and shows the page storing it would give, shrunk to the screen', async () => {
     const photo = photographedPage();
     mockFiles.set(PAGE1, photo);
@@ -1067,7 +1067,7 @@ describe('table lines', () => {
     const shown: SkImage[] = [];
     const live = strengthPreview(PAGE1, 400, (image) => shown.push(image));
     live.preview({ kind: 'clean', strength: 1 });
-    while (!shown.length) await new Promise((r) => setTimeout(r, 50));
+    while (!shown.length) await settle();
     live.stop();
 
     const source = decode(bytes);

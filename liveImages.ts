@@ -7,13 +7,11 @@ export function liveImages<T extends { dispose: () => void }>() {
   let held: { image: T; n: number }[] = [];
   let handed = 0;
   return {
-    /** Holds `image` and returns its number. */
     add(image: T): number {
       held.push({ image, n: ++handed });
       return handed;
     },
-    /** The number of the last image handed over. */
-    last: () => handed,
+    lastNumber: () => handed,
     release(upTo: number, onScreen: T | null) {
       const freed = held.filter((e) => e.n <= upTo && e.image !== onScreen);
       held = held.filter((e) => !freed.includes(e));

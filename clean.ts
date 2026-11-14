@@ -604,12 +604,7 @@ export function strengthPreview(uri: string, width: number, show: (image: SkImag
         const full = filterAnalysed(image, analysis, filter, image.width(), image.height(), gpuSurface);
         const drawn = shrunkCopy(full, outW, outH, gpuSurface);
         full.dispose();
-        let copy: SkImage | null = null;
-        try {
-          copy = drawn.makeNonTextureImage();
-        } catch {
-          // Without a GPU (the tests' CanvasKit) the surface is on the CPU already and needs no copy.
-        }
+        const copy = drawn.makeNonTextureImage();
         if (copy) drawn.dispose();
         show(copy ?? drawn);
       }
