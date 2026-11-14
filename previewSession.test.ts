@@ -189,3 +189,29 @@ it('clears the preview when the store is turned away', async () => {
   session.pageLoaded();
   expect(events.cleared).toBe(clearedBefore + 2);
 });
+
+it('after a run fails by itself, warms nothing until the subject changes, but a move still retries', () => {
+  const { session, runs, start } = setup();
+  session.preview(filter(1), start);
+  runs[0].stopped = true;
+
+  session.warm(filter(1), start);
+  expect(runs.length).toBe(1);
+  session.preview(filter(2), start);
+  expect(runs.length).toBe(2);
+
+  runs[1].stopped = true;
+  session.subjectChanged();
+  session.warm(filter(1), start);
+  expect(runs.length).toBe(3);
+});
+
+it('does not hand a run that stopped by itself to the store', async () => {
+  const { session, runs, start } = setup();
+  session.preview(filter(1), start);
+  runs[0].stopped = true;
+
+  await session.store(filter(1), () => {});
+
+  expect(runs[0].finished).toEqual([]);
+});

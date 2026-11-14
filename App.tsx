@@ -105,20 +105,21 @@ function Root() {
     toastTimer.current = setTimeout(() => setMessage(''), 2500);
   }, []);
 
-  // Runs one scan/save/delete action at a time; resolves to false when another one turned it away.
+  // Runs one scan/save/delete action at a time; resolves to false when another one turned it away or it failed.
   async function guarded(task: () => Promise<void>, errorTitle: string) {
     if (inFlight.current) return false;
     inFlight.current = true;
     setBusy(true);
     try {
       await task();
+      return true;
     } catch (e) {
       Alert.alert(errorTitle, errorText(e));
     } finally {
       inFlight.current = false;
       setBusy(false);
     }
-    return true;
+    return false;
   }
 
   // Re-reads the list and the open scan, so pages moved before a failure show up. Its pages changed, so Select mode ends.
@@ -459,13 +460,13 @@ function Detail(props: {
     // Opening starts the preview at the current strength, so the first move does not wait for the
     // photo, its analysis and the GPU's first draw (about 1.5 s on the Simulator).
     if (open && recorded) livePreview.preview(recorded);
-    else livePreview.hide();
+    else livePreview.session.hide();
     setStrengthsOpen(open);
   };
   const stripProps = {
     thumbs,
     recorded,
-    busy,
+    busy: props.busy,
     finishing: livePreview.finishing,
     strengthsOpen,
     onStrengths: showStrengths,
@@ -712,7 +713,7 @@ function Detail(props: {
               getItemLayout={(_, i) => ({ length: width, offset: width * i, index: i })}
               scrollEventThrottle={16}
               // The live preview sits over the pager, so it would cover the pages sliding under it.
-              onScrollBeginDrag={livePreview.hide}
+              onScrollBeginDrag={livePreview.session.hide}
               // Updated during the slide, not after it: Rotate turns this page and takes taps mid-slide.
               onScroll={(e) => {
                 const slid = Math.round(e.nativeEvent.contentOffset.x / width);
@@ -743,7 +744,7 @@ function Detail(props: {
                     }}
                     style={{ width, height: pagerHeight }}
                     resizeMode="contain"
-                    onLoadEnd={index === current ? livePreview.pageLoaded : undefined}
+                    onLoadEnd={index === current ? livePreview.session.pageLoaded : undefined}
                   />
                 </Pressable>
               )}
@@ -761,7 +762,7 @@ function Detail(props: {
             </View>
           </View>
           {editedPage && (
-            <FilterStrip {...stripProps} onFilter={(filter) => livePreview.store(filter, (f) => props.onFilterPage(editedPage, f), { keep: 'untilPageLoads' })} />
+            <FilterStrip {...stripProps} onFilter={(filter) => livePreview.session.store(filter, (f) => props.onFilterPage(editedPage, f), { keep: 'untilPageLoads' })} />
           )}
           <View style={styles.editorDone}>
             {recorded && scan.pages.length > 1 && (
@@ -824,7 +825,7 @@ function Detail(props: {
                 Filter {pagesLabel(pickedPages.length)}
                 {livePreview.image && pickedPages.length > 1 ? ', the first shown' : ''}
               </Text>
-              <FilterStrip {...stripProps} onFilter={(filter) => livePreview.store(filter, (f) => props.onFilterPages(pickedPages, f), { keep: 'untilNextChange' })} />
+              <FilterStrip {...stripProps} onFilter={(filter) => livePreview.session.store(filter, (f) => props.onFilterPages(pickedPages, f), { keep: 'untilNextChange' })} />
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Done"
@@ -920,7 +921,8 @@ function FilterStrip(props: {
   onPreview: (filter: Filter | null) => void;
   onFilter: (filter: Filter) => void;
 }) {
-  const { recorded, busy, thumbs } = props;
+  const { recorded, thumbs } = props;
+  const busy = props.busy || props.finishing;
   const disabled = busy && styles.disabled;
   // Bumped to put the thumb back when a release changes nothing.
   const [resets, setResets] = useState(0);
@@ -929,8 +931,9 @@ function FilterStrip(props: {
     if (!recorded) return;
     const strength = snap ? snapped(v) : v;
     // A release while a filter runs is not applied, so the thumb goes back; so does one that snaps to where it was.
+    // During the lift's own catch-up the preview stays; otherwise it goes.
     if (props.finishing) setResets(resets + 1);
-    else if (busy || strength === recorded.strength) {
+    else if (props.busy || strength === recorded.strength) {
       setResets(resets + 1);
       props.onPreview(null);
     } else props.onFilter({ kind: recorded.kind, strength });

@@ -39,12 +39,5 @@ export function useStrengthPreview(page: string | undefined, width: number, subj
   useEffect(() => {
     if (warmAt && page) session.warm(warmAt, start);
   });
-  return {
-    image: shown.image,
-    finishing,
-    preview,
-    hide: session.hide,
-    store: session.store,
-    pageLoaded: session.pageLoaded,
-  };
+  return { image: shown.image, finishing, preview, session };
 }

@@ -10,6 +10,8 @@ export type PreviewRun = {
   finish(filter: Filter): Promise<void>;
 };
 
+type Keep = 'untilPageLoads' | 'untilNextChange';
+
 /**
  * The order of a strength preview's life around the store that a lift starts: one run at a time, the
  * lift's own strength drawn before the photo is freed for the store, only the first lift stored while
@@ -17,8 +19,6 @@ export type PreviewRun = {
  * stored page (the editor) or until the next change (Select mode). `clear` takes the preview off the
  * screen; `finishing` reports the catch-up after a lift.
  */
-type Keep = 'untilPageLoads' | 'untilNextChange';
-
 export function previewSession(events: { clear: () => void; finishing: (on: boolean) => void }) {
   let run: PreviewRun | null = null;
   // The run catching up to a lift's strength; hiding stops it too, so nothing shows after a close.
@@ -27,9 +27,17 @@ export function previewSession(events: { clear: () => void; finishing: (on: bool
   // After a store: 'subject' until the store's own subject change, then 'page' until the pager shows it.
   let awaiting: 'subject' | 'page' | null = null;
   let keep: Keep | null = null;
-  const current = () => (run?.isStopped() ? null : run);
+  // A run stopped by itself (a failed pass): no warm-up until the subject changes, or it would retry forever.
+  let failed = false;
+  const current = () => {
+    if (!run?.isStopped()) return run;
+    failed = true;
+    run = null;
+    return null;
+  };
   const stopAll = () => {
     awaiting = null;
+    failed = false;
     finishingRun?.stop();
     finishingRun = null;
     run?.stop();
@@ -46,17 +54,17 @@ export function previewSession(events: { clear: () => void; finishing: (on: bool
     },
     /** Starts a run that measures the photo without drawing, unless one is running or a store is. */
     warm(filter: Filter, start: () => PreviewRun) {
-      if (current() || storing) return;
+      if (current() || storing || failed) return;
       run = start();
       run.warm(filter);
     },
     hide,
     // Slider events can still arrive while the preview catches up after the lift; only the lift's own value is stored.
-    // `apply` resolves to false when the store was turned away (another action held the queue).
+    // `apply` resolves to false when the store was turned away (another action held the queue) or failed.
     async store(filter: Filter, apply: (filter: Filter) => unknown, options?: { keep: Keep }) {
       if (storing) return;
       storing = true;
-      const lifted = run;
+      const lifted = current();
       run = null;
       finishingRun = lifted;
       try {
@@ -76,6 +84,7 @@ export function previewSession(events: { clear: () => void; finishing: (on: bool
     },
     /** The edited page, another page, a turn or a closed panel: ends the preview, except the store's own change. */
     subjectChanged() {
+      failed = false;
       if (awaiting !== 'subject') return hide();
       awaiting = keep === 'untilPageLoads' ? 'page' : null;
     },

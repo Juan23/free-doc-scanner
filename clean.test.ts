@@ -688,6 +688,8 @@ describe('the strength slider\'s live preview', () => {
     await settle();
     live.preview({ kind: 'clean', strength: 0 });
     await settle();
+    await live.finish({ kind: 'gray', strength: 1 });
+    await settle();
 
     expect(shown.length).toBe(0);
   }, 30000);

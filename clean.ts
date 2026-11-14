@@ -337,6 +337,7 @@ function pastEdges(page: Uint8Array, fine: Uint8Array, w: number, h: number): Ui
   return out;
 }
 
+type Disposable = { dispose: () => void };
 type MakeSurface = (width: number, height: number) => SkSurface;
 const cpuSurface: MakeSurface = (w, h) => Skia.Surface.Make(w, h)!;
 // Without a GPU (the tests' CanvasKit) this is a CPU surface.
@@ -416,47 +417,54 @@ function analysePage(image: SkImage): Analysis {
   const scale = Math.min(1, SMALL_WIDTH / w);
   const sw = Math.ceil(w * scale);
   const sh = Math.ceil(h * scale);
+  // In-between objects are freed whether or not a step throws; the results too if one does.
+  const temps: Disposable[] = [];
+  const own = <T extends Disposable>(o: T) => (temps.push(o), o);
+  const results: Disposable[] = [];
+  const result = <T extends Disposable>(o: T) => (results.push(o), o);
+  try {
+    const surface = own(cpuSurface(sw, sh));
+    const canvas = surface.getCanvas();
+    const smallPage = result(shrunkCopy(image, sw, sh));
 
-  const surface = cpuSurface(sw, sh);
-  const canvas = surface.getCanvas();
-  const smallPage = shrunkCopy(image, sw, sh);
+    const wipeInk = own(Skia.Paint());
+    wipeInk.setImageFilter(Skia.ImageFilter.MakeBlur(8, 8, TileMode.Clamp, Skia.ImageFilter.MakeDilate(6, 6, null)));
+    canvas.drawImage(smallPage, 0, 0, wipeInk);
+    const coarse = result(surface.makeImageSnapshot());
+    const wipeText = own(Skia.Paint());
+    wipeText.setImageFilter(Skia.ImageFilter.MakeErode(5, 5, Skia.ImageFilter.MakeDilate(5, 5, null)));
+    canvas.drawImage(smallPage, 0, 0, wipeText);
+    const fine = own(surface.makeImageSnapshot());
+    const coarseShader = own(clamp(coarse, FilterMode.Nearest));
+    const fineShader = own(clamp(fine, FilterMode.Nearest));
+    const pickShader = own(paperEffect.makeShaderWithChildren([], [coarseShader, fineShader]));
+    const pickPaper = own(Skia.Paint());
+    pickPaper.setShader(pickShader);
+    canvas.drawRect(Skia.XYWHRect(0, 0, sw, sh), pickPaper);
+    const paper = result(surface.makeImageSnapshot());
 
-  const wipeInk = Skia.Paint();
-  wipeInk.setImageFilter(Skia.ImageFilter.MakeBlur(8, 8, TileMode.Clamp, Skia.ImageFilter.MakeDilate(6, 6, null)));
-  canvas.drawImage(smallPage, 0, 0, wipeInk);
-  const coarse = surface.makeImageSnapshot();
-  const wipeText = Skia.Paint();
-  wipeText.setImageFilter(Skia.ImageFilter.MakeErode(5, 5, Skia.ImageFilter.MakeDilate(5, 5, null)));
-  canvas.drawImage(smallPage, 0, 0, wipeText);
-  const fine = surface.makeImageSnapshot();
-  const coarseShader = clamp(coarse, FilterMode.Nearest);
-  const fineShader = clamp(fine, FilterMode.Nearest);
-  const pickShader = paperEffect.makeShaderWithChildren([], [coarseShader, fineShader]);
-  const pickPaper = Skia.Paint();
-  pickPaper.setShader(pickShader);
-  canvas.drawRect(Skia.XYWHRect(0, 0, sw, sh), pickPaper);
-  const paper = surface.makeImageSnapshot();
-
-  const rgba = { width: sw, height: sh, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul };
-  const pagePixels = smallPage.readPixels(0, 0, rgba) as Uint8Array | null;
-  const finePixels = fine.readPixels(0, 0, rgba) as Uint8Array | null;
-  // Unreadable copies just leave the edges as they are.
-  const beyondData = Skia.Data.fromBytes(pagePixels && finePixels ? pastEdges(pagePixels, finePixels, sw, sh) : new Uint8Array(sw * sh));
-  const beyondMask = Skia.Image.MakeImage({ width: sw, height: sh, colorType: ColorType.Alpha_8, alphaType: AlphaType.Premul }, beyondData, sw)!;
-  // Grown a pixel to take in the blurred edge of the paper, and softened.
-  const feather = Skia.Paint();
-  feather.setImageFilter(Skia.ImageFilter.MakeBlur(1, 1, TileMode.Clamp, Skia.ImageFilter.MakeDilate(1, 1, null)));
-  canvas.clear(Skia.Color('transparent'));
-  canvas.drawImage(beyondMask, 0, 0, feather);
-  const beyond = surface.makeImageSnapshot();
-
-  for (const o of [surface, wipeInk, wipeText, fine, coarseShader, fineShader, pickShader, pickPaper, beyondData, beyondMask, feather]) {
-    o.dispose();
+    const rgba = { width: sw, height: sh, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul };
+    const pagePixels = smallPage.readPixels(0, 0, rgba) as Uint8Array | null;
+    const finePixels = fine.readPixels(0, 0, rgba) as Uint8Array | null;
+    // Unreadable copies just leave the edges as they are.
+    const beyondData = own(Skia.Data.fromBytes(pagePixels && finePixels ? pastEdges(pagePixels, finePixels, sw, sh) : new Uint8Array(sw * sh)));
+    const beyondMask = own(Skia.Image.MakeImage({ width: sw, height: sh, colorType: ColorType.Alpha_8, alphaType: AlphaType.Premul }, beyondData, sw)!);
+    // Grown a pixel to take in the blurred edge of the paper, and softened.
+    const feather = own(Skia.Paint());
+    feather.setImageFilter(Skia.ImageFilter.MakeBlur(1, 1, TileMode.Clamp, Skia.ImageFilter.MakeDilate(1, 1, null)));
+    canvas.clear(Skia.Color('transparent'));
+    canvas.drawImage(beyondMask, 0, 0, feather);
+    const beyond = result(surface.makeImageSnapshot());
+    return {
+      image, sw, sh, smallPage, coarse, paper, beyond,
+      dispose: () => [smallPage, coarse, paper, beyond].forEach((o) => o.dispose()),
+    };
+  } catch (e) {
+    results.forEach((o) => o.dispose());
+    throw e;
+  } finally {
+    temps.forEach((o) => o.dispose());
   }
-  return {
-    image, sw, sh, smallPage, coarse, paper, beyond,
-    dispose: () => [smallPage, coarse, paper, beyond].forEach((o) => o.dispose()),
-  };
 }
 
 // The strength-dependent part of filterImage: the ink mask on the small copy, then the final pass at the output size on
@@ -473,46 +481,45 @@ function filterAnalysed(
   const h = image.height();
   const keep = keepAt(filter.strength);
   const toOut = Skia.Matrix().scale(outW / sw, outH / sh);
+  // A page holds about 100 MB of bitmaps: free them now, not whenever the garbage collector runs, and
+  // also when a step throws.
+  const temps: Disposable[] = [];
+  const own = <T extends Disposable>(o: T) => (temps.push(o), o);
+  try {
+    const surface = own(cpuSurface(sw, sh));
+    const smallPageShader = own(clamp(analysis.smallPage, FilterMode.Nearest));
+    const coarseShader = own(clamp(analysis.coarse, FilterMode.Nearest));
+    const inkShader = own(inkEffect.makeShaderWithChildren([keep.inkThreshold], [smallPageShader, coarseShader]));
+    const spreadInk = own(Skia.Paint());
+    spreadInk.setShader(inkShader);
+    spreadInk.setImageFilter(Skia.ImageFilter.MakeBlur(6, 6, TileMode.Clamp, null));
+    surface.getCanvas().clear(Skia.Color('transparent'));
+    surface.getCanvas().drawRect(Skia.XYWHRect(0, 0, sw, sh), spreadInk);
+    const ink = own(surface.makeImageSnapshot());
 
-  const surface = cpuSurface(sw, sh);
-  const smallPageShader = clamp(analysis.smallPage, FilterMode.Nearest);
-  const coarseShader = clamp(analysis.coarse, FilterMode.Nearest);
-  const inkShader = inkEffect.makeShaderWithChildren([keep.inkThreshold], [smallPageShader, coarseShader]);
-  const spreadInk = Skia.Paint();
-  spreadInk.setShader(inkShader);
-  spreadInk.setImageFilter(Skia.ImageFilter.MakeBlur(6, 6, TileMode.Clamp, null));
-  surface.getCanvas().clear(Skia.Color('transparent'));
-  surface.getCanvas().drawRect(Skia.XYWHRect(0, 0, sw, sh), spreadInk);
-  const ink = surface.makeImageSnapshot();
-
-  const shrinking = outW < w;
-  // Only the final pass is drawn at the output size; a shrunk preview samples the photo mipmapped, as shrunkCopy does.
-  const pageShader = clamp(
-    image,
-    shrinking ? FilterMode.Linear : FilterMode.Nearest,
-    Skia.Matrix().scale(outW / w, outH / h),
-    shrinking ? MipmapMode.Linear : MipmapMode.None,
-  );
-  const paperShader = clamp(analysis.paper, FilterMode.Linear, toOut);
-  const textShader = clamp(ink, FilterMode.Linear, toOut);
-  const beyondShader = clamp(analysis.beyond, FilterMode.Linear, toOut);
-  const cleanShader = cleanEffect.makeShaderWithChildren(
-    [keep.whitePoint, filter.kind === 'gray' ? 1 : 0, outW >= PALE_LINE_WIDTH ? keep.paleLine : 1],
-    [pageShader, paperShader, textShader, beyondShader],
-  );
-  const out = makeSurface(outW, outH);
-  const paint = Skia.Paint();
-  paint.setShader(cleanShader);
-  out.getCanvas().drawPaint(paint);
-  const snapshot = out.makeImageSnapshot();
-  // A page holds about 100 MB of bitmaps: free them now, not whenever the garbage collector runs.
-  for (const o of [
-    surface, smallPageShader, coarseShader, inkShader, spreadInk, ink,
-    pageShader, paperShader, textShader, beyondShader, cleanShader, out, paint,
-  ]) {
-    o.dispose();
+    const shrinking = outW < w;
+    // Only the final pass is drawn at the output size; a shrunk preview samples the photo mipmapped, as shrunkCopy does.
+    const pageShader = own(clamp(
+      image,
+      shrinking ? FilterMode.Linear : FilterMode.Nearest,
+      Skia.Matrix().scale(outW / w, outH / h),
+      shrinking ? MipmapMode.Linear : MipmapMode.None,
+    ));
+    const paperShader = own(clamp(analysis.paper, FilterMode.Linear, toOut));
+    const textShader = own(clamp(ink, FilterMode.Linear, toOut));
+    const beyondShader = own(clamp(analysis.beyond, FilterMode.Linear, toOut));
+    const cleanShader = own(cleanEffect.makeShaderWithChildren(
+      [keep.whitePoint, filter.kind === 'gray' ? 1 : 0, outW >= PALE_LINE_WIDTH ? keep.paleLine : 1],
+      [pageShader, paperShader, textShader, beyondShader],
+    ));
+    const out = own(makeSurface(outW, outH));
+    const paint = own(Skia.Paint());
+    paint.setShader(cleanShader);
+    out.getCanvas().drawPaint(paint);
+    return out.makeImageSnapshot();
+  } finally {
+    temps.forEach((o) => o.dispose());
   }
-  return snapshot;
 }
 
 // The filter a page was last given, as JSON beside it: p3.jpg has f3.json. Pages from before this
@@ -635,6 +642,7 @@ export function strengthPreview(uri: string, width: number, show: (image: SkImag
   // The last strength asked to be drawn: a lift at that strength needs no further pass.
   let lastAsked: Filter | null = null;
   const queue = (filter: Filter, quiet: boolean) => {
+    if (stopped) return;
     if (!quiet) lastAsked = filter;
     next = filter;
     silent = quiet;
