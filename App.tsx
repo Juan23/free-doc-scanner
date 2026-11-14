@@ -26,12 +26,12 @@ import {
 } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { cleanPages, defaultFilter, filterPreviews, setDefaultFilter, sharedFilter, strengthPreview, type Filter } from './clean';
-import { liveImages } from './liveImages';
+import { cleanPages, defaultFilter, filterPreviews, setDefaultFilter, sharedFilter, type Filter } from './clean';
 import { cropPage, findPage, isConvex, previewCorners, type FoundPage, type Point, type Quad } from './crop';
 import { clearScannerCache, pagesToSave, pickOnLongPress, saveJpegs, savePdf } from './save';
 import { addPages, createScan, deleteScan, heldPhoto, listScans, type Scan } from './scans';
 import { rotatePage, uprightPages } from './upright';
+import { disposeNextFrame, useStrengthPreview } from './useStrengthPreview';
 
 const C = {
   text: '#15171C',
@@ -448,15 +448,11 @@ function Detail(props: {
     };
   }, [previewPage, turned]);
   // Runs when the images are replaced, and when the editor or filter panel closes or unmounts.
-  // A frame later, as the Canvas may still draw them once (see useStrengthPreview).
-  useEffect(() => () => {
-    const replaced = Object.values(previews.images ?? {});
-    requestAnimationFrame(() => replaced.forEach((t) => t.dispose()));
-  }, [previews]);
-  const livePreview = useStrengthPreview(previewPage, width * PixelRatio.get(), subjectKey);
+  useEffect(() => () => disposeNextFrame(Object.values(previews.images ?? {})), [previews]);
+  const livePreview = useStrengthPreview(previewPage, width * PixelRatio.get(), subjectKey, strengthsOpen ? recorded : null);
   // Until a lift's store starts, another action would take its turn in Root's queue and drop it.
   const busy = props.busy || livePreview.finishing;
-  // The slider can also vanish mid-drag (a second finger taps the thumbnail), and then no lift comes.
+  // Closing hides the preview: the slider can vanish mid-drag (a second finger taps the thumbnail), and then no lift comes.
   const showStrengths = (open: boolean) => {
     // Opening starts the preview at the current strength, so the first move does not wait for the
     // photo, its analysis and the GPU's first draw (about 1.5 s on the Simulator).
@@ -468,6 +464,7 @@ function Detail(props: {
     thumbs,
     recorded,
     busy,
+    storing: livePreview.finishing,
     strengthsOpen,
     onStrengths: showStrengths,
     onPreview: livePreview.preview,
@@ -762,7 +759,7 @@ function Detail(props: {
             </View>
           </View>
           {editedPage && (
-            <FilterStrip {...stripProps} onFilter={(filter) => livePreview.storeAfterPreview(filter, (f) => props.onFilterPage(editedPage, f), true)} />
+            <FilterStrip {...stripProps} onFilter={(filter) => livePreview.storeAfterPreview(filter, (f) => props.onFilterPage(editedPage, f), { untilPageLoads: true })} />
           )}
           <View style={styles.editorDone}>
             {recorded && scan.pages.length > 1 && (
@@ -809,7 +806,7 @@ function Detail(props: {
           <>
             {/* The first picked page at the strength under the finger, between the status bar and the panel. */}
             {livePreview.image && (
-              <LivePage image={livePreview.image} style={[styles.panelPreview, { top: insets.top + 12 }, panelPreviewBox]} {...panelPreviewBox} />
+              <LivePage image={livePreview.image} style={[styles.panelPreview, { top: insets.top + 12 }]} {...panelPreviewBox} />
             )}
             <View
               style={[styles.sheet, styles.sheetDark, { paddingBottom: bottomPad(insets.bottom) }]}
@@ -824,6 +821,7 @@ function Detail(props: {
               </View>
               <Text style={styles.sheetHeading} accessibilityRole="header" maxFontSizeMultiplier={1.5}>
                 Filter {pagesLabel(pickedPages.length)}
+              {livePreview.image && pickedPages.length > 1 ? ', the first shown' : ''}
               </Text>
               <FilterStrip {...stripProps} onFilter={(filter) => livePreview.storeAfterPreview(filter, (f) => props.onFilterPages(pickedPages, f))} />
               <Pressable
@@ -903,75 +901,10 @@ function Detail(props: {
 
 function LivePage(props: { image: SkImage; style: StyleProp<ViewStyle>; width: number; height: number }) {
   return (
-    <Canvas style={props.style} pointerEvents="none">
+    <Canvas style={[props.style, { width: props.width, height: props.height }]} pointerEvents="none">
       <SkiaImage image={props.image} x={0} y={0} width={props.width} height={props.height} fit="contain" />
     </Canvas>
   );
-}
-
-// The page at the strength under the finger, shown until the stored page replaces it. `finishing` is
-// true between a lift and the start of its store, while the preview catches up to the stored strength.
-function useStrengthPreview(page: string | undefined, width: number, subjectKey: string) {
-  // The image on screen, and the number of the last image handed over when it was set.
-  const [shown, setShown] = useState<{ image: SkImage | null; upTo: number }>({ image: null, upTo: 0 });
-  const [finishing, setFinishing] = useState(false);
-  const run = useRef<ReturnType<typeof strengthPreview> | null>(null);
-  const [images] = useState(() => liveImages<SkImage>());
-  const hide = () => {
-    awaitingPage.current = false;
-    run.current?.stop();
-    run.current = null;
-    setShown({ image: null, upTo: images.lastNumber() });
-  };
-  const preview = (filter: Filter | null) => {
-    if (!filter || !page) return hide();
-    run.current ??= strengthPreview(page, width, (image) => setShown({ image, upTo: images.add(image) }));
-    run.current.preview(filter);
-  };
-  const storing = useRef(false);
-  // In the editor the preview stays after a store until the pager has loaded the stored page.
-  const awaitingPage = useRef(false);
-  // The preview's photo is freed before the store, which needs about 100 MB of its own. Slider events
-  // can still arrive while the preview catches up after the lift; only the lift's own value is stored.
-  const storeAfterPreview = async (filter: Filter, apply: (filter: Filter) => void, untilPageLoads = false) => {
-    if (storing.current) return;
-    storing.current = true;
-    const current = run.current;
-    run.current = null;
-    try {
-      if (current) {
-        setFinishing(true);
-        await current.finish(filter);
-      }
-      awaitingPage.current = untilPageLoads && !!current;
-      apply(filter);
-    } finally {
-      setFinishing(false);
-      storing.current = false;
-    }
-  };
-  // A Canvas hands its new drawing to Skia a moment after React commits, and Skia replays the old one
-  // first, so an image taken off the screen is freed a frame later.
-  useEffect(() => {
-    requestAnimationFrame(() => images.release(shown.upTo, shown.image));
-  }, [shown, images]);
-  useEffect(() => () => {
-    requestAnimationFrame(images.clear);
-  }, [images]);
-  // Another page, closing, or the filter being stored (filterPages reloads its pages even when one fails) ends it.
-  const pageLoaded = () => {
-    if (!awaitingPage.current) return;
-    awaitingPage.current = false;
-    hide();
-  };
-  useEffect(
-    () => () => {
-      if (!awaitingPage.current) hide();
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- hide reads only refs, a setter and `images`, which never changes
-    [subjectKey],
-  );
-  return { image: shown.image, finishing, preview, hide, storeAfterPreview, pageLoaded };
 }
 
 // The filter strip of the page editor and of the Select sheet's filter panel; both sit on a dark background.
@@ -979,6 +912,8 @@ function FilterStrip(props: {
   thumbs: Record<Filter['kind'], SkImage> | null;
   recorded: Filter | null;
   busy: boolean;
+  // A lift's store is waiting for the preview: a late slider event then keeps the preview on.
+  storing: boolean;
   strengthsOpen: boolean;
   onStrengths: (open: boolean) => void;
   onPreview: (filter: Filter | null) => void;
@@ -993,8 +928,8 @@ function FilterStrip(props: {
     if (!recorded) return;
     const strength = snap ? snapped(v) : v;
     // A release while a filter runs is not applied, so the thumb goes back; so does one that snaps to where it was.
-    if (busy) setResets(resets + 1);
-    else if (strength === recorded.strength) {
+    if (props.storing) setResets(resets + 1);
+    else if (busy || strength === recorded.strength) {
       setResets(resets + 1);
       props.onPreview(null);
     } else props.onFilter({ kind: recorded.kind, strength });

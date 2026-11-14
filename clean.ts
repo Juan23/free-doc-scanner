@@ -399,7 +399,7 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
 
   const analysis = analysePage(image);
   try {
-    return filterAnalysed(image, analysis, filter, outW, outH, cpuSurface);
+    return filterAnalysed(analysis, filter, outW, outH, cpuSurface);
   } finally {
     analysis.dispose();
   }
@@ -407,7 +407,8 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
 
 // What the clean-up measures on a small copy of the photo, the same at every strength: the copy, the
 // paper's colour, the text-free copy the ink is measured against, and what shows past bent edges.
-type Analysis = { sw: number; sh: number; smallPage: SkImage; coarse: SkImage; paper: SkImage; beyond: SkImage; dispose: () => void };
+// Its `dispose` frees what it made, not the photo, which its caller owns.
+type Analysis = { image: SkImage; sw: number; sh: number; smallPage: SkImage; coarse: SkImage; paper: SkImage; beyond: SkImage; dispose: () => void };
 
 function analysePage(image: SkImage): Analysis {
   const w = image.width();
@@ -453,23 +454,23 @@ function analysePage(image: SkImage): Analysis {
     o.dispose();
   }
   return {
-    sw, sh, smallPage, coarse, paper, beyond,
+    image, sw, sh, smallPage, coarse, paper, beyond,
     dispose: () => [smallPage, coarse, paper, beyond].forEach((o) => o.dispose()),
   };
 }
 
-// The strength-dependent part of filterImage: the ink mask on the small copy, then the final pass at the output size.
+// The strength-dependent part of filterImage: the ink mask on the small copy, then the final pass at the output size on
+// `makeSurface`. The mask is 500 px wide, so it stays on the CPU even when the final pass runs on the GPU.
 function filterAnalysed(
-  image: SkImage,
   analysis: Analysis,
   filter: Filter,
   outW: number,
   outH: number,
   makeSurface: MakeSurface,
 ): SkImage {
+  const { image, sw, sh } = analysis;
   const w = image.width();
   const h = image.height();
-  const { sw, sh } = analysis;
   const keep = keepAt(filter.strength);
   const toOut = Skia.Matrix().scale(outW / sw, outH / sh);
 
@@ -578,11 +579,14 @@ export async function filterPreviews(
  * photo's width), one at a time; while one runs only the latest waits. Each result goes to `show`,
  * which disposes it. `stop` ends it and frees the photo; nothing is shown after. `finish` is for the
  * lift: it shows the strength being stored last, then stops, so the photo is freed before the store
- * needs its own memory.
+ * needs its own memory. `warm` reads and measures the photo and runs one pass without showing it, so
+ * the next `preview` does not wait for that.
  */
 export function strengthPreview(uri: string, width: number, show: (image: SkImage) => void) {
   const photo = readPage(heldPhoto(uri));
   let next: Filter | null = null;
+  // The pending step only warms up: its image is freed, not shown.
+  let silent = false;
   let running: Promise<void> | null = null;
   let stopped = false;
   // Measured once: only the ink mask and the final pass depend on the strength.
@@ -594,6 +598,7 @@ export function strengthPreview(uri: string, width: number, show: (image: SkImag
       const outH = Math.max(1, Math.round((outW * image.height()) / image.width()));
       while (next && !stopped) {
         const filter = next;
+        const quiet = silent;
         next = null;
         // Lets the slider move between the heavy steps.
         await new Promise((r) => setTimeout(r, 0));
@@ -601,9 +606,13 @@ export function strengthPreview(uri: string, width: number, show: (image: SkImag
         analysis ??= analysePage(image);
         // Full size on the GPU: a narrower pass drops thin strokes the stored page keeps.
         // The screen draws on another thread, so it gets a CPU copy.
-        const full = filterAnalysed(image, analysis, filter, image.width(), image.height(), gpuSurface);
+        const full = filterAnalysed(analysis, filter, image.width(), image.height(), gpuSurface);
         const drawn = shrunkCopy(full, outW, outH, gpuSurface);
         full.dispose();
+        if (quiet) {
+          drawn.dispose();
+          continue;
+        }
         const copy = drawn.makeNonTextureImage();
         if (copy) drawn.dispose();
         show(copy ?? drawn);
@@ -614,8 +623,9 @@ export function strengthPreview(uri: string, width: number, show: (image: SkImag
       running = null;
     }
   };
-  const preview = (filter: Filter) => {
+  const preview = (filter: Filter, quiet = false) => {
     next = filter;
+    silent = quiet;
     running ??= run();
   };
   const stop = () => {
@@ -630,7 +640,8 @@ export function strengthPreview(uri: string, width: number, show: (image: SkImag
     );
   };
   return {
-    preview,
+    preview: (filter: Filter) => preview(filter),
+    warm: (filter: Filter) => preview(filter, true),
     stop,
     async finish(filter: Filter) {
       preview(filter);

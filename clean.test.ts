@@ -692,6 +692,23 @@ describe('the strength slider\'s live preview', () => {
     expect(shown.length).toBe(0);
   }, 30000);
 
+  it('warms up without drawing anything, then shows the next move', async () => {
+    mockFiles.set(PAGE1, photographedPage());
+    const shown: SkImage[] = [];
+    const live = strengthPreview(PAGE1, W, (image) => shown.push(image));
+
+    live.warm({ kind: 'clean', strength: 1 });
+    await settle();
+    const afterWarm = shown.length;
+    live.preview({ kind: 'clean', strength: 2 });
+    while (!shown.length) await settle();
+    live.stop();
+
+    expect(afterWarm).toBe(0);
+    expect(shown.length).toBe(1);
+    for (const image of shown) image.dispose();
+  }, 30000);
+
   it('on finish, shows the strength being stored last, then nothing more', async () => {
     const photo = photographedPage();
     mockFiles.set(PAGE1, photo);
