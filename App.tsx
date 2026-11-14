@@ -464,7 +464,7 @@ function Detail(props: {
     thumbs,
     recorded,
     busy,
-    storing: livePreview.finishing,
+    finishing: livePreview.finishing,
     strengthsOpen,
     onStrengths: showStrengths,
     onPreview: livePreview.preview,
@@ -718,7 +718,7 @@ function Detail(props: {
                 const page = I18nManager.isRTL ? scan.pages.length - 1 - slid : slid;
                 if (page !== current) {
                   setCurrent(page);
-                  setStrengthsOpen(false);
+                  showStrengths(false);
                   setHolding(false);
                   // Android reads the count's live region itself; iOS needs an explicit announcement.
                   if (Platform.OS === 'ios') AccessibilityInfo.announceForAccessibility(`Page ${page + 1} of ${scan.pages.length}`);
@@ -804,7 +804,6 @@ function Detail(props: {
         />
         {panel === 'filter' ? (
           <>
-            {/* The first picked page at the strength under the finger, between the status bar and the panel. */}
             {livePreview.image && (
               <LivePage image={livePreview.image} style={[styles.panelPreview, { top: insets.top + 12 }]} {...panelPreviewBox} />
             )}
@@ -913,7 +912,7 @@ function FilterStrip(props: {
   recorded: Filter | null;
   busy: boolean;
   // A lift's store is waiting for the preview: a late slider event then keeps the preview on.
-  storing: boolean;
+  finishing: boolean;
   strengthsOpen: boolean;
   onStrengths: (open: boolean) => void;
   onPreview: (filter: Filter | null) => void;
@@ -928,7 +927,7 @@ function FilterStrip(props: {
     if (!recorded) return;
     const strength = snap ? snapped(v) : v;
     // A release while a filter runs is not applied, so the thumb goes back; so does one that snaps to where it was.
-    if (props.storing) setResets(resets + 1);
+    if (props.finishing) setResets(resets + 1);
     else if (busy || strength === recorded.strength) {
       setResets(resets + 1);
       props.onPreview(null);

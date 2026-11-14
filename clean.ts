@@ -356,7 +356,7 @@ export function shrunkCopy(
   makeSurface: MakeSurface = cpuSurface,
 ): SkImage {
   const surface = makeSurface(outW, outH);
-  const shader = image.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, MipmapMode.Linear, Skia.Matrix().scale(outW / image.width(), outH / image.height()));
+  const shader = clamp(image, FilterMode.Linear, Skia.Matrix().scale(outW / image.width(), outH / image.height()), MipmapMode.Linear);
   const paint = Skia.Paint();
   paint.setShader(shader);
   surface.getCanvas().drawPaint(paint);
@@ -577,7 +577,7 @@ export async function filterPreviews(
  * The page filtered as the strength slider moves, before anything is stored: each `preview` filters
  * the page's untouched photo at full size, as storing it would, and shrinks it to `width` (or the
  * photo's width), one at a time; while one runs only the latest waits. Each result goes to `show`,
- * which disposes it. `stop` ends it and frees the photo; nothing is shown after. `finish` is for the
+ * which owns it from then on. `stop` ends it and frees the photo; nothing is shown after. `finish` is for the
  * lift: it shows the strength being stored last, then stops, so the photo is freed before the store
  * needs its own memory. `warm` reads and measures the photo and runs one pass without showing it, so
  * the next `preview` does not wait for that.
@@ -585,7 +585,6 @@ export async function filterPreviews(
 export function strengthPreview(uri: string, width: number, show: (image: SkImage) => void) {
   const photo = readPage(heldPhoto(uri));
   let next: Filter | null = null;
-  // The pending step only warms up: its image is freed, not shown.
   let silent = false;
   let running: Promise<void> | null = null;
   let stopped = false;
@@ -623,7 +622,7 @@ export function strengthPreview(uri: string, width: number, show: (image: SkImag
       running = null;
     }
   };
-  const preview = (filter: Filter, quiet = false) => {
+  const queue = (filter: Filter, quiet: boolean) => {
     next = filter;
     silent = quiet;
     running ??= run();
@@ -640,11 +639,11 @@ export function strengthPreview(uri: string, width: number, show: (image: SkImag
     );
   };
   return {
-    preview: (filter: Filter) => preview(filter),
-    warm: (filter: Filter) => preview(filter, true),
+    preview: (filter: Filter) => queue(filter, false),
+    warm: (filter: Filter) => queue(filter, true),
     stop,
     async finish(filter: Filter) {
-      preview(filter);
+      queue(filter, false);
       await running;
       stop();
     },
