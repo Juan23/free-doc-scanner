@@ -5,6 +5,12 @@
 import { AlphaType, ColorType, Skia, type SkImage } from '@shopify/react-native-skia';
 import { cropPage, findPage } from './crop';
 
+// Measures Clean on real photos (DOCUNET=<folder> [CLEAN=./clean.main] [SHARD=i/n] [OUT=<file>]).
+// One tab-separated line per photo and strength: file, strength, pale (stroke pixels with contrast
+// under 60), paleKept%, dark, darkKept%, paperClean% (paper 6+ px from a stroke with luma 235 or
+// more), nearPaperClean% (the same for paper within 5 px of a stroke), pageWhite% (all measured
+// pixels with luma 235 or more), ms.
+
 /* eslint-disable @typescript-eslint/no-require-imports */
 const fs = require('fs') as {
   readdirSync: (p: string) => string[];
@@ -164,10 +170,12 @@ function inputMasks(cIn: Float32Array, w: number, h: number) {
 
 function measure(cIn: Float32Array, m: ReturnType<typeof inputMasks>, lumaOut: Uint8Array, w: number, h: number) {
   const cOut = contrastMap(lumaOut, w, h);
-  const n = { pale: 0, paleKept: 0, dark: 0, darkKept: 0, paper: 0, paperClean: 0 };
+  const n = { pale: 0, paleKept: 0, dark: 0, darkKept: 0, paper: 0, paperClean: 0, nearPaper: 0, nearPaperClean: 0, all: 0, white: 0 };
   for (let y = m.y0; y < m.y1; y++) {
     for (let x = m.x0; x < m.x1; x++) {
       const i = y * w + x;
+      n.all++;
+      if (lumaOut[i] >= 235) n.white++;
       if (m.stroke[i]) {
         const kept = cOut[i] >= 15 ? 1 : 0;
         if (cIn[i] < 60) {
@@ -177,14 +185,23 @@ function measure(cIn: Float32Array, m: ReturnType<typeof inputMasks>, lumaOut: U
           n.dark++;
           n.darkKept += kept;
         }
-      } else if (cIn[i] < 8 && !m.near[i]) {
-        n.paper++;
-        if (lumaOut[i] >= 235) n.paperClean++;
+      } else if (cIn[i] < 8) {
+        const clean = lumaOut[i] >= 235 ? 1 : 0;
+        if (m.near[i]) {
+          n.nearPaper++;
+          n.nearPaperClean += clean;
+        } else {
+          n.paper++;
+          n.paperClean += clean;
+        }
       }
     }
   }
   const pct = (a: number, b: number) => ((a / (b || 1)) * 100).toFixed(1);
-  return [n.pale, pct(n.paleKept, n.pale), n.dark, pct(n.darkKept, n.dark), pct(n.paperClean, n.paper)];
+  return [
+    n.pale, pct(n.paleKept, n.pale), n.dark, pct(n.darkKept, n.dark),
+    pct(n.paperClean, n.paper), pct(n.nearPaperClean, n.nearPaper), pct(n.white, n.all),
+  ];
 }
 
 /** Files whose index mod n is i-1, for SHARD="i/n". */
