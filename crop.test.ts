@@ -2,7 +2,7 @@
  * @jest-environment @shopify/react-native-skia/jestEnv.js
  */
 /// <reference types="jest" />
-import { ImageFormat, Skia, type SkCanvas, type SkPaint } from '@shopify/react-native-skia';
+import { BlurStyle, ImageFormat, Skia, type SkCanvas, type SkPaint } from '@shopify/react-native-skia';
 
 import { cropPage, findPage, isConvex, type Quad } from './crop';
 
@@ -121,6 +121,29 @@ it('finds a ruled page in a 3024 x 4032 photo', async () => {
 
 it('finds a white page on a light grey table', async () => {
   mockFiles.set('file:///cache/photo.jpg', photo(tilted, 'rgb(175,175,170)'));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, tilted, 20);
+}, 30000);
+
+it('finds a white page on a pale table when a bright glare patch touches the page', async () => {
+  const surface = Skia.Surface.Make(W, H)!;
+  const canvas = surface.getCanvas();
+  canvas.drawColor(Skia.Color('rgb(180,185,195)'));
+  const glare = Skia.Paint();
+  glare.setColor(Skia.Color('rgb(252,252,255)'));
+  glare.setMaskFilter(Skia.MaskFilter.MakeBlur(BlurStyle.Normal, 40, true));
+  canvas.drawOval(Skia.XYWHRect(480, 620, 400, 560), glare);
+  const path = Skia.Path.Polygon(tilted, true);
+  const paper = Skia.Paint();
+  paper.setColor(Skia.Color('rgb(232,229,224)'));
+  canvas.drawPath(path, paper);
+  const ink = Skia.Paint();
+  ink.setColor(Skia.Color('rgb(30,30,35)'));
+  canvas.save();
+  canvas.clipPath(path, 1, true);
+  for (let y = 250; y < 1000; y += 40) canvas.drawRect(Skia.XYWHRect(200, y, 500, 10), ink);
+  canvas.restore();
+  mockFiles.set('file:///cache/photo.jpg', surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 92));
 
   expectNear((await findPage('file:///cache/photo.jpg')).corners, tilted, 20);
 }, 30000);
