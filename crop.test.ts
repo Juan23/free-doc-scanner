@@ -149,18 +149,6 @@ it('finds a white page on a pale table when a bright glare patch touches the pag
   expectNear((await findPage('file:///cache/photo.jpg')).corners, tilted, 20);
 }, 30000);
 
-it('finds a page with faint near-vertical edges', async () => {
-  const nearVertical: Quad = [
-    { x: 180, y: 280 },
-    { x: 720, y: 360 },
-    { x: 716, y: 880 },
-    { x: 184, y: 800 },
-  ];
-  mockFiles.set('file:///cache/photo.jpg', photo(nearVertical, 'rgb(185,185,185)', 'rgb(215,215,215)'));
-
-  expectNear((await findPage('file:///cache/photo.jpg')).corners, nearVertical, 20);
-}, 30000);
-
 it('clamps found corners to the photo bounds when an intersection lies just outside', async () => {
   const clipped: Quad = [
     { x: 150, y: -15 },

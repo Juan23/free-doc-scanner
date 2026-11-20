@@ -11,7 +11,7 @@ const { execFileSync } = require('child_process') as {
 const fs = require('fs') as {
   readFileSync: (p: string, enc: string) => string;
   readdirSync: (p: string) => string[];
-  mkdirSync: (p: string, opts?: { recursive?: boolean }) => void;
+  mkdtempSync: (prefix: string) => string;
 };
 const os = require('os') as { tmpdir: () => string };
 const path = require('path') as { join: (...parts: string[]) => string };
@@ -35,9 +35,9 @@ jest.mock('expo-file-system', () => {
   return { File };
 });
 
-const DEFAULT_DATASET = '/Users/juan/Datasets/free-doc-scanner/smartdoc-sample';
-const envVal = process.env.SMARTDOC;
-const DATASET_DIR = envVal && envVal !== '1' && envVal !== 'true' ? envVal : DEFAULT_DATASET;
+// The SmartDoc sample folder; the test runs only when it is given.
+const DATASET_DIR = process.env.SMARTDOC;
+const FRAME_STEP = 5;
 
 function parseGt(xmlPath: string): Map<number, Quad> {
   const xml = fs.readFileSync(xmlPath, 'utf8');
@@ -88,12 +88,11 @@ function median(nums: number[]): number {
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
-(envVal ? it : it.skip)('measures findPage on SmartDoc background00 frames', async () => {
+(DATASET_DIR ? it : it.skip)('measures findPage on SmartDoc background00 frames', async () => {
   const videos = ['datasheet001', 'letter001', 'magazine001'];
-  const vidDir = path.join(DATASET_DIR, 'input_sample', 'background00');
-  const gtDir = path.join(DATASET_DIR, 'input_sample_groundtruth', 'background00_gt');
-  const framesDir = path.join(os.tmpdir(), 'free-doc-scanner-smartdoc-frames');
-  fs.mkdirSync(framesDir, { recursive: true });
+  const vidDir = path.join(DATASET_DIR!, 'input_sample', 'background00');
+  const gtDir = path.join(DATASET_DIR!, 'input_sample_groundtruth', 'background00_gt');
+  const framesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smartdoc-frames-'));
 
   const allErrors: number[] = [];
   let totalFrames = 0;
@@ -103,36 +102,34 @@ function median(nums: number[]): number {
   let totalMs = 0;
 
   for (const vid of videos) {
-    const existing = fs.readdirSync(framesDir).filter((f) => f.startsWith(`${vid}_`) && f.endsWith('.jpg'));
-    if (existing.length === 0) {
-      execFileSync('ffmpeg', [
-        '-y',
-        '-loglevel',
-        'error',
-        '-i',
-        path.join(vidDir, `${vid}.avi`),
-        '-vf',
-        'select=not(mod(n\\,5))',
-        '-fps_mode',
-        'vfr',
-        '-q:v',
-        '2',
-        path.join(framesDir, `${vid}_%04d.jpg`),
-      ]);
-    }
+    execFileSync('ffmpeg', [
+      '-y',
+      '-loglevel',
+      'error',
+      '-i',
+      path.join(vidDir, `${vid}.avi`),
+      '-vf',
+      `select=not(mod(n\\,${FRAME_STEP}))`,
+      '-fps_mode',
+      'vfr',
+      '-q:v',
+      '2',
+      path.join(framesDir, `${vid}_%04d.jpg`),
+    ]);
 
     const gt = parseGt(path.join(gtDir, `${vid}.gt.xml`));
     const files = fs
       .readdirSync(framesDir)
       .filter((f) => f.startsWith(`${vid}_`) && f.endsWith('.jpg'))
       .sort();
+    expect(files.length).toBe(Math.ceil(Math.max(...gt.keys()) / FRAME_STEP));
     const errors: number[] = [];
     let outlines = 0;
     let within2 = 0;
     let within5 = 0;
 
     for (let i = 0; i < files.length; i++) {
-      const frameIdx = 1 + i * 5;
+      const frameIdx = 1 + i * FRAME_STEP;
       const gtQuad = gt.get(frameIdx);
       if (!gtQuad) throw new Error(`Missing GT for ${vid} frame ${frameIdx}`);
       const filePath = path.join(framesDir, files[i]);
