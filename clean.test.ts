@@ -6,7 +6,7 @@ import {
   AlphaType, BlurStyle, ColorType, ImageFormat, Skia, type SkImage,
 } from '@shopify/react-native-skia';
 
-import { cleanPages, defaultFilter, filterImage, filterPreviews, pageFilter, setDefaultFilter, sharedFilter, shrunkCopy, type Filter } from './clean';
+import { cleanPages, defaultFilter, filterImage, filterPreviews, pageFilter, setDefaultFilter, sharedFilter, shrunkCopy, strengthPreview, type Filter } from './clean';
 import { rotatePage } from './upright';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
@@ -648,6 +648,138 @@ it('previews a page that has no original from the page itself', async () => {
   expect([...mockFiles.keys()]).toEqual([PAGE1]);
 }, 30000);
 
+const settle = () => new Promise((r) => setTimeout(r, 50));
+
+describe('the strength slider\'s live preview', () => {
+  it('filters only the latest of quick moves, and shows the page storing it would give, shrunk to the screen', async () => {
+    const photo = photographedPage();
+    mockFiles.set(PAGE1, photo);
+    const files = new Map(mockFiles);
+    const shown: SkImage[] = [];
+    const live = strengthPreview(PAGE1, 300, (image) => image && shown.push(image));
+
+    live.preview({ kind: 'clean', strength: 0 });
+    live.preview({ kind: 'clean', strength: 0.5 });
+    live.preview({ kind: 'gray', strength: 2 });
+    while (!shown.length) await settle();
+    await settle();
+
+    const source = decode(photo);
+    const stored = filterImage(source, { kind: 'gray', strength: 2 });
+    const onScreen = shrunkCopy(stored, 300, 400);
+    try {
+      expect(shown.length).toBe(1);
+      expect(shown[0].width()).toBe(300);
+      expect(meanDifference(shown[0], onScreen)).toBeLessThan(0.05);
+      expect(mockFiles).toEqual(files);
+    } finally {
+      live.stop();
+      for (const image of [source, stored, onScreen, ...shown]) image.dispose();
+    }
+  }, 30000);
+
+  it('shows nothing once stopped, even for a move asked for just before', async () => {
+    mockFiles.set(PAGE1, photographedPage());
+    const shown: SkImage[] = [];
+    const live = strengthPreview(PAGE1, 300, (image) => image && shown.push(image));
+
+    live.preview({ kind: 'clean', strength: 2 });
+    live.stop();
+    await settle();
+    live.preview({ kind: 'clean', strength: 0 });
+    await settle();
+    await live.finish({ kind: 'gray', strength: 1 });
+    await settle();
+
+    expect(shown.length).toBe(0);
+  }, 30000);
+
+  it('warms up without drawing anything, then shows the next move', async () => {
+    mockFiles.set(PAGE1, photographedPage());
+    const shown: SkImage[] = [];
+    const live = strengthPreview(PAGE1, W, (image) => image && shown.push(image));
+
+    live.warm({ kind: 'clean', strength: 1 });
+    await settle();
+    const afterWarm = shown.length;
+    live.preview({ kind: 'clean', strength: 2 });
+    while (!shown.length) await settle();
+    live.stop();
+
+    expect(afterWarm).toBe(0);
+    expect(shown.length).toBe(1);
+    for (const image of shown) image.dispose();
+  }, 30000);
+
+  it('clears the screen and stops when the photo cannot be read', async () => {
+    const shown: (SkImage | null)[] = [];
+    const live = strengthPreview(PAGE1, W, (image) => shown.push(image));
+
+    live.preview({ kind: 'clean', strength: 1 });
+    await settle();
+    live.preview({ kind: 'clean', strength: 2 });
+    await settle();
+
+    expect(shown).toEqual([null]);
+  }, 30000);
+
+  it('on finish of a warm run that has drawn nothing, still draws the stored strength', async () => {
+    const photo = photographedPage();
+    mockFiles.set(PAGE1, photo);
+    const shown: SkImage[] = [];
+    const live = strengthPreview(PAGE1, W, (image) => image && shown.push(image));
+
+    live.warm({ kind: 'clean', strength: 1 });
+    await live.finish({ kind: 'clean', strength: 1.2 });
+    await settle();
+
+    const source = decode(photo);
+    const direct = filterImage(source, { kind: 'clean', strength: 1.2 }, W);
+    try {
+      expect(shown.length).toBe(1);
+      expect(meanDifference(shown[0], direct)).toBeLessThan(0.05);
+      expect(live.isStopped()).toBe(true);
+    } finally {
+      for (const image of [source, direct, ...shown]) image.dispose();
+    }
+  }, 30000);
+
+  it('on finish with the strength already shown, draws no extra pass', async () => {
+    mockFiles.set(PAGE1, photographedPage());
+    const shown: SkImage[] = [];
+    const live = strengthPreview(PAGE1, W, (image) => image && shown.push(image));
+
+    live.preview({ kind: 'clean', strength: 1.5 });
+    while (!shown.length) await settle();
+    await live.finish({ kind: 'clean', strength: 1.5 });
+    await settle();
+
+    expect(shown.length).toBe(1);
+    for (const image of shown) image.dispose();
+  }, 30000);
+
+  it('on finish, shows the strength being stored last, then nothing more', async () => {
+    const photo = photographedPage();
+    mockFiles.set(PAGE1, photo);
+    const shown: SkImage[] = [];
+    const live = strengthPreview(PAGE1, W, (image) => image && shown.push(image));
+
+    live.preview({ kind: 'clean', strength: 0 });
+    await live.finish({ kind: 'gray', strength: 2 });
+    live.preview({ kind: 'clean', strength: 1 });
+    await settle();
+
+    const source = decode(photo);
+    const direct = filterImage(source, { kind: 'gray', strength: 2 }, W);
+    try {
+      expect(shown.length).toBe(1);
+      expect(meanDifference(shown[0], direct)).toBeLessThan(0.05);
+    } finally {
+      for (const image of [source, direct, ...shown]) image.dispose();
+    }
+  }, 30000);
+});
+
 describe('using one page\'s filter on every page', () => {
   const pages = [1, 2, 3].map((n) => `file:///doc/scans/1/p${n}.jpg`);
   const grayStrong: Filter = { kind: 'gray', strength: 2 };
@@ -992,6 +1124,28 @@ describe('table lines', () => {
     const kept = lines.map((l, i) => [l.grey, l.width, strength < 2 || l.grey <= 130 ? darkest[i] <= 200 : true]);
     expect(kept).toEqual(lines.map((l) => [l.grey, l.width, true]));
   }, 60000);
+
+  it('previews pale table lines a narrow screen alone would whiten, as the stored page keeps them', async () => {
+    const drawn = tablePhoto();
+    const bytes = drawn.encodeToBytes(ImageFormat.JPEG, 95);
+    drawn.dispose();
+    mockFiles.set(PAGE1, bytes);
+    const shown: SkImage[] = [];
+    const live = strengthPreview(PAGE1, 400, (image) => image && shown.push(image));
+    live.preview({ kind: 'clean', strength: 1 });
+    while (!shown.length) await settle();
+    live.stop();
+
+    const source = decode(bytes);
+    const stored = filterImage(source, { kind: 'clean', strength: 1 });
+    const onScreen = shrunkCopy(stored, 400, 500);
+    try {
+      // Filtering at the screen's 400 px instead whitens every pale line, which pages under 1000 px get.
+      expect(meanDifference(shown[0], onScreen)).toBeLessThan(0.05);
+    } finally {
+      for (const image of [source, stored, onScreen, ...shown]) image.dispose();
+    }
+  }, 120000);
 
   // FNV-1a over an image's pixels.
   const hash = (image: SkImage) => readPixels(image).reduce((h, v) => Math.imul(h ^ v, 16777619) >>> 0, 2166136261);
