@@ -1187,13 +1187,6 @@ function Capture(props: { pagesBefore: number; onEnd: (pages: string[]) => void 
     <View style={styles.capture}>
       <View style={styles.flex}>
         <CameraView ref={camera} style={styles.flex} facing="back" exposureCompensation={EXPOSURE_BIAS_EV} />
-        <View
-          style={[StyleSheet.absoluteFill, styles.captureOverlay]}
-          pointerEvents="none"
-          accessibilityElementsHidden
-          importantForAccessibility="no-hide-descendants">
-          <View style={styles.guide} />
-        </View>
         <View style={[styles.captureTop, { top: insets.top + 8 }]} pointerEvents="none">
           <Text style={styles.captureChip} maxFontSizeMultiplier={1.5}>{pageLabel}</Text>
         </View>
@@ -1704,8 +1697,6 @@ const styles = StyleSheet.create({
   sheetCancel: { backgroundColor: C.tile },
   sheetCancelText: { fontSize: 16, fontWeight: '600', color: C.text },
   capture: { flex: 1, backgroundColor: '#000' },
-  captureOverlay: { alignItems: 'center', justifyContent: 'center' },
-  guide: { width: '72%', aspectRatio: 3 / 4, borderWidth: 3, borderColor: '#6E97FF', borderRadius: 8, backgroundColor: 'rgba(76,125,255,0.16)' },
   captureTop: { position: 'absolute', left: 0, right: 0, height: 44, alignItems: 'center', justifyContent: 'center' },
   captureHold: { position: 'absolute', left: 0, right: 0, bottom: 20, alignItems: 'center' },
   captureChip: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 14, overflow: 'hidden', backgroundColor: 'rgba(0,0,0,0.5)', fontSize: 13, color: '#fff' },
