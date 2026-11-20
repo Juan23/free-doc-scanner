@@ -94,7 +94,7 @@ half4 main(float2 xy) {
 
 // Under each pixel of the small copy, from 8 x 8 samples of the photo: the darkest sample where both
 // the lightest row and the lightest column are much lighter than it, white unless both are. Letters
-// leave both gaps at stroke ends and between strokes; a straight crease or blank paper leaves at most one.
+// leave both gaps; a straight crease or blank paper leaves at most one.
 const lettersEffect = Skia.RuntimeEffect.Make(`
 uniform shader page;
 uniform float2 cell;
@@ -135,15 +135,14 @@ half4 main(float2 xy) {
   return half4(0, 0, 0, saturate(half(inkThreshold) - min(min(c.r, c.g), c.b)));
 }`)!;
 
-// The same for the letters' darkest pixels, at full ink 0.05 past inkThreshold: thin pale print hardly
-// darkens the small copy, so the ink above misses it. Blurred, lone specks and crease ends stay too sparse to count.
+// The same for the letters' darkest pixels, at full ink 0.05 past inkThreshold: thin pale print hardly darkens the small copy.
 const letterInkEffect = Skia.RuntimeEffect.Make(`
 uniform shader letters;
 uniform shader paper;
 uniform float inkThreshold;
 half4 main(float2 xy) {
   half3 c = letters.eval(xy).rgb / max(paper.eval(xy).rgb, half3(0.05));
-  return half4(0, 0, 0, saturate((half(inkThreshold) - min(min(c.r, c.g), c.b)) * 20));
+  return half4(0, 0, 0, saturate((half(inkThreshold) - min(min(c.r, c.g), c.b)) / 0.05));
 }`)!;
 
 // Divides each pixel by the paper's brightness around it, so shadows and tint turn white, and
@@ -222,8 +221,6 @@ half4 main(float2 xy) {
   half dark = darkOf(c);
   half keep = max(smoothstep(0.45, 0.65, dark), smoothstep(0.02, 0.05, ink.eval(xy).a));
   half text = smoothstep(0.01, 0.04, letterInk.eval(xy).a);
-  // A pale letter's edges are paler than its core; at the strength's own white point they go white.
-  c = mix(c, levelsAt(xy, p, min(0.95, half(whitePoint) + 0.1)), text);
   keep = max(keep, text);
   if (keep < 1 && dark > 0.1) keep = max(keep, max(ridge(xy, p, float2(1, 0)), ridge(xy, p, float2(0, 1))));
   half b = paleAt(xy, p);
@@ -527,7 +524,7 @@ function analysePage(image: SkImage): Analysis {
   }
 }
 
-// The ink mask is 500 px wide, so it stays on the CPU even when the final pass runs on the GPU.
+// The ink masks are SMALL_WIDTH wide, so they stay on the CPU even when the final pass runs on the GPU.
 function filterAnalysed(
   analysis: Analysis,
   filter: Filter,
@@ -546,19 +543,17 @@ function filterAnalysed(
     const smallPageShader = own(clamp(analysis.smallPage, FilterMode.Nearest));
     const coarseShader = own(clamp(analysis.coarse, FilterMode.Nearest));
     const inkShader = own(inkEffect.makeShaderWithChildren([keep.inkThreshold], [smallPageShader, coarseShader]));
-    const spreadInk = own(Skia.Paint());
-    spreadInk.setShader(inkShader);
-    spreadInk.setImageFilter(own(Skia.ImageFilter.MakeBlur(6, 6, TileMode.Clamp, null)));
-    surface.getCanvas().clear(Skia.Color('transparent'));
-    surface.getCanvas().drawRect(Skia.XYWHRect(0, 0, sw, sh), spreadInk);
-    const ink = own(surface.makeImageSnapshot());
+    const spread = (shader: ReturnType<typeof inkEffect.makeShaderWithChildren>) => {
+      const paint = own(Skia.Paint());
+      paint.setShader(shader);
+      paint.setImageFilter(own(Skia.ImageFilter.MakeBlur(6, 6, TileMode.Clamp, null)));
+      surface.getCanvas().clear(Skia.Color('transparent'));
+      surface.getCanvas().drawRect(Skia.XYWHRect(0, 0, sw, sh), paint);
+      return own(surface.makeImageSnapshot());
+    };
+    const ink = spread(inkShader);
     const lettersShader = own(clamp(analysis.letters, FilterMode.Nearest));
-    const spreadLetters = own(Skia.Paint());
-    spreadLetters.setShader(own(letterInkEffect.makeShaderWithChildren([keep.inkThreshold], [lettersShader, coarseShader])));
-    spreadLetters.setImageFilter(own(Skia.ImageFilter.MakeBlur(6, 6, TileMode.Clamp, null)));
-    surface.getCanvas().clear(Skia.Color('transparent'));
-    surface.getCanvas().drawRect(Skia.XYWHRect(0, 0, sw, sh), spreadLetters);
-    const letterInk = own(surface.makeImageSnapshot());
+    const letterInk = spread(own(letterInkEffect.makeShaderWithChildren([keep.inkThreshold], [lettersShader, coarseShader])));
 
     const shrinking = outW < w;
     // Only the final pass is drawn at the output size; a shrunk preview samples the photo mipmapped, as shrunkCopy does.
