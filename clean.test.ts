@@ -1347,7 +1347,7 @@ describe('paper around text on a large photo', () => {
     return { photo, speckles };
   }
 
-  // Share of the speckles beside each line (from a type size above its baseline to a third of one below) that came out white.
+  // Share of the speckles beside each line that came out white.
   function whiteShareByLine(speckles: number[], out: SkImage): number[] {
     const after = readPixels(out);
     return LINES.map(({ size }, i) => {

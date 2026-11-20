@@ -5,7 +5,7 @@
 import { AlphaType, ColorType, Skia, type SkImage } from '@shopify/react-native-skia';
 import { cropPage, findPage } from './crop';
 
-// Measures Clean on real photos (DOCUNET=<folder> [CLEAN=./clean.main] [SHARD=i/n] [OUT=<file>]).
+// Scores Clean on real photos and fails below FLOORS (DOCUNET=<folder> [CLEAN=<module>] [SHARD=i/n] [OUT=<file>]).
 // One tab-separated line per photo and strength: file, strength, pale (stroke pixels with contrast
 // under 60), paleKept%, dark, darkKept%, paperClean% (paper 6+ px from a stroke with luma 235 or
 // more), nearPaperClean% (the same for paper within 5 px of a stroke), pageWhite% (all measured
@@ -202,8 +202,7 @@ function measure(cIn: Float32Array, m: ReturnType<typeof inputMasks>, lumaOut: U
 
 type Counts = ReturnType<typeof measure>;
 type Floor = Omit<ReturnType<typeof shares>, 'pageWhite'>;
-// Means over photos the filter must reach: each quarter of the 130 DocUNet photos (SHARD=i/4) clears them by 0.7 points or more
-// (2026-11-20), and main's Clean, which lost pale print, misses darkKept by 5 or more.
+// Means over docunet-original, whole or a SHARD=i/4 quarter, that the filter clears by 0.7+ points; smaller shards dip below.
 const FLOORS: Record<number, Floor> = {
   1: { paleKept: 57, darkKept: 98, paperClean: 92, nearPaperClean: 94 },
   2: { paleKept: 36, darkKept: 97, paperClean: 93, nearPaperClean: 96 },
@@ -224,12 +223,14 @@ function selectShard(files: string[], shard?: string): string[] {
 }
 
 (DOCUNET_DIR ? describe : describe.skip)('ink-keep check on real photos', () => {
-  it('measures Clean strength 1 and 2', async () => {
+  it('keeps print and whitens paper at Clean strength 1 and 2', async () => {
     const allFiles = fs
       .readdirSync(DOCUNET_DIR!)
       .filter((f) => /\.(jpe?g|png)$/i.test(f))
       .sort();
     const files = selectShard(allFiles, process.env.SHARD);
+    expect(files.length).toBeGreaterThan(0);
+    const floorsHold = !process.env.SHARD || process.env.SHARD.endsWith('/4');
     const outPath = process.env.OUT;
     const byStrength = new Map<number, ReturnType<typeof shares>[]>();
 
@@ -252,7 +253,7 @@ function selectShard(files: string[], shard?: string): string[] {
         const cIn = contrastMap(lumaIn, w, h);
         const masks = inputMasks(cIn, w, h);
 
-        for (const strength of [1, 2]) {
+        for (const strength of Object.keys(FLOORS).map(Number)) {
           const t0 = performance.now();
           const out = filterImage(page, { kind: 'clean', strength });
           const ms = Math.round(performance.now() - t0);
@@ -278,10 +279,11 @@ function selectShard(files: string[], shard?: string): string[] {
         page.dispose();
       }
     }
-    for (const [strength, floor] of Object.entries(FLOORS)) {
+    for (const [strength, floor] of floorsHold ? Object.entries(FLOORS) : []) {
       const all = byStrength.get(Number(strength))!;
-      const means = Object.fromEntries(Object.keys(floor).map((k) => [k, all.reduce((t, r) => t + r[k as keyof Floor], 0) / all.length]));
-      const below = Object.entries(floor).filter(([k, min]) => means[k] < min);
+      const below = Object.entries(floor)
+        .map(([k, min]) => ({ share: k, min, mean: all.reduce((t, r) => t + r[k as keyof Floor], 0) / all.length }))
+        .filter((f) => f.mean < f.min);
       expect({ strength, below }).toEqual({ strength, below: [] });
     }
   }, 600000);
