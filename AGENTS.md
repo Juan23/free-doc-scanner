@@ -54,8 +54,23 @@ The iOS Simulator has no camera, so scanning on iOS needs a real iPhone. An Andr
 - Turning pages is in `upright.ts`: `rotatePage` turns a stored page and its untouched original by quarter turns; `uprightPages` turns sideways or upside-down text pages upright. On a small copy it reads which way is up from two things that must agree: Latin text's ascenders and capitals outnumbering its descenders, and full stops and commas sitting on the baseline with a space after them. Strokes alone would turn upright Cyrillic upside down, since its descenders outnumber its ascenders. Some scripts' letters look like full stops (Hebrew's yod hangs from the top of the line like one upside down); such marks also come inside words, alone between wide gaps in a typewriter font, and right-to-left text has its full stops spaced the other way (a mark with a space each side counts as such only when the wider is at least three times the other, and as neither when it is two to three times: on the small copy, a comma after a y has a 4 px gap before it and 11 after, in 36 px type on a 3024 px photo), so where those together reach two thirds of the full stops it leaves the page as it is. So it does where the strokes lean further than Latin ever does (vowel points under every letter), and where the turned letters would be heavier at the bottom than at the top, as Hebrew's are upside down (their bars run along the top). It leaves a page as it is when unsure (no text, capitals only, other scripts, text without full stops): turning an upright page is worse than missing a turned one. Its tests draw real text with CanvasKit's default typeface, with macOS's Times New Roman, Arial and Courier New (Latin, Cyrillic, Hebrew) when present, and a made-up script of blocks for Hebrew's yod. On 3024 px pages in 24 to 56 px type, Times New Roman and Arial Latin turn upright from 32 and 28 px; Courier New's Latin only at 40 to 48 px (at 48 px not every turn), since at 24 to 28 px its strokes are too thin to find lines, at 32 to 36 px its marks look like another script's, and at 52 to 56 px no full stops are found; Cyrillic and Hebrew are left as they are. `App.tsx` runs it on new pages before the chosen filter, whether that keeps the photo or not, and the page editor has a Rotate button. A page edited on screen (turned or filtered) is shown from its URI plus `?v=<n>`, the edit counter: an Image on screen reloads only when its URI changes, Android's Fresco also caches by the whole URI, and both platforms read a `file://` image by its path, ignoring the query.
 - No accounts, network, cloud or analytics. Don't add any.
 
+## Test photos
+
+Public sets of real document photos for testing `crop.ts` and `clean.ts` on the Mac. They stay out of git (size, and DocUNet has no license) and never ship in the app.
+
+- `smartdoc-sample/`: the sample of the [SmartDoc 2015 Challenge 1](https://zenodo.org/records/1230218) set (CC BY 4.0, credit the authors): `.avi` videos of pages on tables in `input_sample/`, and each frame's true page corners as XML in `input_sample_groundtruth/`. Pull frames out of the videos to test with.
+- `docunet-original/`: 130 [DocUNet](https://www3.cs.stonybrook.edu/~cvl/docunet.html) photos of bent, creased and folded pages, two per page (`64_1.jpg`, `64_2.jpg`).
+- `docunet-scan/`: the 65 flatbed scans of those pages (`64.png`), the right answer for each photo. Others report that the last two photos (page 64) are upside down compared with their scan; check before scoring them.
+
+Where they are:
+
+1. M5 (this Mac, `devbox.local`): `~/Datasets/free-doc-scanner/`
+2. M1 (`ssh m1air`): `/Volumes/ExternalSSD/Datasets/free-doc-scanner/`
+
 ## Rules
 
 - If `ios/` and `android/` directories do not exist, they are generated (Continuous Native Generation). Never create or edit them by hand — configure native behavior in `app.json` and config plugins.
 - Expo Go only includes its bundled native modules. After adding a library with native code, the app needs a development build: `npx expo run:ios|android` locally.
 - Prefer recommended Expo modules over third-party libraries. Docs: https://docs.expo.dev/versions/latest/index.md
+- Core scanning UX comes first (owner, 2026-11-20). Accessibility work is on hold: no screen reader runs, and issues labelled `accessibility` wait. Keep the labels the code already has.
+- Run only the tests for the files a change touches (`npx jest <file>.test.ts`); the full `npm test` runs once, before the pull request.

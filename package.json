@@ -34,6 +34,7 @@
   "private": true,
   "jest": {
     "preset": "jest-expo",
+    "testPathIgnorePatterns": ["/node_modules/", "<rootDir>/.claude/"],
     "transformIgnorePatterns": [
       "/node_modules/(?!(.pnpm|react-native|@react-native|@react-native-community|expo|@expo|@shopify/react-native-skia))",
       "/node_modules/@react-native/babel-preset/"
