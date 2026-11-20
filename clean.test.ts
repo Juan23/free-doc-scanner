@@ -1312,8 +1312,9 @@ describe('paper around text on a large photo', () => {
   ];
   const PITCH = 100;
   const BASELINE = 80;
+  const WHITE_SHARE = 0.95;
 
-  // Printed lines on paper where one pixel in seven is a little darker, like grain or dust.
+  // Printed lines on paper with darker pixels like grain or dust.
   function speckledPage(): { photo: SkImage; speckles: number[] } {
     const H = LINES.length * PITCH + 60;
     const surface = CanvasKit.MakeSurface(W, H);
@@ -1346,7 +1347,7 @@ describe('paper around text on a large photo', () => {
     return { photo, speckles };
   }
 
-  // Share of the speckles beside each line (within its type size above and below) that came out white.
+  // Share of the speckles beside each line (from a type size above its baseline to a third of one below) that came out white.
   function whiteShareByLine(speckles: number[], out: SkImage): number[] {
     const after = readPixels(out);
     return LINES.map(({ size }, i) => {
@@ -1358,12 +1359,12 @@ describe('paper around text on a large photo', () => {
     });
   }
 
-  it('whitens faint grain among printed lines at Clean Normal as it did before pale print was kept', () => {
+  it('whitens faint grain among printed lines at Clean Normal', () => {
     const { photo, speckles } = speckledPage();
     const out = filterImage(photo, { kind: 'clean', strength: 1 });
     const shares = whiteShareByLine(speckles, out);
     out.dispose();
     photo.dispose();
-    expect(shares.map((s) => s > 0.95)).toEqual(LINES.map(() => true));
+    expect(shares.map((s) => s > WHITE_SHARE)).toEqual(LINES.map(() => true));
   }, 120000);
 });
