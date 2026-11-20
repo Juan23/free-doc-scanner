@@ -12,6 +12,7 @@ const fs = require('fs') as {
   readFileSync: (p: string, enc: string) => string;
   readdirSync: (p: string) => string[];
   mkdtempSync: (prefix: string) => string;
+  rmSync: (p: string, opts: { recursive: boolean; force: boolean }) => void;
 };
 const os = require('os') as { tmpdir: () => string };
 const path = require('path') as { join: (...parts: string[]) => string };
@@ -35,8 +36,7 @@ jest.mock('expo-file-system', () => {
   return { File };
 });
 
-// The SmartDoc sample folder; the test runs only when it is given.
-const DATASET_DIR = process.env.SMARTDOC;
+const SMARTDOC_SAMPLE_DIR = process.env.SMARTDOC;
 const FRAME_STEP = 5;
 
 function parseGt(xmlPath: string): Map<number, Quad> {
@@ -88,11 +88,16 @@ function median(nums: number[]): number {
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
-(DATASET_DIR ? it : it.skip)('measures findPage on SmartDoc background00 frames', async () => {
+let framesDir = '';
+afterAll(() => {
+  if (framesDir) fs.rmSync(framesDir, { recursive: true, force: true });
+});
+
+(SMARTDOC_SAMPLE_DIR ? it : it.skip)('measures findPage on SmartDoc background00 frames', async () => {
   const videos = ['datasheet001', 'letter001', 'magazine001'];
-  const vidDir = path.join(DATASET_DIR!, 'input_sample', 'background00');
-  const gtDir = path.join(DATASET_DIR!, 'input_sample_groundtruth', 'background00_gt');
-  const framesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smartdoc-frames-'));
+  const vidDir = path.join(SMARTDOC_SAMPLE_DIR!, 'input_sample', 'background00');
+  const gtDir = path.join(SMARTDOC_SAMPLE_DIR!, 'input_sample_groundtruth', 'background00_gt');
+  framesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smartdoc-frames-'));
 
   const allErrors: number[] = [];
   let totalFrames = 0;
