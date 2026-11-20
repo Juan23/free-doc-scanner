@@ -135,7 +135,7 @@ index 51baba6..34cb64d 100644
          if let mode, view.mode != mode {
            view.mode = mode
 diff --git a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift b/node_modules/expo-camera/ios/Current/CameraSessionManager.swift
-index 9ac259a..38633e5 100644
+index 9ac259a..7ea21b1 100644
 --- a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift
 +++ b/node_modules/expo-camera/ios/Current/CameraSessionManager.swift
 @@ -14,6 +14,7 @@ protocol CameraSessionManagerDelegate: AnyObject {
@@ -176,12 +176,11 @@ index 9ac259a..38633e5 100644
        return
      }
  
-@@ -368,6 +385,8 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
+@@ -368,6 +385,7 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
          session.addInput(deviceInput)
          captureDeviceInput = deviceInput
          updateZoom()
 +        updateExposureCompensation()
-+      updateExposureCompensation()
        }
      } catch {
        delegate.onMountError(["message": "Camera could not be started - \(error.localizedDescription)"])
@@ -222,43 +221,3 @@ index 81b5bd7..aacdfcd 100644
  
    s.test_spec 'Tests' do |test_spec|
      test_spec.source_files = 'Tests/**/*.swift'
-diff --git a/node_modules/expo-camera/src/Camera.types.ts b/node_modules/expo-camera/src/Camera.types.ts
-index 0345aec..a343416 100644
---- a/node_modules/expo-camera/src/Camera.types.ts
-+++ b/node_modules/expo-camera/src/Camera.types.ts
-@@ -413,6 +413,11 @@ export type CameraViewProps = ViewProps & {
-    * @default 0
-    */
-   zoom?: number;
-+  /**
-+   * Exposure compensation in EV stops.
-+   * @default 0
-+   */
-+  exposureCompensation?: number;
-   /**
-    * Used to select image or video output.
-    * @default 'picture'
-@@ -611,6 +616,11 @@ export type CameraNativeProps = {
-   autoFocus?: FocusMode;
-   mute?: boolean;
-   zoom?: number;
-+  /**
-+   * Exposure compensation in EV stops.
-+   * @default 0
-+   */
-+  exposureCompensation?: number;
-   ratio?: CameraRatio;
-   barcodeScannerSettings?: BarcodeSettings;
-   barcodeScannerEnabled?: boolean;
-diff --git a/node_modules/expo-camera/src/CameraView.tsx b/node_modules/expo-camera/src/CameraView.tsx
-index a96c4aa..cdb7d42 100644
---- a/node_modules/expo-camera/src/CameraView.tsx
-+++ b/node_modules/expo-camera/src/CameraView.tsx
-@@ -169,6 +169,7 @@ export default class CameraView extends Component<CameraViewProps> {
- 
-   static defaultProps: CameraViewProps = {
-     zoom: 0,
-+    exposureCompensation: 0,
-     facing: 'back',
-     enableTorch: false,
-     mode: 'picture',

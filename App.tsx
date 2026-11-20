@@ -1012,6 +1012,7 @@ const deleteQuietly = (uri: string) => {
   } catch {}
 };
 
+// Phone measurement in issue #65 will pick the final EV bias.
 const EXPOSURE_BIAS_EV = 0;
 
 // The camera screen. Its photos and pages wait in cache folders that clearScannerCache empties at launch.
