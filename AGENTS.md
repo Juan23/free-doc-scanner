@@ -61,7 +61,7 @@ Public sets of real document photos for testing `crop.ts` and `clean.ts` on the 
 
 - `smartdoc-sample/`: the sample of the [SmartDoc 2015 Challenge 1](https://zenodo.org/records/1230218) set (CC BY 4.0, credit the authors): `.avi` videos of pages on tables in `input_sample/`, and each frame's true page corners as XML in `input_sample_groundtruth/`. Pull frames out of the videos to test with.
 - `docunet-original/`: 130 [DocUNet](https://www3.cs.stonybrook.edu/~cvl/docunet.html) photos of bent, creased and folded pages, two per page (`64_1.jpg`, `64_2.jpg`).
-- `npx jest inkkeep.test.ts` with `DOCUNET=<a photo folder>` scores Clean on each photo with numbers, with no image to look at: the share of pale and dark print kept, and of paper whitened near and away from print. It fails when the means over `docunet-original/`, whole or a `SHARD=i/4` quarter, fall below its `FLOORS`; other `SHARD=i/n` splits only score. `CLEAN=<module>` scores another copy of the filter, `OUT=<file>` collects the lines.
+- `npx jest inkkeep.test.ts` with `DOCUNET=<a photo folder>` scores Clean on each photo without looking at it: the share of pale and dark print kept, and of paper whitened near and away from print. Its `FLOORS` are set for `docunet-original/` only. It fails when the means there, whole or a `SHARD=i/4` quarter, fall below them. Other splits only score. `CLEAN=<module>` scores another copy of the filter, `OUT=<file>` collects the lines.
 - `docunet-scan/`: the 65 flatbed scans of those pages (`64.png`), the right answer for each photo. Others report that the last two photos (page 64) are upside down compared with their scan; check before scoring them.
 
 Where they are:

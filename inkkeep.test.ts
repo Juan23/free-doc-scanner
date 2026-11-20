@@ -202,7 +202,7 @@ function measure(cIn: Float32Array, m: ReturnType<typeof inputMasks>, lumaOut: U
 
 type Counts = ReturnType<typeof measure>;
 type Floor = Omit<ReturnType<typeof shares>, 'pageWhite'>;
-// Means over docunet-original, whole or a SHARD=i/4 quarter, that the filter clears by 0.7+ points; smaller shards dip below.
+// Means over docunet-original, whole or a SHARD=i/4 quarter, that the filter clears by 0.7+ points; shards of another size are only scored.
 const FLOORS: Record<number, Floor> = {
   1: { paleKept: 57, darkKept: 98, paperClean: 92, nearPaperClean: 94 },
   2: { paleKept: 36, darkKept: 97, paperClean: 93, nearPaperClean: 96 },
@@ -215,22 +215,22 @@ function shares(n: Counts) {
   };
 }
 
-function selectShard(files: string[], shard?: string): string[] {
-  if (!shard) return files;
+function selectShard(files: string[], shard?: string): { files: string[]; n: number } {
+  if (!shard) return { files, n: 1 };
   const [i, n] = shard.split('/').map(Number);
   if (!(i >= 1 && i <= n)) throw new Error(`Invalid SHARD "${shard}", expected "i/n"`);
-  return files.filter((_, idx) => idx % n === i - 1);
+  return { files: files.filter((_, idx) => idx % n === i - 1), n };
 }
 
 (DOCUNET_DIR ? describe : describe.skip)('ink-keep check on real photos', () => {
-  it('keeps print and whitens paper at Clean strength 1 and 2', async () => {
+  it('keeps print and whitens paper at each Clean strength in FLOORS', async () => {
     const allFiles = fs
       .readdirSync(DOCUNET_DIR!)
       .filter((f) => /\.(jpe?g|png)$/i.test(f))
       .sort();
-    const files = selectShard(allFiles, process.env.SHARD);
+    const { files, n: shards } = selectShard(allFiles, process.env.SHARD);
     expect(files.length).toBeGreaterThan(0);
-    const floorsHold = !process.env.SHARD || process.env.SHARD.endsWith('/4');
+    const floorsHold = shards === 1 || shards === 4;
     const outPath = process.env.OUT;
     const byStrength = new Map<number, ReturnType<typeof shares>[]>();
 
@@ -279,12 +279,12 @@ function selectShard(files: string[], shard?: string): string[] {
         page.dispose();
       }
     }
-    for (const [strength, floor] of floorsHold ? Object.entries(FLOORS) : []) {
+    const below = Object.entries(floorsHold ? FLOORS : {}).flatMap(([strength, floor]) => {
       const all = byStrength.get(Number(strength))!;
-      const below = Object.entries(floor)
-        .map(([k, min]) => ({ share: k, min, mean: all.reduce((t, r) => t + r[k as keyof Floor], 0) / all.length }))
+      return Object.entries(floor)
+        .map(([k, min]) => ({ strength, share: k, min, mean: all.reduce((t, r) => t + r[k as keyof Floor], 0) / all.length }))
         .filter((f) => f.mean < f.min);
-      expect({ strength, below }).toEqual({ strength, below: [] });
-    }
+    });
+    expect(below).toEqual([]);
   }, 600000);
 });
