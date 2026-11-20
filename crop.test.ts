@@ -37,7 +37,12 @@ const W = 900;
 const H = 1200;
 
 // A phone photo of a tilted page lying on a surface, with lines of text on it.
-function photo(page: Quad, background: string, paper = 'rgb(238,234,222)'): Uint8Array {
+function photo(
+  page: Quad,
+  background: string,
+  paper = 'rgb(238,234,222)',
+  drawBeforePage?: (canvas: SkCanvas) => void,
+): Uint8Array {
   const surface = Skia.Surface.Make(W, H)!;
   const canvas = surface.getCanvas();
   canvas.drawColor(Skia.Color(background));
@@ -45,6 +50,7 @@ function photo(page: Quad, background: string, paper = 'rgb(238,234,222)'): Uint
   const grain = Skia.Paint();
   grain.setColor(Skia.Color('rgba(0,0,0,0.08)'));
   for (let y = 0; y < H; y += 7) canvas.drawRect(Skia.XYWHRect(0, y, W, 2), grain);
+  drawBeforePage?.(canvas);
   const path = Skia.Path.Polygon(page, true);
   const fill = Skia.Paint();
   fill.setColor(Skia.Color(paper));
@@ -55,7 +61,10 @@ function photo(page: Quad, background: string, paper = 'rgb(238,234,222)'): Uint
   canvas.clipPath(path, 1, true);
   for (let y = 250; y < 1000; y += 40) canvas.drawRect(Skia.XYWHRect(200, y, 500, 10), ink);
   canvas.restore();
-  return surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 92);
+  const snapshot = surface.makeImageSnapshot();
+  const bytes = snapshot.encodeToBytes(ImageFormat.JPEG, 92);
+  for (const o of [snapshot, surface, path, grain, fill, ink]) o.dispose();
+  return bytes;
 }
 
 const tilted: Quad = [
@@ -89,8 +98,7 @@ it('finds the corners of a tilted page on a dark desk, in photo pixels, clockwis
   expectNear(found.corners, tilted, 20);
 }, 30000);
 
-// A notebook page on a dark desk in a photo as large as a phone's: 3 px rules every 40 px. On the
-// 300 px copy findPage looks at, the rules are 0.2 px thick and must dim the page a little, not cut it up.
+// A ruled notebook page in a 3024 x 4032 photo: dense rules must not crowd out the page's outer edges.
 it('finds a ruled page in a 3024 x 4032 photo', async () => {
   const big: Quad = [
     { x: 560, y: 470 },
@@ -126,26 +134,51 @@ it('finds a white page on a light grey table', async () => {
 }, 30000);
 
 it('finds a white page on a pale table when a bright glare patch touches the page', async () => {
-  const surface = Skia.Surface.Make(W, H)!;
-  const canvas = surface.getCanvas();
-  canvas.drawColor(Skia.Color('rgb(180,185,195)'));
-  const glare = Skia.Paint();
-  glare.setColor(Skia.Color('rgb(252,252,255)'));
-  glare.setMaskFilter(Skia.MaskFilter.MakeBlur(BlurStyle.Normal, 40, true));
-  canvas.drawOval(Skia.XYWHRect(480, 620, 400, 560), glare);
-  const path = Skia.Path.Polygon(tilted, true);
-  const paper = Skia.Paint();
-  paper.setColor(Skia.Color('rgb(232,229,224)'));
-  canvas.drawPath(path, paper);
-  const ink = Skia.Paint();
-  ink.setColor(Skia.Color('rgb(30,30,35)'));
-  canvas.save();
-  canvas.clipPath(path, 1, true);
-  for (let y = 250; y < 1000; y += 40) canvas.drawRect(Skia.XYWHRect(200, y, 500, 10), ink);
-  canvas.restore();
-  mockFiles.set('file:///cache/photo.jpg', surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 92));
+  mockFiles.set(
+    'file:///cache/photo.jpg',
+    photo(tilted, 'rgb(180,185,195)', 'rgb(232,229,224)', (canvas) => {
+      const glare = Skia.Paint();
+      const blur = Skia.MaskFilter.MakeBlur(BlurStyle.Normal, 40, true);
+      glare.setColor(Skia.Color('rgb(252,252,255)'));
+      glare.setMaskFilter(blur);
+      canvas.drawOval(Skia.XYWHRect(480, 620, 400, 560), glare);
+      for (const o of [glare, blur]) o.dispose();
+    }),
+  );
 
   expectNear((await findPage('file:///cache/photo.jpg')).corners, tilted, 20);
+}, 30000);
+
+it('finds a page with faint near-vertical edges', async () => {
+  const nearVertical: Quad = [
+    { x: 180, y: 280 },
+    { x: 720, y: 360 },
+    { x: 716, y: 880 },
+    { x: 184, y: 800 },
+  ];
+  mockFiles.set('file:///cache/photo.jpg', photo(nearVertical, 'rgb(185,185,185)', 'rgb(215,215,215)'));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, nearVertical, 20);
+}, 30000);
+
+it('clamps found corners to the photo bounds when an intersection lies just outside', async () => {
+  const clipped: Quad = [
+    { x: 150, y: -15 },
+    { x: 750, y: 120 },
+    { x: 700, y: 1050 },
+    { x: 100, y: 950 },
+  ];
+  mockFiles.set('file:///cache/photo.jpg', photo(clipped, 'rgb(92,70,52)'));
+
+  const { corners } = await findPage('file:///cache/photo.jpg');
+
+  for (const p of corners) {
+    expect(p.x).toBeGreaterThanOrEqual(0);
+    expect(p.x).toBeLessThanOrEqual(W);
+    expect(p.y).toBeGreaterThanOrEqual(0);
+    expect(p.y).toBeLessThanOrEqual(H);
+  }
+  expectNear(corners, [{ x: 150, y: 0 }, clipped[1], clipped[2], clipped[3]], 20);
 }, 30000);
 
 it('finds a page that fills nearly the whole photo', async () => {

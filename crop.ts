@@ -38,12 +38,12 @@ for (let t = 0; t < THETA_BINS; t++) {
   SIN[t] = Math.sin(rad);
 }
 
-type Line = { theta: number; rho: number; votes: number };
+type Line = { theta: number; rho: number };
 
 const area = (q: Quad) =>
   Math.abs(q.reduce((s, p, i) => s + p.x * q[(i + 1) % 4].y - q[(i + 1) % 4].x * p.y, 0)) / 2;
 
-/** 3x3 Gaussian-smoothed luma and Sobel gradient magnitude / components. */
+/** Sobel gradients of a 3x3-blurred luma copy, plus the gradient magnitude thinned to 1-px ridges. */
 function edgeMap(rgba: Uint8Array, w: number, h: number) {
   const n = w * h;
   const luma = new Uint8Array(n);
@@ -77,6 +77,8 @@ function edgeMap(rgba: Uint8Array, w: number, h: number) {
       mag[p] = Math.hypot(dx, dy);
     }
   }
+  // tan(67.5°): splits gradient directions into horizontal, vertical, and the two diagonals.
+  const TAN_67_5 = 2.414;
   // Thin edges to 1-px ridges so broad glare gradients do not accumulate votes.
   const nms = new Float32Array(n);
   for (let y = 1; y < h - 1; y++) {
@@ -88,10 +90,10 @@ function edgeMap(rgba: Uint8Array, w: number, h: number) {
       const ay = Math.abs(gy[p]);
       let m1: number;
       let m2: number;
-      if (ax > 2.414 * ay) {
+      if (ax > TAN_67_5 * ay) {
         m1 = mag[p - 1];
         m2 = mag[p + 1];
-      } else if (ay > 2.414 * ax) {
+      } else if (ay > TAN_67_5 * ax) {
         m1 = mag[p - w];
         m2 = mag[p + w];
       } else if ((gx[p] > 0) === (gy[p] > 0)) {
@@ -106,6 +108,11 @@ function edgeMap(rgba: Uint8Array, w: number, h: number) {
   }
   return { gx, gy, nms };
 }
+
+// Cap peaks per 6-degree sector so dense text or ruled lines cannot crowd out perpendicular edges.
+const MAX_LINES_PER_SECTOR = 2;
+// Cap total Hough lines kept so the 4-line search stays bounded.
+const MAX_HOUGH_LINES = 24;
 
 /** Top straight lines found by oriented Hough voting on thinned edges. */
 function houghLines(gx: Int16Array, gy: Int16Array, nms: Float32Array, w: number, h: number): Line[] {
@@ -122,22 +129,16 @@ function houghLines(gx: Int16Array, gy: Int16Array, nms: Float32Array, w: number
       if (deg >= 180) deg -= 180;
       for (let dt = -2; dt <= 2; dt++) {
         let t = deg + dt;
-        let flip = 1;
-        if (t < 0) {
-          t += 180;
-          flip = -1;
-        } else if (t >= 180) {
-          t -= 180;
-          flip = -1;
-        }
-        const r = Math.round((x * COS[t] + y * SIN[t]) * flip) + maxRho;
+        if (t < 0) t += 180;
+        else if (t >= 180) t -= 180;
+        const r = Math.round((x + 0.5) * COS[t] + (y + 0.5) * SIN[t]) + maxRho;
         if (r >= 0 && r < numRho) acc[t * numRho + r] += Math.min(1, nms[p] / 80);
       }
     }
   }
 
   const minVotes = Math.max(14, Math.round(0.10 * Math.min(w, h)));
-  const peaks: Line[] = [];
+  const peaks: (Line & { votes: number })[] = [];
   for (let t = 0; t < THETA_BINS; t++) {
     for (let r = 0; r < numRho; r++) {
       const v = acc[t * numRho + r];
@@ -169,18 +170,20 @@ function houghLines(gx: Int16Array, gy: Int16Array, nms: Float32Array, w: number
     }
   }
   peaks.sort((a, b) => b.votes - a.votes);
-  // Cap peaks per 6-degree sector so dense text or ruled lines cannot crowd out perpendicular edges.
   const sectorCount = new Uint8Array(30);
   const selected: Line[] = [];
-  for (const line of peaks) {
-    const sector = Math.min(29, Math.floor(((line.theta * 180) / Math.PI) / 6));
-    if (sectorCount[sector] >= 2) continue;
+  for (const { theta, rho } of peaks) {
+    const sector = Math.min(29, Math.floor(((theta * 180) / Math.PI) / 6));
+    if (sectorCount[sector] >= MAX_LINES_PER_SECTOR) continue;
     sectorCount[sector]++;
-    selected.push(line);
-    if (selected.length >= 24) break;
+    selected.push({ theta, rho });
+    if (selected.length >= MAX_HOUGH_LINES) break;
   }
   return selected;
 }
+
+// sin(~14.5°): rejects nearly parallel lines whose intersection is unstable.
+const MIN_INTERSECT_DET = 0.25;
 
 function intersect(a: Line, b: Line): Point | null {
   const ca = Math.cos(a.theta);
@@ -188,7 +191,7 @@ function intersect(a: Line, b: Line): Point | null {
   const cb = Math.cos(b.theta);
   const sb = Math.sin(b.theta);
   const det = ca * sb - sa * cb;
-  if (Math.abs(det) < 0.25) return null;
+  if (Math.abs(det) < MIN_INTERSECT_DET) return null;
   return {
     x: (a.rho * sb - b.rho * sa) / det,
     y: (ca * b.rho - cb * a.rho) / det,
@@ -201,7 +204,10 @@ function angleDiffDeg(a: number, b: number): number {
   return d;
 }
 
-/** Order 4 convex points clockwise starting from top-left; null if corners are ~45° ambiguous. */
+// Rejects diamond-shaped quads (~45° rotated) where top-left vs adjacent corners are ambiguous.
+const MIN_CORNER_SUM_GAP = 0.05;
+
+/** Order 4 points clockwise from top-left; null when they are not convex or the corners are ~45° ambiguous. */
 function orderCorners(pts: Quad): Quad | null {
   const cx = (pts[0].x + pts[1].x + pts[2].x + pts[3].x) / 4;
   const cy = (pts[0].y + pts[1].y + pts[2].y + pts[3].y) / 4;
@@ -219,58 +225,29 @@ function orderCorners(pts: Quad): Quad | null {
   const tlSum = ordered[0].x + ordered[0].y;
   const trSum = ordered[1].x + ordered[1].y;
   const blSum = ordered[3].x + ordered[3].y;
-  if (Math.min(trSum - tlSum, blSum - tlSum) < 0.05 * minSide) return null;
+  if (Math.min(trSum - tlSum, blSum - tlSum) < MIN_CORNER_SUM_GAP * minSide) return null;
   return ordered;
 }
 
-/** Fraction of sample points along segment AB that have a perpendicular gradient edge within +-2 px. */
-function sideSupport(
+type EdgeSample = { x: number; y: number; weight: number };
+
+/** Strongest perpendicular-gradient pixels within +-2 px of segment AB, sampled at `steps` points. */
+function sampleSide(
   a: Point,
   b: Point,
   gx: Int16Array,
   gy: Int16Array,
   w: number,
   h: number,
-): number {
+  steps: number,
+): EdgeSample[] {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const len = Math.hypot(dx, dy);
-  if (len < 10) return 0;
+  if (len < 10) return [];
   const nx = -dy / len;
   const ny = dx / len;
-  const steps = 32;
-  let hits = 0;
-  for (let i = 1; i < steps; i++) {
-    const t = i / steps;
-    const sx = a.x + dx * t;
-    const sy = a.y + dy * t;
-    let best = 0;
-    for (let d = -2; d <= 2; d++) {
-      const ix = Math.max(1, Math.min(w - 2, Math.round(sx + nx * d)));
-      const iy = Math.max(1, Math.min(h - 2, Math.round(sy + ny * d)));
-      const p = iy * w + ix;
-      const g = Math.abs(gx[p] * nx + gy[p] * ny);
-      if (g > best) best = g;
-    }
-    if (best >= MIN_EDGE) hits++;
-  }
-  return hits / (steps - 1);
-}
-
-/** Fit a sub-pixel line to the strongest perpendicular-gradient pixels near segment AB. */
-function refineLine(a: Point, b: Point, gx: Int16Array, gy: Int16Array, w: number, h: number): Line | null {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const len = Math.hypot(dx, dy);
-  if (len < 10) return null;
-  const nx = -dy / len;
-  const ny = dx / len;
-  const steps = Math.max(16, Math.round(len));
-  const pts: { x: number; y: number; weight: number }[] = [];
-  let sumW = 0;
-  let mx = 0;
-  let my = 0;
-
+  const samples: EdgeSample[] = [];
   for (let i = 1; i < steps; i++) {
     const t = i / steps;
     const sx = a.x + dx * t;
@@ -279,8 +256,8 @@ function refineLine(a: Point, b: Point, gx: Int16Array, gy: Int16Array, w: numbe
     let bx = 0;
     let by = 0;
     for (let d = -2; d <= 2; d++) {
-      const ix = Math.max(1, Math.min(w - 2, Math.round(sx + nx * d)));
-      const iy = Math.max(1, Math.min(h - 2, Math.round(sy + ny * d)));
+      const ix = Math.max(1, Math.min(w - 2, Math.floor(sx + nx * d)));
+      const iy = Math.max(1, Math.min(h - 2, Math.floor(sy + ny * d)));
       const p = iy * w + ix;
       const g = Math.abs(gx[p] * nx + gy[p] * ny);
       if (g > bestG) {
@@ -289,12 +266,28 @@ function refineLine(a: Point, b: Point, gx: Int16Array, gy: Int16Array, w: numbe
         by = iy + 0.5;
       }
     }
-    if (bestG >= MIN_EDGE) {
-      pts.push({ x: bx, y: by, weight: bestG });
-      sumW += bestG;
-      mx += bestG * bx;
-      my += bestG * by;
-    }
+    if (bestG >= MIN_EDGE) samples.push({ x: bx, y: by, weight: bestG });
+  }
+  return samples;
+}
+
+/** Fraction of sample points along segment AB that have a perpendicular gradient edge within +-2 px. */
+function sideSupport(a: Point, b: Point, gx: Int16Array, gy: Int16Array, w: number, h: number): number {
+  const steps = 32;
+  return sampleSide(a, b, gx, gy, w, h, steps).length / (steps - 1);
+}
+
+/** Fit a sub-pixel line to the strongest perpendicular-gradient pixels near segment AB. */
+function refineLine(a: Point, b: Point, gx: Int16Array, gy: Int16Array, w: number, h: number): Line | null {
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  const pts = sampleSide(a, b, gx, gy, w, h, Math.max(16, Math.round(len)));
+  let sumW = 0;
+  let mx = 0;
+  let my = 0;
+  for (const pt of pts) {
+    sumW += pt.weight;
+    mx += pt.weight * pt.x;
+    my += pt.weight * pt.y;
   }
   if (pts.length < 8 || sumW === 0) return null;
   mx /= sumW;
@@ -311,8 +304,13 @@ function refineLine(a: Point, b: Point, gx: Int16Array, gy: Int16Array, w: numbe
     sxy += pt.weight * px * py;
   }
   const theta = 0.5 * Math.atan2(2 * sxy, sxx - syy) + Math.PI / 2;
-  return { theta, rho: mx * Math.cos(theta) + my * Math.sin(theta), votes: pts.length };
+  return { theta, rho: mx * Math.cos(theta) + my * Math.sin(theta) };
 }
+
+// Rejects pages longer than 3.5:1, e.g. receipts or thin strips.
+const MAX_SIDE_RATIO = 3.5;
+// Minimum fraction of a candidate side that must sit on a real edge.
+const MIN_SIDE_SUPPORT = 0.45;
 
 /** The page's corners in a small RGBA copy, or null when no page stands out from what is around it. */
 function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
@@ -357,7 +355,7 @@ function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
           const q = orderCorners(raw);
           if (!q || area(q) < minArea) continue;
           const sides = [0, 1, 2, 3].map((s) => Math.hypot(q[(s + 1) % 4].x - q[s].x, q[(s + 1) % 4].y - q[s].y));
-          if (Math.max(...sides) > 3.5 * Math.min(...sides)) continue;
+          if (Math.max(...sides) > MAX_SIDE_RATIO * Math.min(...sides)) continue;
 
           let score = 0;
           let ok = true;
@@ -365,7 +363,7 @@ function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
             const a = q[s];
             const b = q[(s + 1) % 4];
             const sup = sideSupport(a, b, gx, gy, w, h);
-            if (sup < 0.45) {
+            if (sup < MIN_SIDE_SUPPORT) {
               ok = false;
               break;
             }
@@ -381,12 +379,13 @@ function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
   }
 
   if (!bestQuad) return null;
-  const refinedLines = [0, 1, 2, 3].map((s) => refineLine(bestQuad[s], bestQuad[(s + 1) % 4], gx, gy, w, h));
-  if (refinedLines.every((l) => l !== null)) {
-    const r0 = intersect(refinedLines[3]!, refinedLines[0]!);
-    const r1 = intersect(refinedLines[0]!, refinedLines[1]!);
-    const r2 = intersect(refinedLines[1]!, refinedLines[2]!);
-    const r3 = intersect(refinedLines[2]!, refinedLines[3]!);
+  const refined = [0, 1, 2, 3].map((s) => refineLine(bestQuad[s], bestQuad[(s + 1) % 4], gx, gy, w, h));
+  const allLines = (ls: (Line | null)[]): ls is Line[] => ls.every((l) => l !== null);
+  if (allLines(refined)) {
+    const r0 = intersect(refined[3], refined[0]);
+    const r1 = intersect(refined[0], refined[1]);
+    const r2 = intersect(refined[1], refined[2]);
+    const r3 = intersect(refined[2], refined[3]);
     if (r0 && r1 && r2 && r3) {
       const rq = orderCorners([r0, r1, r2, r3]);
       if (rq && area(rq) >= minArea) return rq;
@@ -408,8 +407,14 @@ export async function findPage(uri: string): Promise<FoundPage> {
   for (const o of [image, small]) o.dispose();
   if (!rgba) throw new Error('unreadable page');
 
+  const clamp = (v: number, max: number) => Math.max(0, Math.min(max, v));
   const found = pageCorners(rgba, sw, sh);
-  const corners = found ? (found.map((p) => ({ x: (p.x * width) / sw, y: (p.y * height) / sh })) as Quad) : whole(width, height);
+  const corners = found
+    ? (found.map((p) => ({
+        x: clamp((p.x * width) / sw, width),
+        y: clamp((p.y * height) / sh, height),
+      })) as Quad)
+    : whole(width, height);
   return { width, height, corners };
 }
 
