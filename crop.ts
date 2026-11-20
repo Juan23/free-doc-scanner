@@ -28,114 +28,370 @@ export function isConvex(q: Quad): boolean {
 }
 
 const SEARCH_LONG_SIDE = 300;
-
-/** The brightness that best splits the photo into a dark and a light group (Otsu's method), or -1 when all of it is one brightness. */
-function splitLevel(luma: Uint8Array): number {
-  const hist = new Array(256).fill(0);
-  for (const v of luma) hist[v]++;
-  let sum = 0;
-  for (let i = 0; i < 256; i++) sum += i * hist[i];
-  let best = 0;
-  let level = -1;
-  let darkCount = 0;
-  let darkSum = 0;
-  for (let t = 0; t < 256; t++) {
-    darkCount += hist[t];
-    darkSum += t * hist[t];
-    const lightCount = luma.length - darkCount;
-    if (!darkCount || !lightCount) continue;
-    const gap = darkSum / darkCount - (sum - darkSum) / lightCount;
-    const score = darkCount * lightCount * gap * gap;
-    if (score > best) {
-      best = score;
-      level = t;
-    }
-  }
-  return level;
+const MIN_EDGE = 24;
+const THETA_BINS = 180;
+const COS = new Float32Array(THETA_BINS);
+const SIN = new Float32Array(THETA_BINS);
+for (let t = 0; t < THETA_BINS; t++) {
+  const rad = (t * Math.PI) / THETA_BINS;
+  COS[t] = Math.cos(rad);
+  SIN[t] = Math.sin(rad);
 }
 
-/** Indexes of the largest connected group of pixels that are set in `mask`. */
-function largestRegion(mask: Uint8Array, w: number, h: number): number[] {
-  const seen = new Uint8Array(mask.length);
-  let largest: number[] = [];
-  for (let start = 0; start < mask.length; start++) {
-    if (!mask[start] || seen[start]) continue;
-    const region = [start];
-    seen[start] = 1;
-    for (let i = 0; i < region.length; i++) {
-      const p = region[i];
-      const x = p % w;
-      for (const q of [x > 0 ? p - 1 : -1, x < w - 1 ? p + 1 : -1, p - w, p + w]) {
-        if (q >= 0 && q < mask.length && mask[q] && !seen[q]) {
-          seen[q] = 1;
-          region.push(q);
-        }
-      }
-    }
-    if (region.length > largest.length) largest = region;
-  }
-  return largest;
-}
+type Line = { theta: number; rho: number };
 
 const area = (q: Quad) =>
   Math.abs(q.reduce((s, p, i) => s + p.x * q[(i + 1) % 4].y - q[(i + 1) % 4].x * p.y, 0)) / 2;
 
-/** The page's corners in a small RGBA copy, or null when no page stands out from what is around it. */
-function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
-  const luma = new Uint8Array(w * h);
-  for (let i = 0; i < luma.length; i++) {
+/** Sobel gradients of a 3x3-blurred luma copy, plus the gradient magnitude thinned to 1-px ridges. */
+function edgeMap(rgba: Uint8Array, w: number, h: number) {
+  const n = w * h;
+  const luma = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
     luma[i] = (rgba[i * 4] * 77 + rgba[i * 4 + 1] * 150 + rgba[i * 4 + 2] * 29) >> 8;
   }
-  // On a light table the first split can part ink from paper and table, so the "page" is nearly
-  // the whole photo. Splitting the light side again then parts paper from table; if it finds no
-  // smaller page, the page does fill the photo.
-  let filling: Quad | null = null;
-  let level = splitLevel(luma);
-  for (let tries = 0; tries < 3 && level >= 0; tries++) {
-    const corners = brightPage(luma, level, w, h);
-    if (corners && area(corners) < 0.95 * w * h) return corners;
-    filling ??= corners;
-    level = splitLevel(luma.filter((v) => v > level));
+  const blur = new Uint8Array(luma);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const p = y * w + x;
+      blur[p] =
+        (luma[p - w - 1] + 2 * luma[p - w] + luma[p - w + 1] +
+          2 * luma[p - 1] + 4 * luma[p] + 2 * luma[p + 1] +
+          luma[p + w - 1] + 2 * luma[p + w] + luma[p + w + 1]) >> 4;
+    }
   }
-  return filling;
+  const gx = new Int16Array(n);
+  const gy = new Int16Array(n);
+  const mag = new Float32Array(n);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const p = y * w + x;
+      const dx =
+        blur[p - w + 1] + 2 * blur[p + 1] + blur[p + w + 1] -
+        (blur[p - w - 1] + 2 * blur[p - 1] + blur[p + w - 1]);
+      const dy =
+        blur[p + w - 1] + 2 * blur[p + w] + blur[p + w + 1] -
+        (blur[p - w - 1] + 2 * blur[p - w] + blur[p - w + 1]);
+      gx[p] = dx;
+      gy[p] = dy;
+      mag[p] = Math.hypot(dx, dy);
+    }
+  }
+  // tan(67.5°): splits gradient directions into horizontal, vertical, and the two diagonals.
+  const TAN_67_5 = 2.414;
+  // Thin edges to 1-px ridges so broad glare gradients do not accumulate votes.
+  const nms = new Float32Array(n);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const p = y * w + x;
+      const m = mag[p];
+      if (m < MIN_EDGE) continue;
+      const ax = Math.abs(gx[p]);
+      const ay = Math.abs(gy[p]);
+      let m1: number;
+      let m2: number;
+      if (ax > TAN_67_5 * ay) {
+        m1 = mag[p - 1];
+        m2 = mag[p + 1];
+      } else if (ay > TAN_67_5 * ax) {
+        m1 = mag[p - w];
+        m2 = mag[p + w];
+      } else if ((gx[p] > 0) === (gy[p] > 0)) {
+        m1 = mag[p - w - 1];
+        m2 = mag[p + w + 1];
+      } else {
+        m1 = mag[p - w + 1];
+        m2 = mag[p + w - 1];
+      }
+      if (m >= m1 && m >= m2) nms[p] = m;
+    }
+  }
+  return { gx, gy, nms };
 }
 
-/** The corners of the largest region brighter than `level`, if it looks like a page. */
-function brightPage(luma: Uint8Array, level: number, w: number, h: number): Quad | null {
-  const region = largestRegion(luma.map((v) => (v > level ? 1 : 0)), w, h);
-  // The corners are the region's furthest points along the two diagonals.
-  const corners: Quad = [
-    { x: 0, y: 0 },
-    { x: 0, y: 0 },
-    { x: 0, y: 0 },
-    { x: 0, y: 0 },
-  ];
-  const best = [Infinity, -Infinity, -Infinity, Infinity];
-  for (const p of region) {
-    const x = (p % w) + 0.5;
-    const y = Math.floor(p / w) + 0.5;
-    const along = [x + y, x - y, x + y, x - y];
-    along.forEach((v, i) => {
-      if (i === 0 || i === 3 ? v < best[i] : v > best[i]) {
-        best[i] = v;
-        corners[i] = { x, y };
+// Cap peaks per 6-degree sector so dense text or ruled lines cannot crowd out perpendicular edges.
+const MAX_LINES_PER_SECTOR = 2;
+// Cap total Hough lines kept so the 4-line search stays bounded.
+const MAX_HOUGH_LINES = 24;
+
+/** Top straight lines found by oriented Hough voting on thinned edges. */
+function houghLines(gx: Int16Array, gy: Int16Array, nms: Float32Array, w: number, h: number): Line[] {
+  const maxRho = Math.ceil(Math.hypot(w, h));
+  const numRho = maxRho * 2 + 1;
+  const acc = new Float32Array(THETA_BINS * numRho);
+
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const p = y * w + x;
+      if (nms[p] < MIN_EDGE) continue;
+      let deg = Math.round((Math.atan2(gy[p], gx[p]) * 180) / Math.PI);
+      if (deg < 0) deg += 180;
+      if (deg >= 180) deg -= 180;
+      for (let dt = -2; dt <= 2; dt++) {
+        let t = deg + dt;
+        if (t < 0) t += 180;
+        else if (t >= 180) t -= 180;
+        const r = Math.round((x + 0.5) * COS[t] + (y + 0.5) * SIN[t]) + maxRho;
+        if (r >= 0 && r < numRho) acc[t * numRho + r] += Math.min(1, nms[p] / 80);
       }
-    });
+    }
   }
-  // A page fills its outline, text gaps included (so each row counts edge to edge), and nothing
-  // of it lies outside. A rounded blob of glare spills past its outline, and so does a page
-  // turned about 45 degrees, whose corners along the diagonals are ambiguous.
-  const left = new Array(h).fill(Infinity);
-  const right = new Array(h).fill(-Infinity);
-  for (const p of region) {
-    const y = Math.floor(p / w);
-    left[y] = Math.min(left[y], p % w);
-    right[y] = Math.max(right[y], p % w);
+
+  const minVotes = Math.max(14, Math.round(0.10 * Math.min(w, h)));
+  const peaks: (Line & { votes: number })[] = [];
+  for (let t = 0; t < THETA_BINS; t++) {
+    for (let r = 0; r < numRho; r++) {
+      const v = acc[t * numRho + r];
+      if (v < minVotes) continue;
+      let best = true;
+      for (let dt = -5; dt <= 5 && best; dt++) {
+        let tt = t + dt;
+        let mirror = false;
+        if (tt < 0) {
+          tt += 180;
+          mirror = true;
+        } else if (tt >= 180) {
+          tt -= 180;
+          mirror = true;
+        }
+        const rrCenter = mirror ? numRho - 1 - r : r;
+        for (let dr = -8; dr <= 8; dr++) {
+          if (dt === 0 && dr === 0) continue;
+          const rr = rrCenter + dr;
+          if (rr < 0 || rr >= numRho) continue;
+          const nv = acc[tt * numRho + rr];
+          if (nv > v || (nv === v && (tt < t || (tt === t && rr < r)))) {
+            best = false;
+            break;
+          }
+        }
+      }
+      if (best) peaks.push({ theta: (t * Math.PI) / THETA_BINS, rho: r - maxRho, votes: v });
+    }
   }
-  const filled = left.reduce((s, l, y) => (l === Infinity ? s : s + right[y] - l + 1), 0);
-  const outline = area(corners);
-  if (outline < 0.1 * w * h || filled < 0.9 * outline || outline < 0.9 * filled) return null;
-  return corners;
+  peaks.sort((a, b) => b.votes - a.votes);
+  const sectorCount = new Uint8Array(30);
+  const selected: Line[] = [];
+  for (const { theta, rho } of peaks) {
+    const sector = Math.min(29, Math.floor(((theta * 180) / Math.PI) / 6));
+    if (sectorCount[sector] >= MAX_LINES_PER_SECTOR) continue;
+    sectorCount[sector]++;
+    selected.push({ theta, rho });
+    if (selected.length >= MAX_HOUGH_LINES) break;
+  }
+  return selected;
+}
+
+// sin(~14.5°): rejects nearly parallel lines whose intersection is unstable.
+const MIN_INTERSECT_DET = 0.25;
+
+function intersect(a: Line, b: Line): Point | null {
+  const ca = Math.cos(a.theta);
+  const sa = Math.sin(a.theta);
+  const cb = Math.cos(b.theta);
+  const sb = Math.sin(b.theta);
+  const det = ca * sb - sa * cb;
+  if (Math.abs(det) < MIN_INTERSECT_DET) return null;
+  return {
+    x: (a.rho * sb - b.rho * sa) / det,
+    y: (ca * b.rho - cb * a.rho) / det,
+  };
+}
+
+function angleDiffDeg(a: number, b: number): number {
+  let d = (Math.abs(a - b) * 180) / Math.PI;
+  if (d > 90) d = 180 - d;
+  return d;
+}
+
+// Rejects diamond-shaped quads (~45° rotated) where top-left vs adjacent corners are ambiguous.
+const MIN_CORNER_SUM_GAP = 0.05;
+
+/** Order 4 points clockwise from top-left; null when they are not convex or the corners are ~45° ambiguous. */
+function orderCorners(pts: Quad): Quad | null {
+  const cx = (pts[0].x + pts[1].x + pts[2].x + pts[3].x) / 4;
+  const cy = (pts[0].y + pts[1].y + pts[2].y + pts[3].y) / 4;
+  const sorted = [...pts].sort((a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx)) as Quad;
+  if (!isConvex(sorted)) return null;
+  const sums = sorted.map((p) => p.x + p.y);
+  let tlIdx = 0;
+  for (let i = 1; i < 4; i++) {
+    if (sums[i] < sums[tlIdx]) tlIdx = i;
+  }
+  const ordered = [0, 1, 2, 3].map((i) => sorted[(tlIdx + i) % 4]) as Quad;
+  const minSide = Math.min(
+    ...[0, 1, 2, 3].map((i) => Math.hypot(ordered[(i + 1) % 4].x - ordered[i].x, ordered[(i + 1) % 4].y - ordered[i].y)),
+  );
+  const tlSum = ordered[0].x + ordered[0].y;
+  const trSum = ordered[1].x + ordered[1].y;
+  const blSum = ordered[3].x + ordered[3].y;
+  if (Math.min(trSum - tlSum, blSum - tlSum) < MIN_CORNER_SUM_GAP * minSide) return null;
+  return ordered;
+}
+
+type EdgeSample = { x: number; y: number; weight: number };
+
+/** Strongest perpendicular-gradient pixels within +-2 px of segment AB, sampled at `steps` points. */
+function sampleSide(
+  a: Point,
+  b: Point,
+  gx: Int16Array,
+  gy: Int16Array,
+  w: number,
+  h: number,
+  steps: number,
+): EdgeSample[] {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 10) return [];
+  const nx = -dy / len;
+  const ny = dx / len;
+  const samples: EdgeSample[] = [];
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    const sx = a.x + dx * t;
+    const sy = a.y + dy * t;
+    let bestG = 0;
+    let bx = 0;
+    let by = 0;
+    for (let d = -2; d <= 2; d++) {
+      const ix = Math.max(1, Math.min(w - 2, Math.floor(sx + nx * d)));
+      const iy = Math.max(1, Math.min(h - 2, Math.floor(sy + ny * d)));
+      const p = iy * w + ix;
+      const g = Math.abs(gx[p] * nx + gy[p] * ny);
+      if (g > bestG) {
+        bestG = g;
+        bx = ix + 0.5;
+        by = iy + 0.5;
+      }
+    }
+    if (bestG >= MIN_EDGE) samples.push({ x: bx, y: by, weight: bestG });
+  }
+  return samples;
+}
+
+/** Fraction of sample points along segment AB that have a perpendicular gradient edge within +-2 px. */
+function sideSupport(a: Point, b: Point, gx: Int16Array, gy: Int16Array, w: number, h: number): number {
+  const steps = 32;
+  return sampleSide(a, b, gx, gy, w, h, steps).length / (steps - 1);
+}
+
+/** Fit a sub-pixel line to the strongest perpendicular-gradient pixels near segment AB. */
+function refineLine(a: Point, b: Point, gx: Int16Array, gy: Int16Array, w: number, h: number): Line | null {
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  const pts = sampleSide(a, b, gx, gy, w, h, Math.max(16, Math.round(len)));
+  let sumW = 0;
+  let mx = 0;
+  let my = 0;
+  for (const pt of pts) {
+    sumW += pt.weight;
+    mx += pt.weight * pt.x;
+    my += pt.weight * pt.y;
+  }
+  if (pts.length < 8 || sumW === 0) return null;
+  mx /= sumW;
+  my /= sumW;
+
+  let sxx = 0;
+  let syy = 0;
+  let sxy = 0;
+  for (const pt of pts) {
+    const px = pt.x - mx;
+    const py = pt.y - my;
+    sxx += pt.weight * px * px;
+    syy += pt.weight * py * py;
+    sxy += pt.weight * px * py;
+  }
+  const theta = 0.5 * Math.atan2(2 * sxy, sxx - syy) + Math.PI / 2;
+  return { theta, rho: mx * Math.cos(theta) + my * Math.sin(theta) };
+}
+
+// Rejects pages longer than 3.5:1, e.g. receipts or thin strips.
+const MAX_SIDE_RATIO = 3.5;
+// Minimum fraction of a candidate side that must sit on a real edge.
+const MIN_SIDE_SUPPORT = 0.45;
+
+/** The page's corners in a small RGBA copy, or null when no page stands out from what is around it. */
+function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
+  const { gx, gy, nms } = edgeMap(rgba, w, h);
+  const lines = houghLines(gx, gy, nms, w, h);
+  if (lines.length < 4) return null;
+
+  const minGap = 0.15 * Math.min(w, h);
+  const margin = 8;
+  const minArea = 0.04 * w * h;
+  const cx = w / 2;
+  const cy = h / 2;
+  const distFromCenter = (l: Line) => cx * Math.cos(l.theta) + cy * Math.sin(l.theta) - l.rho;
+  const pairGap = (a: Line, b: Line) => {
+    const sameDir = Math.cos(a.theta) * Math.cos(b.theta) + Math.sin(a.theta) * Math.sin(b.theta) >= 0;
+    return Math.abs(distFromCenter(a) - (sameDir ? 1 : -1) * distFromCenter(b));
+  };
+  let bestQuad: Quad | null = null;
+  let bestScore = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    for (let j = i + 1; j < lines.length; j++) {
+      if (angleDiffDeg(lines[i].theta, lines[j].theta) > 30) continue;
+      if (pairGap(lines[i], lines[j]) < minGap) continue;
+
+      for (let k = i + 1; k < lines.length; k++) {
+        if (k === j) continue;
+        if (angleDiffDeg(lines[i].theta, lines[k].theta) < 40) continue;
+        for (let l = k + 1; l < lines.length; l++) {
+          if (l === j) continue;
+          if (angleDiffDeg(lines[k].theta, lines[l].theta) > 30) continue;
+          if (pairGap(lines[k], lines[l]) < minGap) continue;
+
+          const p0 = intersect(lines[i], lines[k]);
+          const p1 = intersect(lines[i], lines[l]);
+          const p2 = intersect(lines[j], lines[l]);
+          const p3 = intersect(lines[j], lines[k]);
+          if (!p0 || !p1 || !p2 || !p3) continue;
+
+          const raw: Quad = [p0, p1, p2, p3];
+          if (raw.some((p) => p.x < -margin || p.x > w + margin || p.y < -margin || p.y > h + margin)) continue;
+          const q = orderCorners(raw);
+          if (!q || area(q) < minArea) continue;
+          const sides = [0, 1, 2, 3].map((s) => Math.hypot(q[(s + 1) % 4].x - q[s].x, q[(s + 1) % 4].y - q[s].y));
+          if (Math.max(...sides) > MAX_SIDE_RATIO * Math.min(...sides)) continue;
+
+          let score = 0;
+          let ok = true;
+          for (let s = 0; s < 4; s++) {
+            const a = q[s];
+            const b = q[(s + 1) % 4];
+            const sup = sideSupport(a, b, gx, gy, w, h);
+            if (sup < MIN_SIDE_SUPPORT) {
+              ok = false;
+              break;
+            }
+            score += sup * Math.hypot(b.x - a.x, b.y - a.y);
+          }
+          if (ok && score > bestScore) {
+            bestScore = score;
+            bestQuad = q;
+          }
+        }
+      }
+    }
+  }
+
+  if (!bestQuad) return null;
+  const refined = [0, 1, 2, 3].map((s) => refineLine(bestQuad[s], bestQuad[(s + 1) % 4], gx, gy, w, h));
+  const allLines = (ls: (Line | null)[]): ls is Line[] => ls.every((l) => l !== null);
+  if (allLines(refined)) {
+    const r0 = intersect(refined[3], refined[0]);
+    const r1 = intersect(refined[0], refined[1]);
+    const r2 = intersect(refined[1], refined[2]);
+    const r3 = intersect(refined[2], refined[3]);
+    if (r0 && r1 && r2 && r3) {
+      const rq = orderCorners([r0, r1, r2, r3]);
+      if (rq && area(rq) >= minArea) return rq;
+    }
+  }
+  return bestQuad;
 }
 
 /** When no page stands out, the corners are the whole photo's. */
@@ -151,8 +407,14 @@ export async function findPage(uri: string): Promise<FoundPage> {
   for (const o of [image, small]) o.dispose();
   if (!rgba) throw new Error('unreadable page');
 
+  const clamp = (v: number, max: number) => Math.max(0, Math.min(max, v));
   const found = pageCorners(rgba, sw, sh);
-  const corners = found ? (found.map((p) => ({ x: (p.x * width) / sw, y: (p.y * height) / sh })) as Quad) : whole(width, height);
+  const corners = found
+    ? (found.map((p) => ({
+        x: clamp((p.x * width) / sw, width),
+        y: clamp((p.y * height) / sh, height),
+      })) as Quad)
+    : whole(width, height);
   return { width, height, corners };
 }
 

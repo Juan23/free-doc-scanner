@@ -1,0 +1,223 @@
+diff --git a/node_modules/expo-camera/android/src/main/java/expo/modules/camera/CameraViewModule.kt b/node_modules/expo-camera/android/src/main/java/expo/modules/camera/CameraViewModule.kt
+index 62a1808..d07cd5d 100644
+--- a/node_modules/expo-camera/android/src/main/java/expo/modules/camera/CameraViewModule.kt
++++ b/node_modules/expo-camera/android/src/main/java/expo/modules/camera/CameraViewModule.kt
+@@ -360,6 +360,18 @@ class CameraViewModule : Module() {
+         }
+       }
+ 
++      Prop("exposureCompensation") { view, ev: Float? ->
++        ev?.let {
++          if (view.exposureCompensation != it) {
++            view.exposureCompensation = it
++          }
++        } ?: run {
++          if (view.exposureCompensation != 0f) {
++            view.exposureCompensation = 0f
++          }
++        }
++      }
++
+       Prop("mode") { view, mode: CameraMode? ->
+         mode?.let {
+           if (view.cameraMode != it) {
+diff --git a/node_modules/expo-camera/android/src/main/java/expo/modules/camera/ExpoCameraView.kt b/node_modules/expo-camera/android/src/main/java/expo/modules/camera/ExpoCameraView.kt
+index a676d64..f5bc569 100644
+--- a/node_modules/expo-camera/android/src/main/java/expo/modules/camera/ExpoCameraView.kt
++++ b/node_modules/expo-camera/android/src/main/java/expo/modules/camera/ExpoCameraView.kt
+@@ -169,6 +169,12 @@ class ExpoCameraView(
+       setCameraZoom(value)
+     }
+ 
++  var exposureCompensation: Float = 0f
++    set(value) {
++      field = value
++      setCameraExposureCompensation(value)
++    }
++
+   var autoFocus: FocusMode = FocusMode.OFF
+     set(value) {
+       field = value
+@@ -558,6 +564,7 @@ class ExpoCameraView(
+     }
+     // Set the previous zoom level after recreating the camera
+     setCameraZoom(zoom)
++    setCameraExposureCompensation(exposureCompensation)
+     this.cameraProvider = cameraProvider
+   }
+ 
+@@ -685,6 +692,17 @@ class ExpoCameraView(
+     camera?.cameraControl?.setZoomRatio(targetZoomRatio)
+   }
+ 
++  private fun setCameraExposureCompensation(ev: Float) {
++    val cam = camera ?: return
++    val state = cam.cameraInfo.exposureState
++    if (!state.isExposureCompensationSupported) return
++    val step = state.exposureCompensationStep.toFloat()
++    if (step <= 0f) return
++    val range = state.exposureCompensationRange
++    val index = Math.round(ev / step).coerceIn(range.lower, range.upper)
++    cam.cameraControl.setExposureCompensationIndex(index)
++  }
++
+   private fun observeCameraState(cameraInfo: CameraInfo) {
+     cameraInfo.cameraState.observe(currentActivity) {
+       when (it.type) {
+diff --git a/node_modules/expo-camera/build/Camera.types.d.ts b/node_modules/expo-camera/build/Camera.types.d.ts
+index 0be9079..4d05d8d 100644
+--- a/node_modules/expo-camera/build/Camera.types.d.ts
++++ b/node_modules/expo-camera/build/Camera.types.d.ts
+@@ -377,6 +377,7 @@ export type CameraViewProps = ViewProps & {
+      * @default 0
+      */
+     zoom?: number;
++    exposureCompensation?: number;
+     /**
+      * Used to select image or video output.
+      * @default 'picture'
+@@ -577,6 +578,7 @@ export type CameraNativeProps = {
+     autoFocus?: FocusMode;
+     mute?: boolean;
+     zoom?: number;
++    exposureCompensation?: number;
+     ratio?: CameraRatio;
+     barcodeScannerSettings?: BarcodeSettings;
+     barcodeScannerEnabled?: boolean;
+diff --git a/node_modules/expo-camera/build/CameraView.js b/node_modules/expo-camera/build/CameraView.js
+index f00bbe0..f8cac18 100644
+--- a/node_modules/expo-camera/build/CameraView.js
++++ b/node_modules/expo-camera/build/CameraView.js
+@@ -109,6 +109,7 @@ export default class CameraView extends Component {
+     static ConversionTables = ConversionTables;
+     static defaultProps = {
+         zoom: 0,
++        exposureCompensation: 0,
+         facing: 'back',
+         enableTorch: false,
+         mode: 'picture',
+diff --git a/node_modules/expo-camera/expo-module.config.json b/node_modules/expo-camera/expo-module.config.json
+index d183305..23473ce 100644
+--- a/node_modules/expo-camera/expo-module.config.json
++++ b/node_modules/expo-camera/expo-module.config.json
+@@ -5,11 +5,6 @@
+     "podspecPath": ["ios/ExpoCamera.podspec"]
+   },
+   "android": {
+-    "modules": ["expo.modules.camera.CameraViewModule"],
+-    "publication": {
+-      "groupId": "host.exp.exponent",
+-      "artifactId": "expo.modules.camera",
+-      "repository": "local-maven-repo"
+-    }
++    "modules": ["expo.modules.camera.CameraViewModule"]
+   }
+ }
+diff --git a/node_modules/expo-camera/ios/CameraViewModule.swift b/node_modules/expo-camera/ios/CameraViewModule.swift
+index 51baba6..34cb64d 100644
+--- a/node_modules/expo-camera/ios/CameraViewModule.swift
++++ b/node_modules/expo-camera/ios/CameraViewModule.swift
+@@ -141,6 +141,16 @@ public final class CameraViewModule: Module, ScannerResultHandler {
+         }
+       }
+ 
++      Prop("exposureCompensation") { (view, ev: Double?) in
++        if let ev, fabs(view.exposureCompensation - ev) > Double.ulpOfOne {
++          view.exposureCompensation = ev
++          return
++        }
++        if ev == nil && view.exposureCompensation != 0 {
++          view.exposureCompensation = 0
++        }
++      }
++
+       Prop("mode") { (view, mode: CameraMode?) in
+         if let mode, view.mode != mode {
+           view.mode = mode
+diff --git a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift b/node_modules/expo-camera/ios/Current/CameraSessionManager.swift
+index 9ac259a..7ea21b1 100644
+--- a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift
++++ b/node_modules/expo-camera/ios/Current/CameraSessionManager.swift
+@@ -14,6 +14,7 @@ protocol CameraSessionManagerDelegate: AnyObject {
+   var torchEnabled: Bool { get }
+   var autoFocus: AVCaptureDevice.FocusMode { get }
+   var zoom: CGFloat { get }
++  var exposureCompensation: Double { get }
+   var onMountError: EventDispatcher { get }
+   var onCameraReady: EventDispatcher { get }
+   var permissionsManager: EXPermissionsInterface? { get }
+@@ -224,6 +225,21 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
+     }
+   }
+ 
++  func updateExposureCompensation() {
++    guard let device = captureDeviceInput?.device, let delegate else {
++      return
++    }
++
++    let clamped = min(max(Float(delegate.exposureCompensation), device.minExposureTargetBias), device.maxExposureTargetBias)
++    do {
++      try device.lockForConfiguration()
++      defer { device.unlockForConfiguration() }
++      device.setExposureTargetBias(clamped, completionHandler: nil)
++    } catch {
++      log.info("\(#function): \(error.localizedDescription)")
++    }
++  }
++
+   func getAvailableLenses() -> [LensInfo] {
+     guard let delegate else {
+       return []
+@@ -349,6 +365,7 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
+     self.minZoomFactor = minZoomFactor
+     if captureDeviceInput?.device.uniqueID == device.uniqueID {
+       updateZoom()
++      updateExposureCompensation()
+       return
+     }
+ 
+@@ -368,6 +385,7 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
+         session.addInput(deviceInput)
+         captureDeviceInput = deviceInput
+         updateZoom()
++        updateExposureCompensation()
+       }
+     } catch {
+       delegate.onMountError(["message": "Camera could not be started - \(error.localizedDescription)"])
+diff --git a/node_modules/expo-camera/ios/Current/CameraView.swift b/node_modules/expo-camera/ios/Current/CameraView.swift
+index 4fcefea..2a0588b 100644
+--- a/node_modules/expo-camera/ios/Current/CameraView.swift
++++ b/node_modules/expo-camera/ios/Current/CameraView.swift
+@@ -147,6 +147,14 @@ public class CameraView: ExpoView, EXAppLifecycleListener, EXCameraInterface, Ca
+     }
+   }
+ 
++  var exposureCompensation: Double = 0 {
++    didSet {
++      sessionQueue.async {
++        self.sessionManager.updateExposureCompensation()
++      }
++    }
++  }
++
+   // MARK: - Events
+ 
+   let onCameraReady = EventDispatcher()
+diff --git a/node_modules/expo-camera/ios/ExpoCamera.podspec b/node_modules/expo-camera/ios/ExpoCamera.podspec
+index 81b5bd7..aacdfcd 100644
+--- a/node_modules/expo-camera/ios/ExpoCamera.podspec
++++ b/node_modules/expo-camera/ios/ExpoCamera.podspec
+@@ -26,12 +26,7 @@ Pod::Spec.new do |s|
+ 
+   s.exclude_files = "barcode-scanning/**", "Tests/**"
+ 
+-  if !$ExpoUseSources&.include?(package['name']) && ENV['EXPO_USE_SOURCE'].to_i == 0 && File.exist?("#{s.name}.xcframework") && Gem::Version.new(Pod::VERSION) >= Gem::Version.new('1.10.0')
+-    s.source_files = "**/*.h"
+-    s.vendored_frameworks = "#{s.name}.xcframework"
+-  else
+-    s.source_files = "**/*.{h,m,swift}"
+-  end
++  s.source_files = "**/*.{h,m,swift}"
+ 
+   s.test_spec 'Tests' do |test_spec|
+     test_spec.source_files = 'Tests/**/*.swift'
