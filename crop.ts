@@ -7,8 +7,8 @@ import { readPage } from './scans';
 export type Point = { x: number; y: number };
 /** Page corners in photo pixels: top-left, top-right, bottom-right, bottom-left. */
 export type Quad = [Point, Point, Point, Point];
-/** A photo's size and the corners of the page in it. `found` is false when no page stood out and the corners are the whole photo's. */
-export type FoundPage = { width: number; height: number; corners: Quad; found: boolean };
+/** A photo's size and the corners of the page in it. */
+export type FoundPage = { width: number; height: number; corners: Quad };
 
 const whole = (w: number, h: number): Quad => [
   { x: 0, y: 0 },
@@ -153,15 +153,7 @@ export async function findPage(uri: string): Promise<FoundPage> {
 
   const found = pageCorners(rgba, sw, sh);
   const corners = found ? (found.map((p) => ({ x: (p.x * width) / sw, y: (p.y * height) / sh })) as Quad) : whole(width, height);
-  return { width, height, corners, found: !!found };
-}
-
-/** Photo corners as they sit on a preview that scales the photo to fill the view and crops what overflows, centred. */
-export function previewCorners(corners: Quad, photo: { width: number; height: number }, view: { width: number; height: number }): Quad {
-  const scale = Math.max(view.width / photo.width, view.height / photo.height);
-  const left = (view.width - photo.width * scale) / 2;
-  const top = (view.height - photo.height * scale) / 2;
-  return corners.map((p) => ({ x: left + p.x * scale, y: top + p.y * scale })) as Quad;
+  return { width, height, corners };
 }
 
 /** The 3x3 matrix, row by row, that moves each `from` point onto the matching `to` point. */

@@ -4,7 +4,7 @@
 /// <reference types="jest" />
 import { ImageFormat, Skia, type SkCanvas, type SkPaint } from '@shopify/react-native-skia';
 
-import { cropPage, findPage, isConvex, previewCorners, type Quad } from './crop';
+import { cropPage, findPage, isConvex, type Quad } from './crop';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
 const mockFiles = new Map<string, Uint8Array>();
@@ -86,7 +86,6 @@ it('finds the corners of a tilted page on a dark desk, in photo pixels, clockwis
 
   expect(found.width).toBe(W);
   expect(found.height).toBe(H);
-  expect(found.found).toBe(true);
   expectNear(found.corners, tilted, 20);
 }, 30000);
 
@@ -143,9 +142,7 @@ it('falls back to the whole photo when there is no page to find', async () => {
   surface.getCanvas().drawColor(Skia.Color('rgb(120,120,120)'));
   mockFiles.set('file:///cache/photo.jpg', surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 92));
 
-  const found = await findPage('file:///cache/photo.jpg');
-  expect(found.found).toBe(false);
-  expectNear(found.corners, wholePhoto, 1);
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, wholePhoto, 1);
 }, 30000);
 
 // Shapes drawn on a dark desk.
@@ -248,22 +245,4 @@ it('tells a page outline from corners dragged past each other', () => {
   expect(isConvex(tilted)).toBe(true);
   expect(isConvex([tilted[1], tilted[0], tilted[2], tilted[3]])).toBe(false);
   expect(isConvex([tilted[0], tilted[1], { x: 300, y: 300 }, tilted[3]])).toBe(false);
-});
-
-it('maps photo corners onto a preview that scales the photo to fill the view and crops the overflow', () => {
-  const photo = { width: 400, height: 300 };
-  const corners: Quad = [
-    { x: 100, y: 50 },
-    { x: 300, y: 50 },
-    { x: 300, y: 250 },
-    { x: 100, y: 250 },
-  ];
-  // A 100 x 100 view shows the photo at 1/3 scale (400 x 300 -> 133.3 x 100), the sides cropped evenly.
-  const mapped = previewCorners(corners, photo, { width: 100, height: 100 });
-  const s = 1 / 3;
-  const left = (100 - 400 * s) / 2;
-  expect(mapped[0].x).toBeCloseTo(100 * s + left);
-  expect(mapped[0].y).toBeCloseTo(50 * s);
-  expect(mapped[2].x).toBeCloseTo(300 * s + left);
-  expect(mapped[2].y).toBeCloseTo(250 * s);
 });
