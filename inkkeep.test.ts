@@ -197,14 +197,25 @@ function measure(cIn: Float32Array, m: ReturnType<typeof inputMasks>, lumaOut: U
       }
     }
   }
-  const pct = (a: number, b: number) => ((a / (b || 1)) * 100).toFixed(1);
-  return [
-    n.pale, pct(n.paleKept, n.pale), n.dark, pct(n.darkKept, n.dark),
-    pct(n.paperClean, n.paper), pct(n.nearPaperClean, n.nearPaper), pct(n.white, n.all),
-  ];
+  return n;
 }
 
-/** Files whose index mod n is i-1, for SHARD="i/n". */
+type Counts = ReturnType<typeof measure>;
+type Floor = Omit<ReturnType<typeof shares>, 'pageWhite'>;
+// Means over photos the filter must reach: each quarter of the 130 DocUNet photos (SHARD=i/4) clears them by 0.7 points or more
+// (2026-11-20), and main's Clean, which lost pale print, misses darkKept by 5 or more.
+const FLOORS: Record<number, Floor> = {
+  1: { paleKept: 57, darkKept: 98, paperClean: 92, nearPaperClean: 94 },
+  2: { paleKept: 36, darkKept: 97, paperClean: 93, nearPaperClean: 96 },
+};
+const pct = (a: number, b: number) => (a / (b || 1)) * 100;
+function shares(n: Counts) {
+  return {
+    paleKept: pct(n.paleKept, n.pale), darkKept: pct(n.darkKept, n.dark), paperClean: pct(n.paperClean, n.paper),
+    nearPaperClean: pct(n.nearPaperClean, n.nearPaper), pageWhite: pct(n.white, n.all),
+  };
+}
+
 function selectShard(files: string[], shard?: string): string[] {
   if (!shard) return files;
   const [i, n] = shard.split('/').map(Number);
@@ -220,6 +231,7 @@ function selectShard(files: string[], shard?: string): string[] {
       .sort();
     const files = selectShard(allFiles, process.env.SHARD);
     const outPath = process.env.OUT;
+    const byStrength = new Map<number, ReturnType<typeof shares>[]>();
 
     for (const file of files) {
       const filePath = path.join(DOCUNET_DIR!, file);
@@ -246,8 +258,13 @@ function selectShard(files: string[], shard?: string): string[] {
           const ms = Math.round(performance.now() - t0);
           try {
             const lumaOut = readLuma(out);
-            const r = measure(cIn, masks, lumaOut, w, h);
-            const line = [file, strength, ...r, ms].join('\t');
+            const n = measure(cIn, masks, lumaOut, w, h);
+            const s = shares(n);
+            byStrength.set(strength, [...(byStrength.get(strength) ?? []), s]);
+            const line = [file, strength, n.pale, s.paleKept, n.dark, s.darkKept, s.paperClean, s.nearPaperClean, s.pageWhite]
+              .map((v) => (typeof v === 'number' && !Number.isInteger(v) ? v.toFixed(1) : v))
+              .concat(ms)
+              .join('\t');
             if (outPath) {
               fs.appendFileSync(outPath, line + '\n');
             } else {
@@ -260,6 +277,12 @@ function selectShard(files: string[], shard?: string): string[] {
       } finally {
         page.dispose();
       }
+    }
+    for (const [strength, floor] of Object.entries(FLOORS)) {
+      const all = byStrength.get(Number(strength))!;
+      const means = Object.fromEntries(Object.keys(floor).map((k) => [k, all.reduce((t, r) => t + r[k as keyof Floor], 0) / all.length]));
+      const below = Object.entries(floor).filter(([k, min]) => means[k] < min);
+      expect({ strength, below }).toEqual({ strength, below: [] });
     }
   }, 600000);
 });
