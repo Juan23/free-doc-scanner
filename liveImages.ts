@@ -1,19 +1,11 @@
-type Disposable = { dispose: () => void };
+export type Disposable = { dispose: () => void };
 
-/**
- * Frees `images` a frame later: a Canvas hands its new drawing to Skia a moment after React commits,
- * and Skia replays the old one first, so an image just taken off the screen may still be drawn once.
- */
+// Wait one frame before disposing because Skia may replay the previous image once after React commits.
 export function disposeNextFrame(images: Disposable[]) {
   if (images.length) requestAnimationFrame(() => images.forEach((image) => image.dispose()));
 }
 
-/**
- * The preview images handed to the screen, freed (through `free`) only once they can no longer be
- * drawn. Two can be handed over before one render, so each gets a number; `release` frees the ones
- * up to the number a render showed, except the one it shows, and never a later one that render had
- * not seen.
- */
+// Track handed-over images by sequence number so `release` never frees a newer one not yet rendered.
 export function liveImages<T extends Disposable>(free: (images: T[]) => void) {
   let held: { image: T; n: number }[] = [];
   let handed = 0;

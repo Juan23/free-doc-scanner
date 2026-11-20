@@ -723,8 +723,9 @@ describe('the strength slider\'s live preview', () => {
     expect(shown).toEqual([null]);
   }, 30000);
 
-  it('on finish of a run that has drawn nothing (a screen reader\'s step), draws nothing', async () => {
-    mockFiles.set(PAGE1, photographedPage());
+  it('on finish of a warm run that has drawn nothing, still draws the stored strength', async () => {
+    const photo = photographedPage();
+    mockFiles.set(PAGE1, photo);
     const shown: SkImage[] = [];
     const live = strengthPreview(PAGE1, W, (image) => image && shown.push(image));
 
@@ -732,8 +733,15 @@ describe('the strength slider\'s live preview', () => {
     await live.finish({ kind: 'clean', strength: 1.2 });
     await settle();
 
-    expect(shown.length).toBe(0);
-    expect(live.isStopped()).toBe(true);
+    const source = decode(photo);
+    const direct = filterImage(source, { kind: 'clean', strength: 1.2 }, W);
+    try {
+      expect(shown.length).toBe(1);
+      expect(meanDifference(shown[0], direct)).toBeLessThan(0.05);
+      expect(live.isStopped()).toBe(true);
+    } finally {
+      for (const image of [source, direct, ...shown]) image.dispose();
+    }
   }, 30000);
 
   it('on finish with the strength already shown, draws no extra pass', async () => {

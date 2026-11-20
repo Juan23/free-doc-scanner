@@ -124,7 +124,7 @@ it('ends the preview at a second subject change while waiting for the page, such
   expect(runs[1].stopped).toBe(true);
 });
 
-it('reports finishing on while a lift catches up and off once its store starts', async () => {
+it('reports finishing on while a lift catches up and off once its save ends', async () => {
   const { session, runs, events, start } = setup();
   session.preview(filter(1), start);
   const stored = session.store(filter(1), () => {});
@@ -204,6 +204,73 @@ it('after a run fails by itself, warms nothing until the subject changes, but a 
   session.subjectChanged();
   session.warm(filter(1), start);
   expect(runs.length).toBe(3);
+});
+
+it('does not finish a warm run or wait for the page when nothing is on screen', async () => {
+  const { session, runs, events, start } = setup();
+  const applied: number[] = [];
+  session.warm(filter(1), start);
+
+  const stored = session.store(filter(1.6), (f) => applied.push(f.strength), { keep: 'untilPageLoads' });
+
+  expect(runs[0].finished).toEqual([]);
+  expect(runs[0].stopped).toBe(true);
+  expect(events.finishing).toEqual([]);
+  await stored;
+  expect(applied).toEqual([1.6]);
+});
+
+it('in Select mode, a store on a warm run after a previous lift finishes with the new strength', async () => {
+  const { session, runs, events, start } = setup();
+  session.preview(filter(1), start);
+  const first = session.store(filter(1.5), () => {}, { keep: 'untilNextChange' });
+  runs[0].endFinish();
+  await first;
+  session.subjectChanged();
+
+  session.warm(filter(1.5), start);
+  const second = session.store(filter(1.6), () => {}, { keep: 'untilNextChange' });
+  expect(runs[1].finished).toEqual([1.6]);
+  expect(events.finishing).toEqual([true, false, true]);
+  runs[1].endFinish();
+  await second;
+});
+
+it('a new move ends the previous store\'s wait for the page', async () => {
+  const { session, runs, events, start } = setup();
+  session.preview(filter(1), start);
+  const stored = session.store(filter(1), () => {}, { keep: 'untilPageLoads' });
+  runs[0].endFinish();
+  await stored;
+  session.subjectChanged();
+  const clearedBefore = events.cleared;
+
+  session.preview(filter(1.5), start);
+  session.pageLoaded();
+
+  expect(events.cleared).toBe(clearedBefore);
+});
+
+it('hiding for a swipe does not start a warm-up or reset failed state', () => {
+  const { session, runs, start } = setup();
+  session.preview(filter(1), start);
+  session.swipe();
+  session.warm(filter(1), start);
+  expect(runs.length).toBe(1);
+
+  const failedSwipe = setup();
+  failedSwipe.session.preview(filter(1), failedSwipe.start);
+  failedSwipe.runs[0].stopped = true;
+  failedSwipe.session.swipe();
+  failedSwipe.session.warm(filter(1), failedSwipe.start);
+  expect(failedSwipe.runs.length).toBe(1);
+
+  const failedHide = setup();
+  failedHide.session.preview(filter(1), failedHide.start);
+  failedHide.runs[0].stopped = true;
+  failedHide.session.hide();
+  failedHide.session.warm(filter(1), failedHide.start);
+  expect(failedHide.runs.length).toBe(1);
 });
 
 it('does not hand a run that stopped by itself to the store', async () => {

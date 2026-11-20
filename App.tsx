@@ -457,8 +457,7 @@ function Detail(props: {
   const busy = props.busy || livePreview.finishing;
   // Closing hides the preview: the slider can vanish mid-drag (a second finger taps the thumbnail), and then no lift comes.
   const showStrengths = (open: boolean) => {
-    // Opening starts the preview at the current strength, so the first move does not wait for the
-    // photo, its analysis and the GPU's first draw (about 1.5 s on the Simulator).
+    // Draw the current strength on open so the first move does not wait ~1.5 s for decode and GPU setup.
     if (open && recorded) livePreview.preview(recorded);
     else livePreview.session.hide();
     setStrengthsOpen(open);
@@ -713,7 +712,7 @@ function Detail(props: {
               getItemLayout={(_, i) => ({ length: width, offset: width * i, index: i })}
               scrollEventThrottle={16}
               // The live preview sits over the pager, so it would cover the pages sliding under it.
-              onScrollBeginDrag={livePreview.session.hide}
+              onScrollBeginDrag={livePreview.session.swipe}
               // Updated during the slide, not after it: Rotate turns this page and takes taps mid-slide.
               onScroll={(e) => {
                 const slid = Math.round(e.nativeEvent.contentOffset.x / width);
@@ -744,7 +743,7 @@ function Detail(props: {
                     }}
                     style={{ width, height: pagerHeight }}
                     resizeMode="contain"
-                    onLoadEnd={index === current ? livePreview.session.pageLoaded : undefined}
+                    onLoadEnd={index === current && !holding ? livePreview.session.pageLoaded : undefined}
                   />
                 </Pressable>
               )}
@@ -931,7 +930,7 @@ function FilterStrip(props: {
     if (!recorded) return;
     const strength = snap ? snapped(v) : v;
     // A release while a filter runs is not applied, so the thumb goes back; so does one that snaps to where it was.
-    // During the lift's own catch-up the preview stays; otherwise it goes.
+    // During the lift's own catch-up the preview stays; a release that is not applied ends it.
     if (props.finishing) setResets(resets + 1);
     else if (props.busy || strength === recorded.strength) {
       setResets(resets + 1);
