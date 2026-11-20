@@ -14,6 +14,7 @@ import {
   Linking,
   Modal,
   type GestureResponderEvent,
+  PixelRatio,
   Platform,
   Pressable,
   type StyleProp,
@@ -30,6 +31,8 @@ import { cropPage, findPage, isConvex, type FoundPage, type Point, type Quad } f
 import { clearScannerCache, pagesToSave, pickOnLongPress, saveJpegs, savePdf } from './save';
 import { addPages, createScan, deleteScan, heldPhoto, listScans, type Scan } from './scans';
 import { rotatePage, uprightPages } from './upright';
+import { disposeNextFrame } from './liveImages';
+import { useStrengthPreview } from './useStrengthPreview';
 
 const C = {
   text: '#15171C',
@@ -102,19 +105,21 @@ function Root() {
     toastTimer.current = setTimeout(() => setMessage(''), 2500);
   }, []);
 
-  // Runs one scan/save/delete action at a time.
+  // Runs one scan/save/delete action at a time; resolves to false when another one turned it away or it failed.
   async function guarded(task: () => Promise<void>, errorTitle: string) {
-    if (inFlight.current) return;
+    if (inFlight.current) return false;
     inFlight.current = true;
     setBusy(true);
     try {
       await task();
+      return true;
     } catch (e) {
       Alert.alert(errorTitle, errorText(e));
     } finally {
       inFlight.current = false;
       setBusy(false);
     }
+    return false;
   }
 
   // Re-reads the list and the open scan, so pages moved before a failure show up. Its pages changed, so Select mode ends.
@@ -367,6 +372,9 @@ const FILTER_KINDS: { kind: Filter['kind']; label: string }[] = [
 
 const STRENGTH_NAMES = ['Light', 'Normal', 'Strong'];
 
+// A finger snaps to Normal near the middle mark. A screen reader's or keyboard's step is smaller than that zone, so it is not snapped: it would never leave Normal.
+const snapped = (s: number) => (Math.abs(s - 1) < 0.1 ? 1 : s);
+
 // What a screen reader says for a strength: its name at 0, 1 and 2, else the two it lies between.
 const strengthText = (s: number) =>
   Number.isInteger(s) ? STRENGTH_NAMES[s] : `Between ${STRENGTH_NAMES[Math.floor(s)]} and ${STRENGTH_NAMES[Math.ceil(s)]}`;
@@ -385,11 +393,11 @@ function Detail(props: {
   onDelete: () => void;
   onAdd: () => void;
   onRotate: (page: string) => void;
-  onFilterPage: (page: string, filter: Filter) => void;
-  onFilterPages: (pages: string[], filter: Filter) => void;
+  onFilterPage: (page: string, filter: Filter) => Promise<boolean>;
+  onFilterPages: (pages: string[], filter: Filter) => Promise<boolean>;
   onSave: (kind: 'pdf' | 'jpeg') => void;
 }) {
-  const { width } = useWindowDimensions();
+  const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const [editorIndex, setEditorIndex] = useState<number | null>(null);
   const [current, setCurrent] = useState(0);
@@ -400,6 +408,8 @@ function Detail(props: {
   // Over the grid while selecting. Closing keeps `panel`, so the fade-out never shows the white rows.
   const [sheetOpen, setSheetOpen] = useState(false);
   const [panel, setPanel] = useState<'actions' | 'filter'>('actions');
+  const [panelHeight, setPanelHeight] = useState(0);
+  const panelPreviewBox = { width: width - 32, height: Math.max(0, height - insets.top - panelHeight - 24) };
   const pendingSave = useRef<'pdf' | 'jpeg' | null>(null);
   // Thumbnails and the page they were made for; another page shows empty boxes until its own arrive.
   const [previews, setPreviews] = useState<{ page: string; images: Record<Filter['kind'], SkImage> | null }>({
@@ -407,7 +417,7 @@ function Detail(props: {
     images: null,
   });
   const cell = (width - 40 - 16) / 2;
-  const { scan, busy, picked } = props;
+  const { scan, picked } = props;
   const editing = editorIndex !== null;
   const editedPage = scan.pages[current] as string | undefined;
   const pickedPages = useMemo(() => scan.pages.filter((p) => picked?.includes(p)), [scan.pages, picked]);
@@ -441,14 +451,33 @@ function Detail(props: {
     };
   }, [previewPage, turned]);
   // Runs when the images are replaced, and when the editor or filter panel closes or unmounts.
-  useEffect(() => () => Object.values(previews.images ?? {}).forEach((t) => t.dispose()), [previews]);
+  useEffect(() => () => disposeNextFrame(Object.values(previews.images ?? {})), [previews]);
+  const livePreview = useStrengthPreview(previewPage, width * PixelRatio.get(), subjectKey, strengthsOpen ? recorded : null);
+  // Until a lift's store starts, another action would take its turn in Root's queue and drop it.
+  const busy = props.busy || livePreview.finishing;
+  // Closing hides the preview: the slider can vanish mid-drag (a second finger taps the thumbnail), and then no lift comes.
+  const showStrengths = (open: boolean) => {
+    // Draw the current strength on open so the first move does not wait ~1.5 s for decode and GPU setup.
+    if (open && recorded) livePreview.preview(recorded);
+    else livePreview.session.hide();
+    setStrengthsOpen(open);
+  };
+  const stripProps = {
+    thumbs,
+    recorded,
+    busy: props.busy,
+    finishing: livePreview.finishing,
+    strengthsOpen,
+    onStrengths: showStrengths,
+    onPreview: livePreview.preview,
+  };
   const data: Cell[] = [
     ...scan.pages.map((uri, i) => ({ key: uri, uri, n: i + 1 })),
     ...(!picked ? [{ key: 'add' }] : []),
   ];
   const disabled = busy && styles.disabled;
   const releasePreviews = () => {
-    setStrengthsOpen(false);
+    showStrengths(false);
     setPreviews({ page: '', images: null });
   };
   const closeSheet = () => {
@@ -682,6 +711,8 @@ function Detail(props: {
               initialScrollIndex={editorIndex ?? 0}
               getItemLayout={(_, i) => ({ length: width, offset: width * i, index: i })}
               scrollEventThrottle={16}
+              // The live preview sits over the pager, so it would cover the pages sliding under it.
+              onScrollBeginDrag={livePreview.session.swipe}
               // Updated during the slide, not after it: Rotate turns this page and takes taps mid-slide.
               onScroll={(e) => {
                 const slid = Math.round(e.nativeEvent.contentOffset.x / width);
@@ -689,7 +720,7 @@ function Detail(props: {
                 const page = I18nManager.isRTL ? scan.pages.length - 1 - slid : slid;
                 if (page !== current) {
                   setCurrent(page);
-                  setStrengthsOpen(false);
+                  showStrengths(false);
                   setHolding(false);
                   // Android reads the count's live region itself; iOS needs an explicit announcement.
                   if (Platform.OS === 'ios') AccessibilityInfo.announceForAccessibility(`Page ${page + 1} of ${scan.pages.length}`);
@@ -712,10 +743,14 @@ function Detail(props: {
                     }}
                     style={{ width, height: pagerHeight }}
                     resizeMode="contain"
+                    onLoadEnd={index === current && !holding ? livePreview.session.pageLoaded : undefined}
                   />
                 </Pressable>
               )}
             />
+            {livePreview.image && !holding && (
+              <LivePage image={livePreview.image} style={StyleSheet.absoluteFill} width={width} height={pagerHeight} />
+            )}
             {/* Over the pager's top edge, so the pager and strip never move. The grid's toast sits behind this Modal. */}
             <View
               style={styles.editorToastSlot}
@@ -726,14 +761,7 @@ function Detail(props: {
             </View>
           </View>
           {editedPage && (
-            <FilterStrip
-              thumbs={thumbs}
-              recorded={recorded}
-              busy={busy}
-              strengthsOpen={strengthsOpen}
-              onStrengths={setStrengthsOpen}
-              onFilter={(filter) => props.onFilterPage(editedPage, filter)}
-            />
+            <FilterStrip {...stripProps} onFilter={(filter) => livePreview.session.store(filter, (f) => props.onFilterPage(editedPage, f), { keep: 'untilPageLoads' })} />
           )}
           <View style={styles.editorDone}>
             {recorded && scan.pages.length > 1 && (
@@ -777,34 +805,35 @@ function Detail(props: {
           style={[StyleSheet.absoluteFill, styles.backdrop]}
         />
         {panel === 'filter' ? (
-          <View style={[styles.sheet, styles.sheetDark, { paddingBottom: bottomPad(insets.bottom) }]}>
-            {/* Above the panel's top edge, so the heading and strip never move. */}
+          <>
+            {livePreview.image && (
+              <LivePage image={livePreview.image} style={[styles.panelPreview, { top: insets.top + 12 }]} {...panelPreviewBox} />
+            )}
             <View
-              style={[styles.editorToastSlot, styles.sheetToastSlot]}
-              pointerEvents="none"
-              accessibilityLiveRegion="polite"
-              collapsable={false}>
-              {!!props.message && <Toast message={props.message} style={styles.editorToast} />}
+              style={[styles.sheet, styles.sheetDark, { paddingBottom: bottomPad(insets.bottom) }]}
+              onLayout={(e) => setPanelHeight(e.nativeEvent.layout.height)}>
+              {/* Above the panel's top edge, so the heading and strip never move. */}
+              <View
+                style={[styles.editorToastSlot, styles.sheetToastSlot]}
+                pointerEvents="none"
+                accessibilityLiveRegion="polite"
+                collapsable={false}>
+                {!!props.message && <Toast message={props.message} style={styles.editorToast} />}
+              </View>
+              <Text style={styles.sheetHeading} accessibilityRole="header" maxFontSizeMultiplier={1.5}>
+                Filter {pagesLabel(pickedPages.length)}
+                {livePreview.image && pickedPages.length > 1 ? ', the first shown' : ''}
+              </Text>
+              <FilterStrip {...stripProps} onFilter={(filter) => livePreview.session.store(filter, (f) => props.onFilterPages(pickedPages, f), { keep: 'untilNextChange' })} />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Done"
+                onPress={closeSheet}
+                style={[styles.doneButton, styles.sheetPill, styles.sheetDone]}>
+                <Text style={styles.doneText} maxFontSizeMultiplier={1.5}>Done</Text>
+              </Pressable>
             </View>
-            <Text style={styles.sheetHeading} accessibilityRole="header" maxFontSizeMultiplier={1.5}>
-              Filter {pagesLabel(pickedPages.length)}
-            </Text>
-            <FilterStrip
-              thumbs={thumbs}
-              recorded={recorded}
-              busy={busy}
-              strengthsOpen={strengthsOpen}
-              onStrengths={setStrengthsOpen}
-              onFilter={(filter) => props.onFilterPages(pickedPages, filter)}
-            />
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Done"
-              onPress={closeSheet}
-              style={[styles.doneButton, styles.sheetPill, styles.sheetDone]}>
-              <Text style={styles.doneText} maxFontSizeMultiplier={1.5}>Done</Text>
-            </Pressable>
-          </View>
+          </>
         ) : (
           <View style={[styles.sheet, { paddingBottom: bottomPad(insets.bottom) }]}>
             <View style={styles.grabber} />
@@ -871,27 +900,42 @@ function Detail(props: {
   );
 }
 
+function LivePage(props: { image: SkImage; style: StyleProp<ViewStyle>; width: number; height: number }) {
+  return (
+    <Canvas style={[props.style, { width: props.width, height: props.height }]} pointerEvents="none">
+      <SkiaImage image={props.image} x={0} y={0} width={props.width} height={props.height} fit="contain" />
+    </Canvas>
+  );
+}
+
 // The filter strip of the page editor and of the Select sheet's filter panel; both sit on a dark background.
 function FilterStrip(props: {
   thumbs: Record<Filter['kind'], SkImage> | null;
   recorded: Filter | null;
   busy: boolean;
+  // A lift's store is waiting for the preview: a late slider event then keeps the preview on.
+  finishing: boolean;
   strengthsOpen: boolean;
   onStrengths: (open: boolean) => void;
+  onPreview: (filter: Filter | null) => void;
   onFilter: (filter: Filter) => void;
 }) {
-  const { recorded, busy, thumbs } = props;
+  const { recorded, thumbs } = props;
+  const busy = props.busy || props.finishing;
   const disabled = busy && styles.disabled;
   // Bumped to put the thumb back when a release changes nothing.
   const [resets, setResets] = useState(0);
   const touching = useRef(false);
   const release = (v: number, snap: boolean) => {
     if (!recorded) return;
-    // A finger snaps to Normal near the middle mark. A screen reader's or keyboard's step is smaller than that zone, so it would never leave Normal.
-    const strength = snap && Math.abs(v - 1) < 0.1 ? 1 : v;
+    const strength = snap ? snapped(v) : v;
     // A release while a filter runs is not applied, so the thumb goes back; so does one that snaps to where it was.
-    if (busy || strength === recorded.strength) setResets(resets + 1);
-    else props.onFilter({ kind: recorded.kind, strength });
+    // During the lift's own catch-up the preview stays; a release that is not applied ends it.
+    if (props.finishing) setResets(resets + 1);
+    else if (props.busy || strength === recorded.strength) {
+      setResets(resets + 1);
+      props.onPreview(null);
+    } else props.onFilter({ kind: recorded.kind, strength });
   };
   return (
     <View style={styles.strip}>
@@ -913,7 +957,7 @@ function FilterStrip(props: {
               thumbTintColor="#fff"
               accessibilityLabel="Clean-up strength"
               accessibilityValue={{ text: strengthText(recorded.strength) }}
-              // Each page clean holds about 100 MB of bitmaps, so pages are filtered when the finger lifts, not as it moves.
+              // Each page clean holds about 100 MB of bitmaps, so pages are stored when the finger lifts; as it moves, only the screen shows it.
               onSlidingStart={() => (touching.current = true)}
               onSlidingComplete={(v) => {
                 touching.current = false;
@@ -921,7 +965,8 @@ function FilterStrip(props: {
               }}
               // A screen reader or a keyboard moves the thumb with no touch, so no lift follows: each step is applied.
               onValueChange={(v) => {
-                if (!touching.current) release(v, false);
+                if (touching.current) props.onPreview({ kind: recorded.kind, strength: snapped(v) });
+                else release(v, false);
               }}
             />
           </View>
@@ -1628,6 +1673,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   sheetDark: { backgroundColor: C.text, paddingHorizontal: 0, paddingTop: 20 },
+  panelPreview: { position: 'absolute', left: 16 },
   grabber: { alignSelf: 'center', width: 36, height: 5, borderRadius: 3, marginTop: 8, backgroundColor: '#D5D9DF' },
   sheetTitle: { paddingTop: 16, paddingBottom: 8, fontSize: 17, fontWeight: '700', color: C.text },
   sheetHeading: { textAlign: 'center', fontSize: 17, fontWeight: '600', color: '#fff' },
