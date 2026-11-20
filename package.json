@@ -22,6 +22,7 @@
     "eslint-config-expo": "~58.0.4",
     "jest": "~30.5.2",
     "jest-expo": "~58.0.14",
+    "patch-package": "^8.0.1",
     "typescript": "~6.0.3"
   },
   "scripts": {
@@ -29,12 +30,16 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "test": "jest",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "postinstall": "patch-package"
   },
   "private": true,
   "jest": {
     "preset": "jest-expo",
-    "testPathIgnorePatterns": ["/node_modules/", "<rootDir>/.claude/"],
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "<rootDir>/.claude/"
+    ],
     "transformIgnorePatterns": [
       "/node_modules/(?!(.pnpm|react-native|@react-native|@react-native-community|expo|@expo|@shopify/react-native-skia))",
       "/node_modules/@react-native/babel-preset/"
