@@ -92,6 +92,37 @@ half4 main(float2 xy) {
   return half4(mix(c, f, shadow), 1);
 }`)!;
 
+// Under each pixel of the small copy, from 8 x 8 samples of the photo: the darkest sample where both
+// the lightest row and the lightest column are much lighter than it, white unless both are. Letters
+// leave both gaps; a straight crease or blank paper leaves at most one.
+const lettersEffect = Skia.RuntimeEffect.Make(`
+uniform shader page;
+uniform float2 cell;
+half4 main(float2 xy) {
+  half colMin[8];
+  for (int j = 0; j < 8; j++) colMin[j] = 1;
+  half4 darkest = half4(1);
+  half lightest = 0;
+  half lightestRow = 0;
+  for (int i = 0; i < 8; i++) {
+    half rowMin = 1;
+    for (int j = 0; j < 8; j++) {
+      half4 c = page.eval((floor(xy) + (float2(j, i) + 0.5) / 8) * cell);
+      darkest = min(darkest, c);
+      half l = min(min(c.r, c.g), c.b);
+      lightest = max(lightest, l);
+      rowMin = min(rowMin, l);
+      colMin[j] = min(colMin[j], l);
+    }
+    lightestRow = max(lightestRow, rowMin);
+  }
+  half lightestCol = 0;
+  for (int j = 0; j < 8; j++) lightestCol = max(lightestCol, colMin[j]);
+  half low = min(min(darkest.r, darkest.g), darkest.b);
+  half gaps = (min(lightestRow, lightestCol) - low) / max(lightest, 0.05);
+  return half4(mix(half3(1), darkest.rgb, smoothstep(0.08, 0.12, gaps)), 1);
+}`)!;
+
 // How much darker than the coarse paper each pixel of the small copy is. Blurred, it shows where
 // the writing is. Kept linear so thin, faint strokes still count once shrunk. Not the picked
 // paper: that can follow blurred text, which would then pass for dirt.
@@ -102,6 +133,16 @@ uniform float inkThreshold;
 half4 main(float2 xy) {
   half3 c = page.eval(xy).rgb / max(paper.eval(xy).rgb, half3(0.05));
   return half4(0, 0, 0, saturate(half(inkThreshold) - min(min(c.r, c.g), c.b)));
+}`)!;
+
+// The same for the letters' darkest pixels, at full ink 0.05 past inkThreshold: thin pale print hardly darkens the small copy.
+const letterInkEffect = Skia.RuntimeEffect.Make(`
+uniform shader letters;
+uniform shader paper;
+uniform float inkThreshold;
+half4 main(float2 xy) {
+  half3 c = letters.eval(xy).rgb / max(paper.eval(xy).rgb, half3(0.05));
+  return half4(0, 0, 0, saturate((half(inkThreshold) - min(min(c.r, c.g), c.b)) / 0.05));
 }`)!;
 
 // Divides each pixel by the paper's brightness around it, so shadows and tint turn white, and
@@ -125,6 +166,7 @@ uniform shader page;
 uniform shader paper;
 uniform shader ink;
 uniform shader beyond;
+uniform shader letterInk;
 uniform float whitePoint;
 uniform float grey;
 uniform float paleFloor;
@@ -178,6 +220,8 @@ half4 main(float2 xy) {
   half3 c = levels(xy, p);
   half dark = darkOf(c);
   half keep = max(smoothstep(0.45, 0.65, dark), smoothstep(0.02, 0.05, ink.eval(xy).a));
+  half text = smoothstep(0.01, 0.04, letterInk.eval(xy).a);
+  keep = max(keep, text);
   if (keep < 1 && dark > 0.1) keep = max(keep, max(ridge(xy, p, float2(1, 0)), ridge(xy, p, float2(0, 1))));
   half b = paleAt(xy, p);
   if (keep < 1 && b > half(paleFloor)) {
@@ -417,7 +461,7 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
 }
 
 // Its `dispose` frees what it made; the caller owns `image`.
-type Analysis = { image: SkImage; sw: number; sh: number; smallPage: SkImage; coarse: SkImage; paper: SkImage; beyond: SkImage; dispose: () => void };
+type Analysis = { image: SkImage; sw: number; sh: number; smallPage: SkImage; letters: SkImage; coarse: SkImage; paper: SkImage; beyond: SkImage; dispose: () => void };
 
 function analysePage(image: SkImage): Analysis {
   const w = image.width();
@@ -432,6 +476,11 @@ function analysePage(image: SkImage): Analysis {
       const surface = own(cpuSurface(sw, sh));
       const canvas = surface.getCanvas();
       const smallPage = result(shrunkCopy(image, sw, sh));
+      const photoShader = own(clamp(image, FilterMode.Nearest));
+      const findLetters = own(Skia.Paint());
+      findLetters.setShader(own(lettersEffect.makeShaderWithChildren([w / sw, h / sh], [photoShader])));
+      canvas.drawRect(Skia.XYWHRect(0, 0, sw, sh), findLetters);
+      const letters = result(surface.makeImageSnapshot());
 
       const wipeInk = own(Skia.Paint());
       const inkDilate = own(Skia.ImageFilter.MakeDilate(6, 6, null));
@@ -465,8 +514,8 @@ function analysePage(image: SkImage): Analysis {
       canvas.drawImage(beyondMask, 0, 0, feather);
       const beyond = result(surface.makeImageSnapshot());
       return {
-        image, sw, sh, smallPage, coarse, paper, beyond,
-        dispose: () => [smallPage, coarse, paper, beyond].forEach((o) => o.dispose()),
+        image, sw, sh, smallPage, letters, coarse, paper, beyond,
+        dispose: () => [smallPage, letters, coarse, paper, beyond].forEach((o) => o.dispose()),
       };
     });
   } catch (e) {
@@ -475,7 +524,7 @@ function analysePage(image: SkImage): Analysis {
   }
 }
 
-// The ink mask is 500 px wide, so it stays on the CPU even when the final pass runs on the GPU.
+// The ink masks are SMALL_WIDTH wide, so they stay on the CPU even when the final pass runs on the GPU.
 function filterAnalysed(
   analysis: Analysis,
   filter: Filter,
@@ -494,12 +543,17 @@ function filterAnalysed(
     const smallPageShader = own(clamp(analysis.smallPage, FilterMode.Nearest));
     const coarseShader = own(clamp(analysis.coarse, FilterMode.Nearest));
     const inkShader = own(inkEffect.makeShaderWithChildren([keep.inkThreshold], [smallPageShader, coarseShader]));
-    const spreadInk = own(Skia.Paint());
-    spreadInk.setShader(inkShader);
-    spreadInk.setImageFilter(own(Skia.ImageFilter.MakeBlur(6, 6, TileMode.Clamp, null)));
-    surface.getCanvas().clear(Skia.Color('transparent'));
-    surface.getCanvas().drawRect(Skia.XYWHRect(0, 0, sw, sh), spreadInk);
-    const ink = own(surface.makeImageSnapshot());
+    const spread = (shader: ReturnType<typeof inkEffect.makeShaderWithChildren>) => {
+      const paint = own(Skia.Paint());
+      paint.setShader(shader);
+      paint.setImageFilter(own(Skia.ImageFilter.MakeBlur(6, 6, TileMode.Clamp, null)));
+      surface.getCanvas().clear(Skia.Color('transparent'));
+      surface.getCanvas().drawRect(Skia.XYWHRect(0, 0, sw, sh), paint);
+      return own(surface.makeImageSnapshot());
+    };
+    const ink = spread(inkShader);
+    const lettersShader = own(clamp(analysis.letters, FilterMode.Nearest));
+    const letterInk = spread(own(letterInkEffect.makeShaderWithChildren([keep.inkThreshold], [lettersShader, coarseShader])));
 
     const shrinking = outW < w;
     // Only the final pass is drawn at the output size; a shrunk preview samples the photo mipmapped, as shrunkCopy does.
@@ -513,9 +567,10 @@ function filterAnalysed(
     const paperShader = own(clamp(analysis.paper, FilterMode.Linear, toOut));
     const textShader = own(clamp(ink, FilterMode.Linear, toOut));
     const beyondShader = own(clamp(analysis.beyond, FilterMode.Linear, toOut));
+    const letterInkShader = own(clamp(letterInk, FilterMode.Linear, toOut));
     const cleanShader = own(cleanEffect.makeShaderWithChildren(
       [keep.whitePoint, filter.kind === 'gray' ? 1 : 0, outW >= PALE_LINE_WIDTH ? keep.paleLine : 1],
-      [pageShader, paperShader, textShader, beyondShader],
+      [pageShader, paperShader, textShader, beyondShader, letterInkShader],
     ));
     const out = own(makeSurface(outW, outH));
     const paint = own(Skia.Paint());

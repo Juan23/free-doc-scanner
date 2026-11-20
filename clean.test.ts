@@ -1239,3 +1239,131 @@ describe('text in a small preview', () => {
     photo.dispose();
   }, 60000);
 });
+
+describe('pale text on a large photo', () => {
+  const CanvasKit = (globalThis as any).CanvasKit;
+  const W = 3024;
+  const PAPER = 220;
+  const SIZES = [24, 32, 44];
+  const GREYS = [140, 165];
+  const PITCH = 110;
+  const rows = SIZES.flatMap((size) => GREYS.map((grey) => ({ size, grey })));
+
+  // Lines of small grey print on grey paper, like a printed CV photographed in room light.
+  function palePhoto(): SkImage {
+    const surface = CanvasKit.MakeSurface(W, rows.length * PITCH + 100);
+    const canvas = surface.getCanvas();
+    canvas.clear(CanvasKit.Color(PAPER, PAPER, PAPER - 6));
+    const ink = new CanvasKit.Paint();
+    ink.setAntiAlias(true);
+    rows.forEach(({ size, grey }, i) => {
+      const font = new CanvasKit.Font(CanvasKit.Typeface.GetDefault(), size);
+      ink.setColor(CanvasKit.Color(grey, grey, grey));
+      canvas.drawText('Date of Birth : 03/16/1996  To work with a company that can provide growth', 150, 100 + i * PITCH, ink, font);
+      font.delete();
+    });
+    const bytes = surface.makeImageSnapshot().encodeToBytes(CanvasKit.ImageFormat.JPEG, 92);
+    ink.delete();
+    surface.delete();
+    return decode(bytes);
+  }
+
+  const CORE_DARKNESS = 0.9;
+  const KEPT_CORE_SHARE = 0.9;
+
+  function keptCoreShareByLine(photo: SkImage, out: SkImage): number[] {
+    const before = readPixels(photo);
+    const after = readPixels(out);
+    return rows.map(({ size, grey }, i) => {
+      let ink = 0;
+      let kept = 0;
+      for (let y = 100 + i * PITCH - size; y < 100 + i * PITCH + size / 3; y++) {
+        for (let x = 100; x < W - 100; x++) {
+          const p = (y * W + x) * 4;
+          if (before[p + 1] > PAPER - CORE_DARKNESS * (PAPER - grey)) continue;
+          ink++;
+          if (after[p + 1] < 250) kept++;
+        }
+      }
+      return kept / ink;
+    });
+  }
+
+  it.each([['clean', 1], ['clean', 2], ['gray', 1]] as const)('keeps grey 140 and 165 print on grey 220 paper whole at %s strength %i', (kind, strength) => {
+    const photo = palePhoto();
+    const out = filterImage(photo, { kind, strength });
+    const shares = keptCoreShareByLine(photo, out);
+    out.dispose();
+    photo.dispose();
+    expect(rows.map((r, i) => [r.size, r.grey, shares[i] > KEPT_CORE_SHARE])).toEqual(rows.map((r) => [r.size, r.grey, true]));
+  }, 120000);
+});
+
+describe('paper around text on a large photo', () => {
+  const CanvasKit = (globalThis as any).CanvasKit;
+  const W = 1200;
+  const PAPER = 220;
+  const SPECKLE = 0.89;
+  const SPECKLE_SHARE = 0.15;
+  const LINES = [
+    { size: 24, grey: 20 },
+    { size: 24, grey: 150 },
+    { size: 32, grey: 20 },
+  ];
+  const PITCH = 100;
+  const BASELINE = 80;
+  const WHITE_SHARE = 0.95;
+
+  // Printed lines on paper with darker pixels like grain or dust.
+  function speckledPage(): { photo: SkImage; speckles: number[] } {
+    const H = LINES.length * PITCH + 60;
+    const surface = CanvasKit.MakeSurface(W, H);
+    const canvas = surface.getCanvas();
+    canvas.clear(CanvasKit.Color(PAPER, PAPER, PAPER - 6));
+    const ink = new CanvasKit.Paint();
+    ink.setAntiAlias(true);
+    LINES.forEach(({ size, grey }, i) => {
+      const font = new CanvasKit.Font(CanvasKit.Typeface.GetDefault(), size);
+      ink.setColor(CanvasKit.Color(grey, grey, grey));
+      canvas.drawText('Date of Birth : 03/16/1996  To work with a company that can provide growth', 60, BASELINE + i * PITCH, ink, font);
+      font.delete();
+    });
+    const drawn = decode(surface.makeImageSnapshot().encodeToBytes(CanvasKit.ImageFormat.PNG));
+    const rgba = readPixels(drawn);
+    drawn.dispose();
+    ink.delete();
+    surface.delete();
+    const speckles: number[] = [];
+    let seed = 12345;
+    for (let p = 0; p < W * H * 4; p += 4) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      const bare = rgba[p] === PAPER && rgba[p + 1] === PAPER && rgba[p + 2] === PAPER - 6;
+      if (bare && seed / 2 ** 32 < SPECKLE_SHARE) {
+        for (let c = 0; c < 3; c++) rgba[p + c] = Math.round(rgba[p + c] * SPECKLE);
+        speckles.push(p);
+      }
+    }
+    const photo = Skia.Image.MakeImage({ width: W, height: H, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul }, Skia.Data.fromBytes(rgba), W * 4)!;
+    return { photo, speckles };
+  }
+
+  function whiteShareByLine(speckles: number[], out: SkImage): number[] {
+    const after = readPixels(out);
+    return LINES.map(({ size }, i) => {
+      const beside = speckles.filter((p) => {
+        const y = Math.floor(p / 4 / W);
+        return y > BASELINE + i * PITCH - size && y < BASELINE + i * PITCH + size / 3;
+      });
+      return beside.filter((p) => after[p + 1] >= 250).length / beside.length;
+    });
+  }
+
+  it('whitens faint grain among printed lines at Clean Normal', () => {
+    const { photo, speckles } = speckledPage();
+    const out = filterImage(photo, { kind: 'clean', strength: 1 });
+    const shares = whiteShareByLine(speckles, out);
+    out.dispose();
+    photo.dispose();
+    expect(shares.map((s) => s > WHITE_SHARE)).toEqual(LINES.map(() => true));
+  }, 120000);
+});
