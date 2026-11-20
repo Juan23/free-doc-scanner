@@ -1239,3 +1239,61 @@ describe('text in a small preview', () => {
     photo.dispose();
   }, 60000);
 });
+
+describe('pale text on a large photo', () => {
+  const CanvasKit = (globalThis as any).CanvasKit;
+  const W = 3024;
+  const PAPER = 220;
+  const SIZES = [24, 32, 44];
+  const GREYS = [140, 165];
+  const PITCH = 110;
+  const rows = SIZES.flatMap((size) => GREYS.map((grey) => ({ size, grey })));
+
+  // Lines of small grey print on grey paper, like a printed CV photographed in room light.
+  function palePhoto(): SkImage {
+    const surface = CanvasKit.MakeSurface(W, rows.length * PITCH + 100);
+    const canvas = surface.getCanvas();
+    canvas.clear(CanvasKit.Color(PAPER, PAPER, PAPER - 6));
+    const ink = new CanvasKit.Paint();
+    ink.setAntiAlias(true);
+    rows.forEach(({ size, grey }, i) => {
+      const font = new CanvasKit.Font(CanvasKit.Typeface.GetDefault(), size);
+      ink.setColor(CanvasKit.Color(grey, grey, grey));
+      canvas.drawText('Date of Birth : 03/16/1996  To work with a company that can provide growth', 150, 100 + i * PITCH, ink, font);
+      font.delete();
+    });
+    const bytes = surface.makeImageSnapshot().encodeToBytes(CanvasKit.ImageFormat.JPEG, 92);
+    ink.delete();
+    surface.delete();
+    return decode(bytes);
+  }
+
+  // Per line, the share of its letters' core pixels (at least 90% as dark as the print) not turned white.
+  function keptShares(photo: SkImage, out: SkImage): number[] {
+    const before = readPixels(photo);
+    const after = readPixels(out);
+    return rows.map(({ size, grey }, i) => {
+      let ink = 0;
+      let kept = 0;
+      for (let y = 100 + i * PITCH - size; y < 100 + i * PITCH + size / 3; y++) {
+        for (let x = 100; x < W - 100; x++) {
+          const p = (y * W + x) * 4;
+          if (before[p + 1] > PAPER - 0.9 * (PAPER - grey)) continue;
+          ink++;
+          if (after[p + 1] < 250) kept++;
+        }
+      }
+      return kept / ink;
+    });
+  }
+
+  it.each([['clean', 1], ['clean', 2], ['gray', 1]] as const)('keeps grey 140 and 165 print on grey 220 paper whole at %s strength %i', (kind, strength) => {
+    const photo = palePhoto();
+    const out = filterImage(photo, { kind, strength });
+    const shares = keptShares(photo, out);
+    out.dispose();
+    photo.dispose();
+    // Measured: every line 1.00. Text the small copy alone finds keeps 0 to 22%.
+    expect(rows.map((r, i) => [r.size, r.grey, shares[i] > 0.9])).toEqual(rows.map((r) => [r.size, r.grey, true]));
+  }, 120000);
+});
