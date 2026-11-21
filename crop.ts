@@ -113,7 +113,7 @@ function edgeMap(rgba: Uint8Array, w: number, h: number) {
 const MAX_LINES_PER_SECTOR = 2;
 // Cap total Hough lines kept so the 4-line search stays bounded.
 const MAX_HOUGH_LINES = 24;
-// Bent or faint page sides cast few votes, so the floor is low; `backgroundShare` and `stopsShort` turn away the false frames it lets in.
+// Bent or faint page sides cast few votes, so the floor is low; `backgroundShare`, `stopsShort` and `cutsPage` turn away the false frames it lets in.
 const MIN_VOTES = 14;
 // A line with fewer votes than this share of the copy's short side is faint; only a frame built on one is checked by `stopsShort`.
 const STRONG_VOTES_SHARE = 0.1;
@@ -501,7 +501,7 @@ const CARRY_ON_REACH = 0.1;
 // Share of that reach an edge must hold to count as carrying on.
 const CARRY_ON_SHARE = 0.9;
 
-/** Signed gradient across segment AB (normal nx, ny), the strongest within +-2 px at each of `steps` points; null when it leaves the image. */
+/** Signed gradient across segment AB (normal nx, ny), the strongest within +-2 px at each of `steps - 1` interior points; null when it leaves the image. */
 function acrossEdge(
   a: Point,
   b: Point,
@@ -530,20 +530,28 @@ function acrossEdge(
   return edge;
 }
 
-/** True when a side's edge carries on past a corner with the same contrast: the frame stops short of the page. */
+/** A side's contrast across it (normal nx, ny): the typical signed gradient, and whether a gradient is as strong with the same sign. */
+function sideContrast(a: Point, b: Point, gx: Int16Array, gy: Int16Array, w: number, h: number) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  const nx = -dy / len;
+  const ny = dx / len;
+  const own = acrossEdge(a, b, nx, ny, gx, gy, w, h, 32);
+  if (!own) return null;
+  const typical = [...own].sort((m, n) => m - n)[own.length >> 1];
+  const holds = (v: number) => v * Math.sign(typical) >= Math.max(0.5 * Math.abs(typical), MIN_EDGE);
+  return { dx, dy, nx, ny, holds };
+}
+
+/** True when a side's edge carries on past a corner with the same sign of contrast and at least half its strength: the frame stops short of the page. */
 export function stopsShort(q: Quad, gx: Int16Array, gy: Int16Array, w: number, h: number): boolean {
   return [0, 1, 2, 3].some((s) => {
     const a = q[s];
     const b = q[(s + 1) % 4];
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const len = Math.hypot(dx, dy);
-    const nx = -dy / len;
-    const ny = dx / len;
-    const own = acrossEdge(a, b, nx, ny, gx, gy, w, h, 32);
-    if (!own) return false;
-    const typical = [...own].sort((m, n) => m - n)[own.length >> 1];
-    const holds = (v: number) => v * Math.sign(typical) >= Math.max(0.5 * Math.abs(typical), MIN_EDGE);
+    const side = sideContrast(a, b, gx, gy, w, h);
+    if (!side) return false;
+    const { dx, dy, nx, ny, holds } = side;
     const past = [
       [b, { x: b.x + dx * CARRY_ON_REACH, y: b.y + dy * CARRY_ON_REACH }],
       [{ x: a.x - dx * CARRY_ON_REACH, y: a.y - dy * CARRY_ON_REACH }, a],
@@ -553,6 +561,59 @@ export function stopsShort(q: Quad, gx: Int16Array, gy: Int16Array, w: number, h
       return !!edge && edge.filter(holds).length >= CARRY_ON_SHARE * edge.length;
     });
   });
+}
+
+// Search-copy pixels outside a side, from and to, where an edge of its own contrast shows the page goes on past it.
+const BEYOND_NEAR = 3;
+const BEYOND_FAR = 10;
+// Steps (of 31 along a side) in a row that must show it before the side counts as cutting the page.
+const BEYOND_RUN = 3;
+
+/** True when a stretch of a side has no edge of its contrast on it but one just outside: the side runs inside the page's outline. */
+export function cutsPage(q: Quad, gx: Int16Array, gy: Int16Array, w: number, h: number): boolean {
+  return [0, 1, 2, 3].some((s) => {
+    const a = q[s];
+    const b = q[(s + 1) % 4];
+    const side = sideContrast(a, b, gx, gy, w, h);
+    if (!side) return false;
+    const { dx, dy, nx, ny, holds } = side;
+    const out = outwardNormal(q, s);
+    const gradientAt = (x: number, y: number) => {
+      const ix = Math.floor(x);
+      const iy = Math.floor(y);
+      return ix < 1 || iy < 1 || ix > w - 2 || iy > h - 2 ? null : gx[iy * w + ix] * nx + gy[iy * w + ix] * ny;
+    };
+    let run = 0;
+    for (let i = 1; i < 32; i++) {
+      let onSide = false;
+      let beyond = false;
+      for (let d = -2; d <= BEYOND_FAR; d++) {
+        if (d > 2 && d < BEYOND_NEAR) continue;
+        const g = gradientAt(a.x + (dx * i) / 32 + out.nx * d, a.y + (dy * i) / 32 + out.ny * d);
+        if (g === null || !holds(g)) continue;
+        if (d <= 2) onSide = true;
+        else beyond = true;
+      }
+      run = !onSide && beyond ? run + 1 : 0;
+      if (run >= BEYOND_RUN) return true;
+    }
+    return false;
+  });
+}
+
+// Search-copy pixels a refined side may sit inside the side it was fitted to; further in, it follows a fold or text block inside the page.
+const MAX_REFINE_INWARD = 2;
+
+const lineThrough = (a: Point, b: Point): Line => {
+  const theta = Math.atan2(b.x - a.x, a.y - b.y);
+  return { theta, rho: a.x * Math.cos(theta) + a.y * Math.sin(theta) };
+};
+
+/** True when `line` lies more than `MAX_REFINE_INWARD` inside segment AB (outward normal `out`) at either end. */
+function movesInward(line: Line, a: Point, b: Point, out: { nx: number; ny: number }): boolean {
+  const cos = Math.cos(line.theta);
+  const sin = Math.sin(line.theta);
+  return [a, b].some((p) => (p.x * cos + p.y * sin - line.rho) * (cos * out.nx + sin * out.ny) > MAX_REFINE_INWARD);
 }
 
 /** The page's corners in a small RGBA copy, or null when no page stands out from what is around it. */
@@ -573,6 +634,7 @@ function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
     return Math.abs(distFromCenter(a) - (sameDir ? 1 : -1) * distFromCenter(b));
   };
   const accepted: { q: Quad; weighted: number }[] = [];
+  let top: { q: Quad; weighted: number } | null = null;
   let bestScore = 0;
 
   for (let i = 0; i < lines.length; i++) {
@@ -621,19 +683,29 @@ function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
           if (weighted <= OUTER_WORTH * bestScore) continue;
           const faint = [lines[i], lines[j], lines[k], lines[l]].some((line) => line.votes < strongVotes);
           if (faint && stopsShort(q, gx, gy, w, h)) continue;
-          accepted.push({ q, weighted });
-          bestScore = Math.max(bestScore, weighted);
+          const found = { q, weighted };
+          accepted.push(found);
+          if (weighted > bestScore) {
+            bestScore = weighted;
+            top = found;
+          }
         }
       }
     }
   }
 
-  const top = accepted.find((c) => c.weighted === bestScore);
   if (!top) return null;
   // The ground check lets a frame inside another through when the strip between them is page, so the outer one of near worth wins.
   const outer = accepted.filter((c) => c !== top && c.weighted >= OUTER_WORTH * bestScore && contains(c.q, top.q));
   const bestQuad = outer.reduce((a, b) => (b.weighted > a.weighted ? b : a), outer[0] ?? top).q;
-  const refined = [0, 1, 2, 3].map((s) => refineLine(bestQuad[s], bestQuad[(s + 1) % 4], gx, gy, w, h));
+  // Dropping the best frame for a runner-up picked frames that cut the page too, so the whole photo stands in.
+  if (cutsPage(bestQuad, gx, gy, w, h)) return null;
+  const refined = [0, 1, 2, 3].map((s) => {
+    const a = bestQuad[s];
+    const b = bestQuad[(s + 1) % 4];
+    const fit = refineLine(a, b, gx, gy, w, h);
+    return fit && !movesInward(fit, a, b, outwardNormal(bestQuad, s)) ? fit : lineThrough(a, b);
+  });
   const allLines = (ls: (Line | null)[]): ls is Line[] => ls.every((l) => l !== null);
   if (allLines(refined)) {
     const r0 = intersect(refined[3], refined[0]);

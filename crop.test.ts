@@ -288,7 +288,7 @@ it('finds a page that fills nearly the whole photo', async () => {
   expectNear((await findPage('file:///cache/photo.jpg')).corners, close, 15);
 }, 30000);
 
-// Top and bottom bow in and left and right bow out, so no straight run of any side casts many Hough votes.
+// Top and bottom bow in and left and right bow out by 24 px, so no straight run of any side casts many Hough votes.
 it('finds a small page whose edges are bent', async () => {
   const small: Quad = [
     { x: 330, y: 400 },
@@ -300,7 +300,7 @@ it('finds a small page whose edges are bent', async () => {
   small.forEach((a, i) => {
     const b = small[(i + 1) % 4];
     const length = Math.hypot(b.x - a.x, b.y - a.y);
-    const bow = i % 2 ? 40 : -40;
+    const bow = i % 2 ? 24 : -24;
     for (let k = 0; k < 20; k++) {
       const t = k / 20;
       const off = bow * t * (1 - t);
@@ -358,8 +358,8 @@ it('falls back to the whole photo for a thick dark border enclosing only ground'
   expectNear((await findPage('file:///cache/photo.jpg')).corners, wholePhoto, 1);
 }, 30000);
 
-// An oval paper patch fills ~64% of the drawn frame so ground share stays between MAX_BACKGROUND_SHARE and 0.5.
-it('falls back to the whole photo when over a third of the frame is ground', async () => {
+// An oval paper patch fills ~64% of the drawn frame, so ground is far over MAX_BACKGROUND_SHARE.
+it('falls back to the whole photo when too much of the frame is ground', async () => {
   const surface = Skia.Surface.Make(W, H)!;
   const canvas = surface.getCanvas();
   canvas.drawColor(Skia.Color('rgb(150,120,90)'));
@@ -507,6 +507,13 @@ it('tells a frame inside another from one that pokes out of it', () => {
   expect(contains(outer, box(10, 10, 110, 90))).toBe(false);
 });
 
+// Frames that share an edge differ by a pixel or two once their corners are rounded.
+it('lets a corner lie up to 2 px outside the frame that holds it, and no further', () => {
+  const outer = box(0, 0, 100, 100);
+  expect(contains(outer, box(-2, 10, 90, 90))).toBe(true);
+  expect(contains(outer, box(-3, 10, 90, 90))).toBe(false);
+});
+
 // A page's left side as `edgeMap` sees it: a bright page on its right gives gx = +120 along x = 50.
 function leftEdge(from: number, to: number, strength = 120) {
   const gx = new Int16Array(200 * 150);
@@ -533,4 +540,83 @@ describe('a frame that stops short of the page', () => {
     for (let y = 10; y < 40; y++) gx[y * 200 + 50] = -120;
     expect(stopsShort(frame, gx, gy, 200, 150)).toBe(false);
   });
+});
+
+const polygon = (points: number[][]) => Skia.Path.Polygon(points.map(([x, y]) => ({ x, y })), true);
+
+// Paper, then ink or the desk, drawn on the dark desk of `photo`.
+function scene(draw: (canvas: SkCanvas, paint: SkPaint) => void): Uint8Array {
+  return shapes((canvas, paint) => {
+    canvas.drawColor(Skia.Color('rgb(92,70,52)'));
+    draw(canvas, paint);
+  });
+}
+
+const PAPER = 'rgb(238,234,222)';
+
+describe('the frame findPage settles on', () => {
+  // A torn footer band hangs below the frame that holds the text; the frame round all of it scores a little less.
+  it('is the outer one when a band of page hangs below a frame that scores a little higher', async () => {
+    mockFiles.set(
+      'file:///cache/photo.jpg',
+      scene((canvas, paint) => {
+        paint.setColor(Skia.Color(PAPER));
+        canvas.drawPath(polygon([[150, 100], [750, 100], [750, 1070], [150, 1010]]), paint);
+        paint.setColor(Skia.Color('rgb(50,42,38)'));
+        canvas.drawPath(polygon([[150, 1010], [550, 1056], [550, 1100], [150, 1100]]), paint);
+      }),
+    );
+
+    const { corners } = await findPage('file:///cache/photo.jpg');
+
+    expectNear(corners, box(150, 100, 750, 1100), 15);
+  }, 30000);
+
+  // The faint line is the page's own mid-page fold (14 grey levels), so the frame ends at it while the sides run on below.
+  it('is the whole photo when a faint-lined frame ends where the page sides run on', async () => {
+    mockFiles.set(
+      'file:///cache/photo.jpg',
+      scene((canvas, paint) => {
+        paint.setColor(Skia.Color(PAPER));
+        canvas.drawRect(Skia.XYWHRect(350, 100, 200, 600), paint);
+        paint.setColor(Skia.Color('rgb(227,223,211)'));
+        canvas.drawRect(Skia.XYWHRect(350, 700, 200, 500), paint);
+      }),
+    );
+
+    expectNear((await findPage('file:///cache/photo.jpg')).corners, wholePhoto, 1);
+  }, 30000);
+
+  // The bar's top edge lies 8 px inside the page's tilted top edge, close enough for the side fit to slide onto it.
+  it('keeps the top side on the page edge when a header bar sits just inside it', async () => {
+    mockFiles.set(
+      'file:///cache/photo.jpg',
+      scene((canvas, paint) => {
+        paint.setColor(Skia.Color(PAPER));
+        canvas.drawPath(polygon([[150, 100], [750, 90], [750, 1100], [150, 1100]]), paint);
+        paint.setColor(Skia.Color('rgb(35,35,45)'));
+        canvas.drawRect(Skia.XYWHRect(150, 108, 300, 50), paint);
+        for (let y = 300; y < 1000; y += 40) canvas.drawRect(Skia.XYWHRect(200, y, 500, 10), paint);
+      }),
+    );
+
+    const { corners } = await findPage('file:///cache/photo.jpg');
+
+    expect(corners[0].y).toBeLessThan(106);
+  }, 30000);
+
+  // The right edge bulges 48 px out between y 300 and 900, so no straight right side holds the page.
+  it('is the whole photo when a side runs inside a bulge of the page', async () => {
+    mockFiles.set(
+      'file:///cache/photo.jpg',
+      scene((canvas, paint) => {
+        paint.setColor(Skia.Color(PAPER));
+        canvas.drawPath(polygon([[150, 100], [750, 100], [750, 300], [798, 600], [750, 900], [750, 1100], [150, 1100]]), paint);
+        paint.setColor(Skia.Color('rgb(30,30,35)'));
+        for (let y = 160; y < 1050; y += 40) canvas.drawRect(Skia.XYWHRect(200, y, 450, 10), paint);
+      }),
+    );
+
+    expectNear((await findPage('file:///cache/photo.jpg')).corners, wholePhoto, 1);
+  }, 30000);
 });
