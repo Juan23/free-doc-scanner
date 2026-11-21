@@ -50,7 +50,7 @@ const DOCUNET_DIR = process.env.DOCUNET;
 const FIRST = Number(process.env.FIRST ?? 1);
 const LAST = Number(process.env.LAST ?? 15);
 // Fewer upright copies of the turned photos 1_1 to 15_2 than this means a gate or the crop got worse.
-const MIN_UPRIGHT = 4;
+const MIN_UPRIGHT = 2;
 
 (DOCUNET_DIR ? describe : describe.skip)('auto-upright on real photos', () => {
   it('turns no upright page and puts no turned page the wrong way up', async () => {

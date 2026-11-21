@@ -4,7 +4,7 @@
 /// <reference types="jest" />
 import { BlurStyle, ImageFormat, Skia, type SkCanvas, type SkPaint } from '@shopify/react-native-skia';
 
-import { contains, cropPage, findPage, isConvex, stopsShort, type Quad } from './crop';
+import { cropPage, findPage, isConvex, type Quad } from './crop';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
 const mockFiles = new Map<string, Uint8Array>();
@@ -493,55 +493,6 @@ it('tells a page outline from corners dragged past each other', () => {
   expect(isConvex([tilted[0], tilted[1], { x: 300, y: 300 }, tilted[3]])).toBe(false);
 });
 
-const box = (left: number, top: number, right: number, bottom: number): Quad => [
-  { x: left, y: top },
-  { x: right, y: top },
-  { x: right, y: bottom },
-  { x: left, y: bottom },
-];
-
-it('tells a frame inside another from one that pokes out of it', () => {
-  const outer = box(0, 0, 100, 100);
-  expect(contains(outer, box(10, 10, 90, 90))).toBe(true);
-  expect(contains(outer, box(0, 0, 100, 90))).toBe(true);
-  expect(contains(outer, box(10, 10, 110, 90))).toBe(false);
-});
-
-// Frames that share an edge differ by a pixel or two once their corners are rounded.
-it('lets a corner lie up to 2 px outside the frame that holds it, and no further', () => {
-  const outer = box(0, 0, 100, 100);
-  expect(contains(outer, box(-2, 10, 90, 90))).toBe(true);
-  expect(contains(outer, box(-3, 10, 90, 90))).toBe(false);
-});
-
-// A page's left side as `edgeMap` sees it: a bright page on its right gives gx = +120 along x = 50.
-function leftEdge(from: number, to: number, strength = 120) {
-  const gx = new Int16Array(200 * 150);
-  const gy = new Int16Array(200 * 150);
-  for (let y = from; y <= to; y++) gx[y * 200 + 50] = strength;
-  return { gx, gy };
-}
-
-describe('a frame that stops short of the page', () => {
-  const frame = box(50, 40, 150, 100);
-
-  it('is told by an edge that carries on past a corner with the same contrast', () => {
-    const { gx, gy } = leftEdge(10, 100);
-    expect(stopsShort(frame, gx, gy, 200, 150)).toBe(true);
-  });
-
-  it('is not told for a side whose edge ends at its corner', () => {
-    const { gx, gy } = leftEdge(40, 100);
-    expect(stopsShort(frame, gx, gy, 200, 150)).toBe(false);
-  });
-
-  it('is not told by an edge of the other contrast past the corner', () => {
-    const { gx, gy } = leftEdge(40, 100);
-    for (let y = 10; y < 40; y++) gx[y * 200 + 50] = -120;
-    expect(stopsShort(frame, gx, gy, 200, 150)).toBe(false);
-  });
-});
-
 const polygon = (points: number[][]) => Skia.Path.Polygon(points.map(([x, y]) => ({ x, y })), true);
 
 // Paper, then ink or the desk, drawn on the dark desk of `photo`.
@@ -555,38 +506,6 @@ function scene(draw: (canvas: SkCanvas, paint: SkPaint) => void): Uint8Array {
 const PAPER = 'rgb(238,234,222)';
 
 describe('the frame findPage settles on', () => {
-  // A torn footer band hangs below the frame that holds the text; the frame round all of it scores a little less.
-  it('is the outer one when a band of page hangs below a frame that scores a little higher', async () => {
-    mockFiles.set(
-      'file:///cache/photo.jpg',
-      scene((canvas, paint) => {
-        paint.setColor(Skia.Color(PAPER));
-        canvas.drawPath(polygon([[150, 100], [750, 100], [750, 1070], [150, 1010]]), paint);
-        paint.setColor(Skia.Color('rgb(50,42,38)'));
-        canvas.drawPath(polygon([[150, 1010], [550, 1056], [550, 1100], [150, 1100]]), paint);
-      }),
-    );
-
-    const { corners } = await findPage('file:///cache/photo.jpg');
-
-    expectNear(corners, box(150, 100, 750, 1100), 15);
-  }, 30000);
-
-  // The faint line is the page's own mid-page fold (14 grey levels), so the frame ends at it while the sides run on below.
-  it('is the whole photo when a faint-lined frame ends where the page sides run on', async () => {
-    mockFiles.set(
-      'file:///cache/photo.jpg',
-      scene((canvas, paint) => {
-        paint.setColor(Skia.Color(PAPER));
-        canvas.drawRect(Skia.XYWHRect(350, 100, 200, 600), paint);
-        paint.setColor(Skia.Color('rgb(227,223,211)'));
-        canvas.drawRect(Skia.XYWHRect(350, 700, 200, 500), paint);
-      }),
-    );
-
-    expectNear((await findPage('file:///cache/photo.jpg')).corners, wholePhoto, 1);
-  }, 30000);
-
   // The bar's top edge lies 8 px inside the page's tilted top edge, close enough for the side fit to slide onto it.
   it('keeps the top side on the page edge when a header bar sits just inside it', async () => {
     mockFiles.set(

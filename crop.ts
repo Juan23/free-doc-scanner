@@ -113,15 +113,9 @@ function edgeMap(rgba: Uint8Array, w: number, h: number) {
 const MAX_LINES_PER_SECTOR = 2;
 // Cap total Hough lines kept so the 4-line search stays bounded.
 const MAX_HOUGH_LINES = 24;
-// Bent or faint page sides cast few votes, so the floor is low; `backgroundShare`, `stopsShort` and `cutsPage` turn away the false frames it lets in.
-const MIN_VOTES = 14;
-// A line with fewer votes than this share of the copy's short side is faint; only a frame built on one is checked by `stopsShort`.
-const STRONG_VOTES_SHARE = 0.1;
-
-type VotedLine = Line & { votes: number };
 
 /** Top straight lines found by oriented Hough voting on thinned edges. */
-function houghLines(gx: Int16Array, gy: Int16Array, nms: Float32Array, w: number, h: number): VotedLine[] {
+function houghLines(gx: Int16Array, gy: Int16Array, nms: Float32Array, w: number, h: number): Line[] {
   const maxRho = Math.ceil(Math.hypot(w, h));
   const numRho = maxRho * 2 + 1;
   const acc = new Float32Array(THETA_BINS * numRho);
@@ -143,11 +137,12 @@ function houghLines(gx: Int16Array, gy: Int16Array, nms: Float32Array, w: number
     }
   }
 
-  const peaks: VotedLine[] = [];
+  const minVotes = Math.max(14, Math.round(0.10 * Math.min(w, h)));
+  const peaks: (Line & { votes: number })[] = [];
   for (let t = 0; t < THETA_BINS; t++) {
     for (let r = 0; r < numRho; r++) {
       const v = acc[t * numRho + r];
-      if (v < MIN_VOTES) continue;
+      if (v < minVotes) continue;
       let best = true;
       for (let dt = -5; dt <= 5 && best; dt++) {
         let tt = t + dt;
@@ -176,12 +171,12 @@ function houghLines(gx: Int16Array, gy: Int16Array, nms: Float32Array, w: number
   }
   peaks.sort((a, b) => b.votes - a.votes);
   const sectorCount = new Uint8Array(30);
-  const selected: VotedLine[] = [];
-  for (const { theta, rho, votes } of peaks) {
+  const selected: Line[] = [];
+  for (const { theta, rho } of peaks) {
     const sector = Math.min(29, Math.floor(((theta * 180) / Math.PI) / 6));
     if (sectorCount[sector] >= MAX_LINES_PER_SECTOR) continue;
     sectorCount[sector]++;
-    selected.push({ theta, rho, votes });
+    selected.push({ theta, rho });
     if (selected.length >= MAX_HOUGH_LINES) break;
   }
   return selected;
@@ -319,8 +314,6 @@ const MIN_SIDE_SUPPORT = 0.45;
 
 // A frame is not the page when more of its inside connected to its border than this looks like the ground outside.
 const MAX_BACKGROUND_SHARE = 0.15;
-// Ground inside a frame costs it score, so a frame hugging the page beats one spanning ground beside it.
-const BACKGROUND_PENALTY = 2;
 // Two colours count as alike when their red, green and blue differences add up to less than this.
 const ALIKE_COLOR = 25;
 // Textured ground varies past ALIKE_COLOR across speckles, so flood connectivity uses this wider band.
@@ -480,27 +473,6 @@ function backgroundShare(q: Quad, rgba: Uint8Array, w: number, h: number): numbe
   return alike / counted;
 }
 
-// A frame of at least this share of the best frame's score may replace it when it holds it.
-const OUTER_WORTH = 0.9;
-// Search-copy pixels a corner may lie outside another frame and still count as inside, where they share an edge.
-const CONTAIN_SLACK = 2;
-
-/** True when every corner of `inner` lies inside the clockwise quad `outer`, give or take `CONTAIN_SLACK`. */
-export function contains(outer: Quad, inner: Quad): boolean {
-  return inner.every((p) =>
-    outer.every((a, i) => {
-      const b = outer[(i + 1) % 4];
-      const len = Math.hypot(b.x - a.x, b.y - a.y);
-      return ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)) / len >= -CONTAIN_SLACK;
-    }),
-  );
-}
-
-// How far past a corner a side is followed, as a share of its length, to see whether its edge carries on.
-const CARRY_ON_REACH = 0.1;
-// Share of that reach an edge must hold to count as carrying on.
-const CARRY_ON_SHARE = 0.9;
-
 /** Signed gradient across segment AB (normal nx, ny), the strongest within +-2 px at each of `steps - 1` interior points; null when it leaves the image. */
 function acrossEdge(
   a: Point,
@@ -544,25 +516,6 @@ function sideContrast(a: Point, b: Point, gx: Int16Array, gy: Int16Array, w: num
   return { dx, dy, nx, ny, holds };
 }
 
-/** True when a side's edge carries on past a corner with the same sign of contrast and at least half its strength: the frame stops short of the page. */
-export function stopsShort(q: Quad, gx: Int16Array, gy: Int16Array, w: number, h: number): boolean {
-  return [0, 1, 2, 3].some((s) => {
-    const a = q[s];
-    const b = q[(s + 1) % 4];
-    const side = sideContrast(a, b, gx, gy, w, h);
-    if (!side) return false;
-    const { dx, dy, nx, ny, holds } = side;
-    const past = [
-      [b, { x: b.x + dx * CARRY_ON_REACH, y: b.y + dy * CARRY_ON_REACH }],
-      [{ x: a.x - dx * CARRY_ON_REACH, y: a.y - dy * CARRY_ON_REACH }, a],
-    ];
-    return past.some(([from, to]) => {
-      const edge = acrossEdge(from, to, nx, ny, gx, gy, w, h, 16);
-      return !!edge && edge.filter(holds).length >= CARRY_ON_SHARE * edge.length;
-    });
-  });
-}
-
 // Search-copy pixels outside a side, from and to, where an edge of its own contrast shows the page goes on past it.
 const BEYOND_NEAR = 3;
 const BEYOND_FAR = 10;
@@ -604,16 +557,13 @@ export function cutsPage(q: Quad, gx: Int16Array, gy: Int16Array, w: number, h: 
 // Search-copy pixels a refined side may sit inside the side it was fitted to; further in, it follows a fold or text block inside the page.
 const MAX_REFINE_INWARD = 2;
 
-const lineThrough = (a: Point, b: Point): Line => {
-  const theta = Math.atan2(b.x - a.x, a.y - b.y);
-  return { theta, rho: a.x * Math.cos(theta) + a.y * Math.sin(theta) };
-};
-
-/** True when `line` lies more than `MAX_REFINE_INWARD` inside segment AB (outward normal `out`) at either end. */
-function movesInward(line: Line, a: Point, b: Point, out: { nx: number; ny: number }): boolean {
+/** `line` moved outward until neither end of segment AB lies outside it, when it lies more than `MAX_REFINE_INWARD` inside one end; otherwise `line`. */
+function keepOutside(line: Line, a: Point, b: Point, out: { nx: number; ny: number }): Line {
   const cos = Math.cos(line.theta);
   const sin = Math.sin(line.theta);
-  return [a, b].some((p) => (p.x * cos + p.y * sin - line.rho) * (cos * out.nx + sin * out.ny) > MAX_REFINE_INWARD);
+  const facing = cos * out.nx + sin * out.ny;
+  const inward = Math.max(...[a, b].map((p) => (p.x * cos + p.y * sin - line.rho) * facing));
+  return inward > MAX_REFINE_INWARD ? { theta: line.theta, rho: line.rho + inward / facing } : line;
 }
 
 /** The page's corners in a small RGBA copy, or null when no page stands out from what is around it. */
@@ -625,7 +575,6 @@ function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
   const minGap = 0.15 * Math.min(w, h);
   const margin = 8;
   const minArea = 0.04 * w * h;
-  const strongVotes = Math.round(STRONG_VOTES_SHARE * Math.min(w, h));
   const cx = w / 2;
   const cy = h / 2;
   const distFromCenter = (l: Line) => cx * Math.cos(l.theta) + cy * Math.sin(l.theta) - l.rho;
@@ -633,8 +582,7 @@ function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
     const sameDir = Math.cos(a.theta) * Math.cos(b.theta) + Math.sin(a.theta) * Math.sin(b.theta) >= 0;
     return Math.abs(distFromCenter(a) - (sameDir ? 1 : -1) * distFromCenter(b));
   };
-  const accepted: { q: Quad; weighted: number }[] = [];
-  let top: { q: Quad; weighted: number } | null = null;
+  let bestQuad: Quad | null = null;
   let bestScore = 0;
 
   for (let i = 0; i < lines.length; i++) {
@@ -675,36 +623,23 @@ function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
             }
             score += sup * Math.hypot(b.x - a.x, b.y - a.y);
           }
-          if (!ok) continue;
-          if (score <= OUTER_WORTH * bestScore) continue;
-          const share = backgroundShare(q, rgba, w, h);
-          if (share > MAX_BACKGROUND_SHARE) continue;
-          const weighted = score * (1 - BACKGROUND_PENALTY * share);
-          if (weighted <= OUTER_WORTH * bestScore) continue;
-          const faint = [lines[i], lines[j], lines[k], lines[l]].some((line) => line.votes < strongVotes);
-          if (faint && stopsShort(q, gx, gy, w, h)) continue;
-          const found = { q, weighted };
-          accepted.push(found);
-          if (weighted > bestScore) {
-            bestScore = weighted;
-            top = found;
+          if (ok && score > bestScore) {
+            bestScore = score;
+            bestQuad = q;
           }
         }
       }
     }
   }
 
-  if (!top) return null;
-  // The ground check lets a frame inside another through when the strip between them is page, so the outer one of near worth wins.
-  const outer = accepted.filter((c) => c !== top && c.weighted >= OUTER_WORTH * bestScore && contains(c.q, top.q));
-  const bestQuad = outer.reduce((a, b) => (b.weighted > a.weighted ? b : a), outer[0] ?? top).q;
-  // Dropping the best frame for a runner-up picked frames that cut the page too, so the whole photo stands in.
-  if (cutsPage(bestQuad, gx, gy, w, h)) return null;
+  if (!bestQuad) return null;
+  // Only `main`'s frame or the whole photo comes out, so no check here can add a frame that cuts the page.
+  if (backgroundShare(bestQuad, rgba, w, h) > MAX_BACKGROUND_SHARE || cutsPage(bestQuad, gx, gy, w, h)) return null;
   const refined = [0, 1, 2, 3].map((s) => {
     const a = bestQuad[s];
     const b = bestQuad[(s + 1) % 4];
     const fit = refineLine(a, b, gx, gy, w, h);
-    return fit && !movesInward(fit, a, b, outwardNormal(bestQuad, s)) ? fit : lineThrough(a, b);
+    return fit && keepOutside(fit, a, b, outwardNormal(bestQuad, s));
   });
   const allLines = (ls: (Line | null)[]): ls is Line[] => ls.every((l) => l !== null);
   if (allLines(refined)) {
