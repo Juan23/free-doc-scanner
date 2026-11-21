@@ -4,7 +4,7 @@
 /// <reference types="jest" />
 import { BlurStyle, ImageFormat, Skia, type SkCanvas, type SkPaint } from '@shopify/react-native-skia';
 
-import { cropPage, findPage, isConvex, type Quad } from './crop';
+import { contains, cropPage, findPage, isConvex, stopsShort, type Quad } from './crop';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
 const mockFiles = new Map<string, Uint8Array>();
@@ -359,7 +359,7 @@ it('falls back to the whole photo for a thick dark border enclosing only ground'
 }, 30000);
 
 // An oval paper patch fills ~64% of the drawn frame so ground share stays between MAX_BACKGROUND_SHARE and 0.5.
-it('falls back to the whole photo when ground fills between 15% and 50% of the frame', async () => {
+it('falls back to the whole photo when over a third of the frame is ground', async () => {
   const surface = Skia.Surface.Make(W, H)!;
   const canvas = surface.getCanvas();
   canvas.drawColor(Skia.Color('rgb(150,120,90)'));
@@ -491,4 +491,46 @@ it('tells a page outline from corners dragged past each other', () => {
   expect(isConvex(tilted)).toBe(true);
   expect(isConvex([tilted[1], tilted[0], tilted[2], tilted[3]])).toBe(false);
   expect(isConvex([tilted[0], tilted[1], { x: 300, y: 300 }, tilted[3]])).toBe(false);
+});
+
+const box = (left: number, top: number, right: number, bottom: number): Quad => [
+  { x: left, y: top },
+  { x: right, y: top },
+  { x: right, y: bottom },
+  { x: left, y: bottom },
+];
+
+it('tells a frame inside another from one that pokes out of it', () => {
+  const outer = box(0, 0, 100, 100);
+  expect(contains(outer, box(10, 10, 90, 90))).toBe(true);
+  expect(contains(outer, box(0, 0, 100, 90))).toBe(true);
+  expect(contains(outer, box(10, 10, 110, 90))).toBe(false);
+});
+
+// A page's left side as `edgeMap` sees it: a bright page on its right gives gx = +120 along x = 50.
+function leftEdge(from: number, to: number, strength = 120) {
+  const gx = new Int16Array(200 * 150);
+  const gy = new Int16Array(200 * 150);
+  for (let y = from; y <= to; y++) gx[y * 200 + 50] = strength;
+  return { gx, gy };
+}
+
+describe('a frame that stops short of the page', () => {
+  const frame = box(50, 40, 150, 100);
+
+  it('is told by an edge that carries on past a corner with the same contrast', () => {
+    const { gx, gy } = leftEdge(10, 100);
+    expect(stopsShort(frame, gx, gy, 200, 150)).toBe(true);
+  });
+
+  it('is not told for a side whose edge ends at its corner', () => {
+    const { gx, gy } = leftEdge(40, 100);
+    expect(stopsShort(frame, gx, gy, 200, 150)).toBe(false);
+  });
+
+  it('is not told by an edge of the other contrast past the corner', () => {
+    const { gx, gy } = leftEdge(40, 100);
+    for (let y = 10; y < 40; y++) gx[y * 200 + 50] = -120;
+    expect(stopsShort(frame, gx, gy, 200, 150)).toBe(false);
+  });
 });
