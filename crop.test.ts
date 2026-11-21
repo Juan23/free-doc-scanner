@@ -169,13 +169,8 @@ it('finds a page with a dark picture matching the desk', async () => {
   expectNear((await findPage('file:///cache/photo.jpg')).corners, tilted, 20);
 }, 30000);
 
-it('finds the right-hand page of an open book beside its neighbour', async () => {
-  const rightPage: Quad = [
-    { x: 310, y: 80 },
-    { x: 830, y: 80 },
-    { x: 830, y: 1130 },
-    { x: 310, y: 1130 },
-  ];
+// The neighbour page outside the spine is the same paper, so the frame counts as ground.
+it('falls back to the whole photo for an open book beside its neighbour page', async () => {
   const surface = Skia.Surface.Make(W, H)!;
   const canvas = surface.getCanvas();
   canvas.drawColor(Skia.Color('rgb(92,70,52)'));
@@ -194,7 +189,36 @@ it('finds the right-hand page of an open book beside its neighbour', async () =>
   mockFiles.set('file:///cache/photo.jpg', snapshot.encodeToBytes(ImageFormat.JPEG, 92));
   for (const o of [snapshot, surface, paint]) o.dispose();
 
-  expectNear((await findPage('file:///cache/photo.jpg')).corners, rightPage, 20);
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, wholePhoto, 1);
+}, 30000);
+
+it('does not cut a page in two at a dark rule across it', async () => {
+  const fullPage: Quad = [
+    { x: 150, y: 100 },
+    { x: 750, y: 100 },
+    { x: 750, y: 1100 },
+    { x: 150, y: 1100 },
+  ];
+  const surface = Skia.Surface.Make(W, H)!;
+  const canvas = surface.getCanvas();
+  canvas.drawColor(Skia.Color('rgb(92,70,52)'));
+  const paint = Skia.Paint();
+  paint.setColor(Skia.Color('rgb(238,234,222)'));
+  canvas.drawRect(Skia.XYWHRect(150, 100, 600, 1000), paint);
+  paint.setColor(Skia.Color('rgb(30,30,35)'));
+  for (let y = 180; y < 760; y += 40) canvas.drawRect(Skia.XYWHRect(200, y, 500, 8), paint);
+  paint.setColor(Skia.Color('rgb(40,40,45)'));
+  canvas.drawRect(Skia.XYWHRect(150, 800, 600, 12), paint);
+  paint.setColor(Skia.Color('rgb(30,30,35)'));
+  for (let y = 860; y < 1060; y += 40) canvas.drawRect(Skia.XYWHRect(200, y, 500, 8), paint);
+  const snapshot = surface.makeImageSnapshot();
+  mockFiles.set('file:///cache/photo.jpg', snapshot.encodeToBytes(ImageFormat.JPEG, 92));
+  for (const o of [snapshot, surface, paint]) o.dispose();
+
+  const { corners } = await findPage('file:///cache/photo.jpg');
+  const near = (a: Quad, b: Quad, tol: number) =>
+    a.every((p, i) => Math.abs(p.x - b[i].x) < tol && Math.abs(p.y - b[i].y) < tol);
+  expect(near(corners, fullPage, 20) || near(corners, wholePhoto, 1)).toBe(true);
 }, 30000);
 
 it('clamps found corners to the photo bounds when an intersection lies just outside', async () => {
@@ -279,6 +303,22 @@ it('falls back to the whole photo for a frame of lines that encloses only ground
     canvas.drawLine(a.x, a.y, b.x, b.y, paint);
   });
   mockFiles.set('file:///cache/photo.jpg', surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 92));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, wholePhoto, 1);
+}, 30000);
+
+// A thick dark border covers the flood-fill edge cells, so seeding must step past them to reach the ground inside.
+it('falls back to the whole photo for a thick dark border enclosing only ground', async () => {
+  const surface = Skia.Surface.Make(W, H)!;
+  const canvas = surface.getCanvas();
+  canvas.drawColor(Skia.Color('rgb(150,120,90)'));
+  const paint = Skia.Paint();
+  paint.setColor(Skia.Color('rgb(30,20,10)'));
+  canvas.drawRect(Skia.XYWHRect(196, 246, 508, 708), paint);
+  paint.setColor(Skia.Color('rgb(150,120,90)'));
+  canvas.drawRect(Skia.XYWHRect(220, 270, 460, 660), paint);
+  mockFiles.set('file:///cache/photo.jpg', surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 92));
+  for (const o of [surface, paint]) o.dispose();
 
   expectNear((await findPage('file:///cache/photo.jpg')).corners, wholePhoto, 1);
 }, 30000);

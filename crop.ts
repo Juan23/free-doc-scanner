@@ -313,12 +313,16 @@ const MAX_SIDE_RATIO = 3.5;
 // Minimum fraction of a candidate side that must sit on a real edge.
 const MIN_SIDE_SUPPORT = 0.45;
 
-// A frame is not the page when more of its inside than this looks like the ground just outside it.
+// A frame is not the page when more of its inside connected to its border than this looks like the ground outside.
 const MAX_BACKGROUND_SHARE = 0.15;
 // Ground inside a frame costs it score, so a frame hugging the page beats one spanning ground beside it.
 const BACKGROUND_PENALTY = 2;
 // Two colours count as alike when their red, green and blue differences add up to less than this.
 const ALIKE_COLOR = 25;
+// Textured ground varies past ALIKE_COLOR across speckles, so flood connectivity uses this wider band.
+const NEAR_GROUND_COLOR = ALIKE_COLOR * 3;
+// Dark seams and ink lines sit further than this from the page median, unlike a pale paper margin.
+const NON_PAPER_COLOR = ALIKE_COLOR * 2;
 // Distances outside a side, in search-copy px, where its outside colour is read; past the edge's blur.
 const OUTSIDE_PX = [4, 5, 6];
 
@@ -343,25 +347,6 @@ function outwardNormal(q: Quad, s: number): { nx: number; ny: number } {
   return { nx, ny };
 }
 
-/** True when side `s` sits on a continuous dark seam (like a book gutter) darker than `paper`. */
-function hasDarkGutter(q: Quad, s: number, paper: number[], rgba: Uint8Array, w: number, h: number): boolean {
-  const { nx, ny } = outwardNormal(q, s);
-  const a = q[s];
-  const b = q[(s + 1) % 4];
-  const steps = 32;
-  const sums: number[] = [];
-  for (let i = 4; i < steps - 3; i++) {
-    for (const d of [1, 2]) {
-      const x = Math.max(0, Math.min(w - 1, Math.round(a.x + ((b.x - a.x) * i) / steps + nx * d)));
-      const y = Math.max(0, Math.min(h - 1, Math.round(a.y + ((b.y - a.y) * i) / steps + ny * d)));
-      const o = (y * w + x) * 4;
-      sums.push(rgba[o] + rgba[o + 1] + rgba[o + 2]);
-    }
-  }
-  sums.sort((m, n) => m - n);
-  return paper[0] + paper[1] + paper[2] - sums[sums.length >> 1] >= ALIKE_COLOR * 6;
-}
-
 /** The median colour a few px outside each side of the frame, as [r, g, b] per side. */
 function outsideColors(q: Quad, rgba: Uint8Array, w: number, h: number): number[][] {
   const steps = 32;
@@ -382,9 +367,9 @@ function outsideColors(q: Quad, rgba: Uint8Array, w: number, h: number): number[
   });
 }
 
-/** Share of the frame's inside connected to its border that matches the ground outside a non-paper side. */
+/** Share of the frame's inside connected to its border that matches the ground outside its sides. */
 function backgroundShare(q: Quad, rgba: Uint8Array, w: number, h: number): number {
-  const outside = outsideColors(q, rgba, w, h);
+  const ground = outsideColors(q, rgba, w, h);
   const grid = 24;
   const n = grid * grid;
   const offset = new Int32Array(n).fill(-1);
@@ -410,17 +395,8 @@ function backgroundShare(q: Quad, rgba: Uint8Array, w: number, h: number): numbe
   if (!counted) return 1;
 
   const paper = medianColor(channels);
-  const nonPaper = outside.filter((c) => colorDiff(c, paper[0], paper[1], paper[2]) >= ALIKE_COLOR);
-  const spine = outside.findIndex((c) => colorDiff(c, paper[0], paper[1], paper[2]) < ALIKE_COLOR);
-  // A real open-book spine has a dark gutter and three non-paper sides; other interior matches are false cuts.
-  const isBookSpine =
-    nonPaper.length === 3 &&
-    nonPaper.every((c) => colorDiff(c, paper[0], paper[1], paper[2]) >= ALIKE_COLOR * 3) &&
-    hasDarkGutter(q, spine, paper, rgba, w, h);
-  const ground = isBookSpine ? nonPaper : outside;
 
   const matchesGround = new Uint8Array(n);
-  // Textured ground varies past ALIKE_COLOR across speckles, so flood connectivity uses a 3x band.
   const nearGround = new Uint8Array(n);
   for (let k = 0; k < n; k++) {
     const o = offset[k];
@@ -431,7 +407,7 @@ function backgroundShare(q: Quad, rgba: Uint8Array, w: number, h: number): numbe
     if (ground.some((c) => colorDiff(c, r, g, b) < ALIKE_COLOR)) {
       matchesGround[k] = 1;
       nearGround[k] = 1;
-    } else if (ground.some((c) => colorDiff(c, r, g, b) < ALIKE_COLOR * 3)) {
+    } else if (ground.some((c) => colorDiff(c, r, g, b) < NEAR_GROUND_COLOR)) {
       nearGround[k] = 1;
     }
   }
@@ -450,8 +426,8 @@ function backgroundShare(q: Quad, rgba: Uint8Array, w: number, h: number): numbe
       const k = i * grid + j;
       seed(k);
       const o = offset[k];
-      // Step past an edge cell on a dark seam or text line, but never past a paper margin.
-      if (o >= 0 && !nearGround[k] && colorDiff(paper, rgba[o], rgba[o + 1], rgba[o + 2]) >= ALIKE_COLOR * 2) {
+      // Border cells on a dark seam or text line step one cell inward, never past a paper margin.
+      if (o >= 0 && !nearGround[k] && colorDiff(paper, rgba[o], rgba[o + 1], rgba[o + 2]) >= NON_PAPER_COLOR) {
         const ni = i === 0 ? 1 : i === grid - 1 ? grid - 2 : i;
         const nj = j === 0 ? 1 : j === grid - 1 ? grid - 2 : j;
         seed(ni * grid + nj);
