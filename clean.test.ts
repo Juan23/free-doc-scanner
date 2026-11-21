@@ -637,6 +637,21 @@ it('previews Original, Clean and Grayscale Normal from the untouched photo, writ
   }
 }, 30000);
 
+it('measures the paper and ink once for the Clean and Grayscale previews of a page', async () => {
+  mockFiles.set(PAGE1, photographedPage());
+  // The analysis ends by making the past-edge mask; nothing else here makes one.
+  const analyses = jest.spyOn(Skia.Image, 'MakeImage');
+
+  try {
+    const previews = (await filterPreviews(PAGE1, 150))!;
+    for (const p of Object.values(previews)) p.dispose();
+
+    expect(analyses).toHaveBeenCalledTimes(1);
+  } finally {
+    analyses.mockRestore();
+  }
+}, 30000);
+
 it('previews a page that has no original from the page itself', async () => {
   mockFiles.set(PAGE1, photographedPage());
 
