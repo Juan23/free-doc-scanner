@@ -265,16 +265,17 @@ function strokes(ink: Uint8Array, w: number, h: number) {
 }
 
 // Upright Latin text leans about 0.5 to the up side (sticking up minus hanging down, over both) on a
-// flat scan and 0.25 to 0.45 on a phone photo, where blur and creases add strokes both ways. Lines
-// running the other way and pictures lean less than 0.15 either way.
+// flat scan. The DocUNet photos that turn upright lean 0.28 to 0.58, but a page read across its lines
+// leans up to 1.0 on a handful of strokes, so the lean alone rules out little: the gates below do.
 const SURE_LEAN = 0.2;
 // About a third of Latin letters stick up and some hang down, so it never leans past about 0.7.
 // Further, the strokes are something else: vowel points under every letter, a script's long tails.
 const MAX_LEAN = 0.7;
 // The lean must also hold over enough strokes that chance can't explain it: it is this many
-// standard deviations from even, (up - down) / √(up + down). Strokes in one strip or line are not
-// independent, so this is far stricter than chance alone needs.
-const SURE_DEVIATIONS = 4;
+// standard deviations from even, (up - down) / √(up + down). On 130 DocUNet photos turned four ways,
+// a page read across its lines passes every other gate at up to 3.7, and a reading that turns the
+// page right starts at 5.2.
+const SURE_DEVIATIONS = 4.5;
 // Lowercase text has an ascender or capital in nearly every word: at least this many per line in a strip.
 // Text in capitals sticks out only at stray marks (commas, Q), which don't show reliably which way is up.
 const SURE_PER_LINE = 0.8;
@@ -289,7 +290,7 @@ const SURE_STOPS = 1.5;
 // own full stops on the other edge, with the space on the other side. Latin has few such marks, so
 // they must stay below this share of the full stops.
 const MAX_SCRIPT_MARKS = 2 / 3;
-// A few such marks tell nothing: on a short page, two broken letters outnumber its three full stops.
+// A few such marks tell nothing: on a short page, two broken letters reach two thirds of its three full stops.
 const MIN_SCRIPT_MARKS = 4;
 // Latin letters hold about as much ink at the top of the x-height as at the bottom, or more: n, m
 // and h arch there, a, c, e and s close there. Hebrew's hold far more at the top, in the bars across
@@ -328,7 +329,7 @@ function failedGates(a: Reading, b: Reading): string[] {
   return gates.filter(([, holds]) => !holds).map(([name]) => name);
 }
 
-/** Both readings of the page and the gates each fails, and the quarter turns `quarterTurnsToUpright` gives. */
+/** `turns` (clockwise quarter turns to stand the text upright) is 0 also when unsure: no clear text, or no clear up. */
 export function readUpright(image: SkImage) {
   const { ink, w, h } = findInk(image);
   const asIs = lean(strokes(ink, w, h));
@@ -339,16 +340,8 @@ export function readUpright(image: SkImage) {
   return { turns: turns as 0 | 1 | 2 | 3, asIs, turned, failedAsIs, failedTurned };
 }
 
-/**
- * The clockwise quarter turns (0-3) that would stand the page's text upright. 0 also when unsure:
- * when the page has no clear text, or its text has no clear up.
- */
-export function quarterTurnsToUpright(image: SkImage): 0 | 1 | 2 | 3 {
-  return readUpright(image).turns;
-}
-
-/** Turns `image` clockwise by 1-3 quarter turns and stores it over the page at `uri`. */
-async function storeTurned(image: SkImage, turns: number, uri: string): Promise<void> {
+/** `image` turned clockwise by 1-3 quarter turns. */
+export function turnedImage(image: SkImage, turns: number): SkImage {
   const w = image.width();
   const h = image.height();
   const [tw, th] = turns % 2 ? [h, w] : [w, h];
@@ -358,10 +351,17 @@ async function storeTurned(image: SkImage, turns: number, uri: string): Promise<
   canvas.rotate(turns * 90, 0, 0);
   canvas.drawImage(image, -w / 2, -h / 2);
   const turned = surface.makeImageSnapshot();
+  surface.dispose();
+  return turned;
+}
+
+/** Turns `image` clockwise by 1-3 quarter turns and stores it over the page at `uri`. */
+async function storeTurned(image: SkImage, turns: number, uri: string): Promise<void> {
+  const turned = turnedImage(image, turns);
   try {
     await replacePage(uri, turned);
   } finally {
-    for (const o of [surface, turned]) o.dispose();
+    turned.dispose();
   }
 }
 
@@ -399,7 +399,7 @@ export async function uprightPages(pageUris: string[]): Promise<void> {
     try {
       const image = await readPage(uri);
       try {
-        const turns = quarterTurnsToUpright(image);
+        const { turns } = readUpright(image);
         if (turns) await storeTurned(image, turns, uri);
       } finally {
         image.dispose();
