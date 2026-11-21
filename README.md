@@ -25,7 +25,7 @@ Scanning and saving happen on your phone. The app makes no network requests. It 
 
 ## Requirements
 
-- The iOS Simulator has no camera, so scanning on iOS needs a real iPhone. An Android emulator can run the camera screen, but its camera saves black photos.
+- The iOS Simulator has no camera, so scanning on iOS needs a real iPhone. An Android emulator runs the camera screen and photographs the scene its camera shows.
 
 ## Build and run
 

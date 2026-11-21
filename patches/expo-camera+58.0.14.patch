@@ -1,8 +1,21 @@
 diff --git a/node_modules/expo-camera/android/src/main/java/expo/modules/camera/CameraViewModule.kt b/node_modules/expo-camera/android/src/main/java/expo/modules/camera/CameraViewModule.kt
-index 62a1808..4031916 100644
+index 62a1808..c15019d 100644
 --- a/node_modules/expo-camera/android/src/main/java/expo/modules/camera/CameraViewModule.kt
 +++ b/node_modules/expo-camera/android/src/main/java/expo/modules/camera/CameraViewModule.kt
-@@ -360,6 +360,18 @@ class CameraViewModule : Module() {
+@@ -28,12 +28,9 @@ import expo.modules.camera.records.FlashMode
+ import expo.modules.camera.records.FocusMode
+ import expo.modules.camera.records.VideoQuality
+ import expo.modules.camera.records.VideoStabilizationMode
+-import expo.modules.camera.tasks.ResolveTakenPicture
+ import expo.modules.camera.tasks.writeStreamToFile
+ import expo.modules.camera.utils.CameraUtils
+-import expo.modules.camera.utils.CameraViewHelper
+ import expo.modules.core.errors.ModuleDestroyedException
+-import expo.modules.core.utilities.EmulatorUtilities
+ import expo.modules.core.utilities.VRUtilities
+ import expo.modules.interfaces.imageloader.ImageLoaderInterface
+ import expo.modules.interfaces.permissions.Permissions
+@@ -360,6 +357,18 @@ class CameraViewModule : Module() {
          }
        }
  
@@ -21,7 +34,7 @@ index 62a1808..4031916 100644
        Prop("mode") { view, mode: CameraMode? ->
          mode?.let {
            if (view.cameraMode != it) {
-@@ -489,16 +501,7 @@ class CameraViewModule : Module() {
+@@ -489,16 +498,7 @@ class CameraViewModule : Module() {
        }
  
        AsyncFunction("takePicture") { view: ExpoCameraView, options: PictureOptions, promise: Promise ->
