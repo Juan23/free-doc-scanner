@@ -432,6 +432,11 @@ export function shrunkCopy(
  * pass keeps can still vanish from such a preview (0.8 px grid on a 3024 px photo).
  */
 export function filterImage(image: SkImage, filter: Filter, width: number = image.width()): SkImage {
+  return filterWith(image, filter, width);
+}
+
+/** `filterImage` with a `shared` analysis of `image` in place of a new one; the caller disposes it. */
+function filterWith(image: SkImage, filter: Filter, width: number, shared?: Analysis): SkImage {
   const w = image.width();
   const h = image.height();
   const outW = Math.max(1, Math.round(width));
@@ -444,7 +449,7 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
   // Strokes averaged into the final pass's few pixels fall under its darkness gates and the blurred ink mask.
   const middle = Math.min(w, SMALL_WIDTH);
   if (outW < middle) {
-    const cleaned = filterImage(image, filter, middle);
+    const cleaned = filterWith(image, filter, middle, shared);
     try {
       return shrunkCopy(cleaned, outW, outH);
     } finally {
@@ -452,11 +457,11 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
     }
   }
 
-  const analysis = analysePage(image);
+  const analysis = shared ?? analysePage(image);
   try {
     return filterAnalysed(analysis, filter, outW, outH, cpuSurface);
   } finally {
-    analysis.dispose();
+    if (!shared) analysis.dispose();
   }
 }
 
@@ -619,6 +624,8 @@ export async function filterPreviews(
   if (cancelled()) return null;
   const photo = await readPage(heldPhoto(uri));
   const previews: Partial<Record<Filter['kind'], SkImage>> = {};
+  // Clean and Grayscale measure the same paper and ink, so it is done once.
+  let analysis: Analysis | undefined;
   try {
     for (const filter of PREVIEW_FILTERS) {
       // Lets taps and slides through between the heavy steps.
@@ -627,12 +634,14 @@ export async function filterPreviews(
         for (const p of Object.values(previews)) p.dispose();
         return null;
       }
-      previews[filter.kind] = filterImage(photo, filter, width);
+      if (filter.kind !== 'original') analysis ??= analysePage(photo);
+      previews[filter.kind] = filterWith(photo, filter, width, analysis);
     }
   } catch (e) {
     for (const p of Object.values(previews)) p.dispose();
     throw e;
   } finally {
+    analysis?.dispose();
     photo.dispose();
   }
   return previews as Record<Filter['kind'], SkImage>;
