@@ -199,7 +199,17 @@ it('does not cut a page in two at a dark rule across it', async () => {
   expect(isNear(corners, fullPage, 20) || isNear(corners, wholePhoto, 1)).toBe(true);
 }, 30000);
 
-it('does not cut a tilted page at its own dense dark text lines', async () => {
+const TEXT_TOP = 0.08;
+const TEXT_BOTTOM = 0.95;
+const TEXT_STEP = 0.035;
+const TEXT_HEIGHT = 0.008;
+const TEXT_LEFT = 0.12;
+const TEXT_RIGHT = 0.88;
+const RULE_TOP = 0.75;
+const RULE_HEIGHT = 0.02;
+const RULE_GAP = 0.03;
+
+function tiltedTextPage(rule?: { top: number; height: number; gap: number }): Uint8Array {
   const surface = Skia.Surface.Make(W, H)!;
   const canvas = surface.getCanvas();
   canvas.drawColor(Skia.Color('rgb(92,70,52)'));
@@ -210,20 +220,37 @@ it('does not cut a tilted page at its own dense dark text lines', async () => {
     x: a.x + (b.x - a.x) * t,
     y: a.y + (b.y - a.y) * t,
   });
-  paint.setColor(Skia.Color('rgb(30,30,35)'));
-  for (let k = 0.08; k < 0.95; k += 0.035) {
-    const a0 = lerp(tilted[0], tilted[3], k);
-    const b0 = lerp(tilted[1], tilted[2], k);
-    const a1 = lerp(tilted[0], tilted[3], k + 0.008);
-    const b1 = lerp(tilted[1], tilted[2], k + 0.008);
+  const band = (top: number, height: number, left: number, right: number, color: string) => {
+    const a0 = lerp(tilted[0], tilted[3], top);
+    const b0 = lerp(tilted[1], tilted[2], top);
+    const a1 = lerp(tilted[0], tilted[3], top + height);
+    const b1 = lerp(tilted[1], tilted[2], top + height);
+    paint.setColor(Skia.Color(color));
     canvas.drawPath(
-      Skia.Path.Polygon([lerp(a0, b0, 0.12), lerp(a0, b0, 0.88), lerp(a1, b1, 0.88), lerp(a1, b1, 0.12)], true),
+      Skia.Path.Polygon([lerp(a0, b0, left), lerp(a0, b0, right), lerp(a1, b1, right), lerp(a1, b1, left)], true),
       paint,
     );
+  };
+  for (let k = TEXT_TOP; k < TEXT_BOTTOM; k += TEXT_STEP) {
+    if (rule && Math.abs(k - rule.top) <= rule.gap) continue;
+    band(k, TEXT_HEIGHT, TEXT_LEFT, TEXT_RIGHT, 'rgb(30,30,35)');
   }
+  if (rule) band(rule.top, rule.height, 0, 1, 'rgb(40,40,45)');
   const snapshot = surface.makeImageSnapshot();
-  mockFiles.set('file:///cache/photo.jpg', snapshot.encodeToBytes(ImageFormat.JPEG, 92));
+  const bytes = snapshot.encodeToBytes(ImageFormat.JPEG, 92);
   for (const o of [snapshot, surface, paint]) o.dispose();
+  return bytes;
+}
+
+it('does not cut a tilted page at its own dense dark text lines', async () => {
+  mockFiles.set('file:///cache/photo.jpg', tiltedTextPage());
+
+  const { corners } = await findPage('file:///cache/photo.jpg');
+  expect(isNear(corners, tilted, 20) || isNear(corners, wholePhoto, 1)).toBe(true);
+}, 30000);
+
+it('does not cut a tilted page at a dark rule over dense text lines', async () => {
+  mockFiles.set('file:///cache/photo.jpg', tiltedTextPage({ top: RULE_TOP, height: RULE_HEIGHT, gap: RULE_GAP }));
 
   const { corners } = await findPage('file:///cache/photo.jpg');
   expect(isNear(corners, tilted, 20) || isNear(corners, wholePhoto, 1)).toBe(true);
