@@ -189,6 +189,18 @@ it.each([1, 2, 3])('turns justified text turned %i quarter turns clockwise uprig
   expect(difference(mockFiles.get(PAGE)!, letter(0, ARTICLE, 1090))).toBeLessThan(3);
 }, 30000);
 
+// A short page: half the letter's full stops and no commas, so only three marks sit on its baseline.
+let fullStops = 0;
+const FEW_STOPS = LETTER.replace(/,/g, '').replace(/\./g, (stop) => (fullStops++ % 2 === 0 ? stop : ''));
+
+it.each([1, 2])('turns a page with few full stops turned %i quarter turns clockwise upright', async (turns) => {
+  mockFiles.set(PAGE, letter(turns, FEW_STOPS));
+
+  await uprightPages([PAGE]);
+
+  expect(difference(mockFiles.get(PAGE)!, letter(0, FEW_STOPS))).toBeLessThan(3);
+}, 30000);
+
 const LARGE_LINES = [
   'Thank you for your letter of the third of June and for the copies of the',
   'signed lease. I have checked them against the draft we agreed in May, and',

@@ -264,15 +264,17 @@ function strokes(ink: Uint8Array, w: number, h: number) {
   return { up, down, inkTop, inkBottom, lines, low, high };
 }
 
-// Upright Latin text leans about 0.5 to the up side (sticking up minus hanging down, over both).
-// Lines running the other way and pictures lean less than about 0.25 either way.
-const SURE_LEAN = 0.3;
+// Upright Latin text leans about 0.5 to the up side (sticking up minus hanging down, over both) on a
+// flat scan and 0.25 to 0.45 on a phone photo, where blur and creases add strokes both ways. Lines
+// running the other way and pictures lean less than 0.15 either way.
+const SURE_LEAN = 0.2;
 // About a third of Latin letters stick up and some hang down, so it never leans past about 0.7.
 // Further, the strokes are something else: vowel points under every letter, a script's long tails.
 const MAX_LEAN = 0.7;
 // The lean must also hold over enough strokes that chance can't explain it: it is this many
-// standard deviations from even, (up - down) / √(up + down).
-const SURE_DEVIATIONS = 6;
+// standard deviations from even, (up - down) / √(up + down). Strokes in one strip or line are not
+// independent, so this is far stricter than chance alone needs.
+const SURE_DEVIATIONS = 4;
 // Lowercase text has an ascender or capital in nearly every word: at least this many per line in a strip.
 // Text in capitals sticks out only at stray marks (commas, Q), which don't show reliably which way is up.
 const SURE_PER_LINE = 0.8;
@@ -280,13 +282,15 @@ const SURE_PER_LINE = 0.8;
 // upside-down Latin, so the full stops and commas must agree: on the side the strokes say is up,
 // those on the baseline must outnumber those hanging from the x-line by this many standard
 // deviations, (stops - hanging) / √(stops + hanging).
-const SURE_STOPS = 2;
+const SURE_STOPS = 1.5;
 // Some scripts' letters leave stop-sized marks too: Hebrew's yod hangs from the top of the line, so
 // upside down one ending a word sits like a full stop. Such marks also come inside words, or alone
 // between wide gaps in a typewriter font, and right-to-left text turned the other way up has its
 // own full stops on the other edge, with the space on the other side. Latin has few such marks, so
 // they must stay below this share of the full stops.
 const MAX_SCRIPT_MARKS = 2 / 3;
+// A few such marks tell nothing: on a short page, two broken letters outnumber its three full stops.
+const MIN_SCRIPT_MARKS = 4;
 // Latin letters hold about as much ink at the top of the x-height as at the bottom, or more: n, m
 // and h arch there, a, c, e and s close there. Hebrew's hold far more at the top, in the bars across
 // ב ד ה כ ר ת, so upside down, the way Latin would read them as upright, they are heavy at the
@@ -295,14 +299,44 @@ const MIN_BALANCE = 0.95;
 
 function lean({ up, down, inkTop, inkBottom, lines, low, high }: ReturnType<typeof strokes>) {
   const [stops, hanging] = up >= down ? [low, high] : [high, low];
+  const scriptMarks = stops.inWord + stops.alone + hanging.rtl;
   return {
     lean: (up - down) / (up + down || 1),
     deviations: (up - down) / Math.sqrt(up + down || 1),
     perLine: Math.max(up, down) / (lines || 1),
     balance: up >= down ? inkTop / (inkBottom || 1) : inkBottom / (inkTop || 1),
     stops: (stops.ltr - hanging.ltr) / Math.sqrt(stops.ltr + hanging.ltr || 1),
-    script: stops.inWord + stops.alone + hanging.rtl >= MAX_SCRIPT_MARKS * stops.ltr,
+    script: scriptMarks >= MIN_SCRIPT_MARKS && scriptMarks >= MAX_SCRIPT_MARKS * stops.ltr,
   };
+}
+
+type Reading = ReturnType<typeof lean>;
+
+/** The gates reading `a` fails as the way the text runs, with `b` the page read the other way. */
+function failedGates(a: Reading, b: Reading): string[] {
+  const gates: [string, boolean][] = [
+    ['lean', Math.abs(a.lean) >= SURE_LEAN],
+    ['maxLean', Math.abs(a.lean) <= MAX_LEAN],
+    ['deviations', Math.abs(a.deviations) >= SURE_DEVIATIONS],
+    ['perLine', a.perLine >= SURE_PER_LINE],
+    ['balance', a.balance >= MIN_BALANCE],
+    ['stops', a.stops >= SURE_STOPS],
+    ['script', !a.script],
+    // Text lines run one way only, so read the other way the page must lean far less surely.
+    ['other', Math.abs(b.deviations) <= Math.abs(a.deviations) / 2],
+  ];
+  return gates.filter(([, holds]) => !holds).map(([name]) => name);
+}
+
+/** Both readings of the page and the gates each fails, and the quarter turns `quarterTurnsToUpright` gives. */
+export function readUpright(image: SkImage) {
+  const { ink, w, h } = findInk(image);
+  const asIs = lean(strokes(ink, w, h));
+  const turned = lean(strokes(turnClockwise(ink, w, h), h, w));
+  const failedAsIs = failedGates(asIs, turned);
+  const failedTurned = failedGates(turned, asIs);
+  const turns = !failedAsIs.length ? (asIs.lean > 0 ? 0 : 2) : !failedTurned.length ? (turned.lean > 0 ? 1 : 3) : 0;
+  return { turns: turns as 0 | 1 | 2 | 3, asIs, turned, failedAsIs, failedTurned };
 }
 
 /**
@@ -310,22 +344,7 @@ function lean({ up, down, inkTop, inkBottom, lines, low, high }: ReturnType<type
  * when the page has no clear text, or its text has no clear up.
  */
 export function quarterTurnsToUpright(image: SkImage): 0 | 1 | 2 | 3 {
-  const { ink, w, h } = findInk(image);
-  const asIs = lean(strokes(ink, w, h));
-  const turned = lean(strokes(turnClockwise(ink, w, h), h, w));
-  // Text lines run one way only, so read the other way the page must lean far less surely.
-  const clear = (a: typeof asIs, b: typeof asIs) =>
-    Math.abs(a.lean) >= SURE_LEAN &&
-    Math.abs(a.lean) <= MAX_LEAN &&
-    Math.abs(a.deviations) >= SURE_DEVIATIONS &&
-    a.perLine >= SURE_PER_LINE &&
-    a.balance >= MIN_BALANCE &&
-    a.stops >= SURE_STOPS &&
-    !a.script &&
-    Math.abs(b.deviations) <= Math.abs(a.deviations) / 2;
-  if (clear(asIs, turned)) return asIs.lean > 0 ? 0 : 2;
-  if (clear(turned, asIs)) return turned.lean > 0 ? 1 : 3;
-  return 0;
+  return readUpright(image).turns;
 }
 
 /** Turns `image` clockwise by 1-3 quarter turns and stores it over the page at `uri`. */
