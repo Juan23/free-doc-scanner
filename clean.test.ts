@@ -1382,3 +1382,115 @@ describe('paper around text on a large photo', () => {
     expect(shares.map((s) => s > WHITE_SHARE)).toEqual(LINES.map(() => true));
   }, 120000);
 });
+
+describe('dark background', () => {
+  // White page covering a fifth of a dark, noisy, slightly coloured table, with dark print on it.
+  function pageOnDarkTable(): SkImage {
+    const rgba = new Uint8Array(W * H * 4);
+    let seed = 98765;
+    const rand = () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed / 2 ** 32;
+    };
+    for (let i = 0; i < W * H * 4; i += 4) {
+      const grain = (rand() - 0.5) * 24;
+      const dust = rand() < 0.02 ? 45 : 0;
+      rgba[i] = Math.max(0, Math.min(255, Math.round(56 + grain + (rand() - 0.5) * 14 + dust)));
+      rgba[i + 1] = Math.max(0, Math.min(255, Math.round(48 + grain + (rand() - 0.5) * 14 + dust)));
+      rgba[i + 2] = Math.max(0, Math.min(255, Math.round(44 + grain + (rand() - 0.5) * 14 + dust)));
+      rgba[i + 3] = 255;
+    }
+    const bg = Skia.Image.MakeImage(
+      { width: W, height: H, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul },
+      Skia.Data.fromBytes(rgba),
+      W * 4,
+    )!;
+    const surface = Skia.Surface.Make(W, H)!;
+    const canvas = surface.getCanvas();
+    canvas.drawImage(bg, 0, 0);
+    bg.dispose();
+    const paper = Skia.Paint();
+    paper.setColor(Skia.Color('rgb(235,232,224)'));
+    // 180 x 534 = 96,120 px = 20.0% of 600 x 800.
+    canvas.drawRect(Skia.XYWHRect(380, 133, 180, 534), paper);
+    const ink = Skia.Paint();
+    ink.setColor(Skia.Color('rgb(35,35,40)'));
+    for (let y = 200; y <= 500; y += 60) canvas.drawRect(Skia.XYWHRect(400, y, 140, 12), ink);
+    const bytes = surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 92);
+    paper.dispose();
+    ink.dispose();
+    surface.dispose();
+    return decode(bytes);
+  }
+
+  // Well-framed page with dark text, a dark picture (360 x 240 px, so 300 x 200 px on a 500 px copy) and a
+  // dark band with light text (60 px, 50 on a 500 px copy).
+  function pageWithDarkPicture(): SkImage {
+    const surface = Skia.Surface.Make(W, H)!;
+    const canvas = surface.getCanvas();
+    canvas.drawColor(Skia.Color('rgb(235,228,210)'));
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color('rgb(35,35,40)'));
+    for (const y of [80, 130, 620, 670]) canvas.drawRect(Skia.XYWHRect(60, y, 480, 12), paint);
+    paint.setColor(Skia.Color('rgb(60,64,70)'));
+    canvas.drawRect(Skia.XYWHRect(60, 520, 480, 60), paint);
+    paint.setColor(Skia.Color('rgb(235,228,210)'));
+    canvas.drawRect(Skia.XYWHRect(80, 544, 440, 12), paint);
+    paint.setColor(Skia.Color('rgb(72,76,82)'));
+    canvas.drawRect(Skia.XYWHRect(120, 240, 360, 240), paint);
+    paint.setColor(Skia.Color('rgb(20,22,26)'));
+    for (let y = 265; y < 460; y += 26) canvas.drawRect(Skia.XYWHRect(140, y, 320, 10), paint);
+    const bytes = surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 95);
+    paint.dispose();
+    surface.dispose();
+    return decode(bytes);
+  }
+
+  it('turns a dark, noisy, slightly coloured background near white with little colour spread and keeps print', () => {
+    const photo = pageOnDarkTable();
+    const out = filterImage(photo, { kind: 'clean', strength: 1 });
+    const px = readPixels(out);
+    let white = 0;
+    let spreadSum = 0;
+    let count = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < 360; x++) {
+        const i = (y * W + x) * 4;
+        const r = px[i];
+        const g = px[i + 1];
+        const b = px[i + 2];
+        const l = 0.299 * r + 0.587 * g + 0.114 * b;
+        if (l >= 245) white++;
+        spreadSum += Math.max(r, g, b) - Math.min(r, g, b);
+        count++;
+      }
+    }
+    const at = (x: number, y: number) => {
+      const i = (y * W + x) * 4;
+      return (px[i] + px[i + 1] + px[i + 2]) / 3;
+    };
+    expect(white / count).toBeGreaterThan(0.98);
+    expect(spreadSum / count).toBeLessThan(2);
+    expect(at(470, 206)).toBeLessThan(60);
+    expect(at(470, 326)).toBeLessThan(60);
+    expect(at(470, 230)).toBeGreaterThan(245);
+    out.dispose();
+    photo.dispose();
+  }, 30000);
+
+  it('keeps a dark picture inside a well-framed page', () => {
+    const photo = pageWithDarkPicture();
+    const out = filterImage(photo, { kind: 'clean', strength: 1 });
+    const px = readPixels(out);
+    const at = (x: number, y: number) => {
+      const i = (y * W + x) * 4;
+      return (px[i] + px[i + 1] + px[i + 2]) / 3;
+    };
+    for (const y of [270, 322, 374, 426]) expect(at(300, y)).toBeLessThan(80);
+    expect(at(300, 530)).toBeLessThan(80);
+    expect(at(300, 86)).toBeLessThan(60);
+    expect(at(300, 200)).toBeGreaterThan(245);
+    out.dispose();
+    photo.dispose();
+  }, 30000);
+});

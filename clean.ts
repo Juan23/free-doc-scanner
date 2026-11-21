@@ -170,6 +170,7 @@ uniform shader letterInk;
 uniform float whitePoint;
 uniform float grey;
 uniform float paleFloor;
+uniform float backgroundLuma;
 half3 levelsAt(float2 xy, half3 p, half white) {
   return saturate((page.eval(xy).rgb / p - (white - 0.6)) / 0.6);
 }
@@ -230,6 +231,10 @@ half4 main(float2 xy) {
     keep = max(keep, pale);
   }
   half3 cleaned = mix(half3(1), c, keep * (1 - beyond.eval(xy).a));
+  if (backgroundLuma > 0) {
+    half pLuma = dot(p, half3(0.2126, 0.7152, 0.0722));
+    cleaned = mix(half3(1), cleaned, smoothstep(0.93 * half(backgroundLuma), 1.07 * half(backgroundLuma), pLuma));
+  }
   half greyed = dot(cleaned, half3(0.2126, 0.7152, 0.0722));
   return half4(mix(cleaned, half3(greyed), half(grey)), 1);
 }`)!;
@@ -466,7 +471,58 @@ function filterWith(image: SkImage, filter: Filter, width: number, shared?: Anal
 }
 
 // Its `dispose` frees what it made; the caller owns `image`.
-type Analysis = { image: SkImage; sw: number; sh: number; smallPage: SkImage; letters: SkImage; coarse: SkImage; paper: SkImage; beyond: SkImage; dispose: () => void };
+type Analysis = { image: SkImage; sw: number; sh: number; smallPage: SkImage; letters: SkImage; coarse: SkImage; paper: SkImage; beyond: SkImage; backgroundLuma: number; dispose: () => void };
+
+// A page the crop left a table or carpet around: the paper estimate there is the background itself,
+// so dividing by it leaves speckle. Where the dark region (below this share of the frame's bright
+// paper, its 90th percentile of luma) joins the border and covers this much of the frame, the shader
+// whitens pixels whose paper is that dark. A dark picture or band on a well-framed page is a small
+// part of the frame or not joined to the border, so the gate stays shut and it keeps its print.
+// On DocUNet, 0.65 opens the gate on the well-framed 55_1 and 0.45 leaves blotches on 15_1's carpet.
+const BACKGROUND_SHARE = 0.5;
+const BACKGROUND_AREA = 0.25;
+
+// The luma (0 to 1) below which the shader whitens a pixel, or 0 when the frame has no such background.
+function backgroundLumaOf(fine: Uint8Array, w: number, h: number): number {
+  const n = w * h;
+  const hist = new Int32Array(256);
+  const lumas = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const l = Math.round(0.2126 * fine[i * 4] + 0.7152 * fine[i * 4 + 1] + 0.0722 * fine[i * 4 + 2]);
+    lumas[i] = l;
+    hist[l]++;
+  }
+  let below = 0;
+  let bright = 0;
+  while (bright < 255 && (below += hist[bright]) < 0.9 * n) bright++;
+  const cutoff = BACKGROUND_SHARE * bright;
+  const seen = new Uint8Array(n);
+  const queue: number[] = [];
+  const visit = (p: number) => {
+    if (!seen[p] && lumas[p] < cutoff) {
+      seen[p] = 1;
+      queue.push(p);
+    }
+  };
+  for (let x = 0; x < w; x++) {
+    visit(x);
+    visit((h - 1) * w + x);
+  }
+  for (let y = 1; y < h - 1; y++) {
+    visit(y * w);
+    visit(y * w + w - 1);
+  }
+  for (let i = 0; i < queue.length; i++) {
+    const x = queue[i] % w;
+    const y = (queue[i] - x) / w;
+    for (let d = 0; d < 4; d++) {
+      const u = x + STEP_X[d];
+      const v = y + STEP_Y[d];
+      if (u >= 0 && v >= 0 && u < w && v < h) visit(v * w + u);
+    }
+  }
+  return queue.length > BACKGROUND_AREA * n ? cutoff / 255 : 0;
+}
 
 function analysePage(image: SkImage): Analysis {
   const w = image.width();
@@ -518,8 +574,9 @@ function analysePage(image: SkImage): Analysis {
       canvas.clear(Skia.Color('transparent'));
       canvas.drawImage(beyondMask, 0, 0, feather);
       const beyond = result(surface.makeImageSnapshot());
+      const backgroundLuma = finePixels ? backgroundLumaOf(finePixels, sw, sh) : 0;
       return {
-        image, sw, sh, smallPage, letters, coarse, paper, beyond,
+        image, sw, sh, smallPage, letters, coarse, paper, beyond, backgroundLuma,
         dispose: () => [smallPage, letters, coarse, paper, beyond].forEach((o) => o.dispose()),
       };
     });
@@ -574,7 +631,7 @@ function filterAnalysed(
     const beyondShader = own(clamp(analysis.beyond, FilterMode.Linear, toOut));
     const letterInkShader = own(clamp(letterInk, FilterMode.Linear, toOut));
     const cleanShader = own(cleanEffect.makeShaderWithChildren(
-      [keep.whitePoint, filter.kind === 'gray' ? 1 : 0, outW >= PALE_LINE_WIDTH ? keep.paleLine : 1],
+      [keep.whitePoint, filter.kind === 'gray' ? 1 : 0, outW >= PALE_LINE_WIDTH ? keep.paleLine : 1, analysis.backgroundLuma],
       [pageShader, paperShader, textShader, beyondShader, letterInkShader],
     ));
     const out = own(makeSurface(outW, outH));
