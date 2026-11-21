@@ -181,7 +181,7 @@ it('finds a page that fills nearly the whole photo', async () => {
   expectNear((await findPage('file:///cache/photo.jpg')).corners, close, 15);
 }, 30000);
 
-// A small page whose four sides bow out, so no straight run of any side casts many Hough votes.
+// Top and bottom bow in and left and right bow out, so no straight run of any side casts many Hough votes.
 it('finds a small page whose edges are bent', async () => {
   const small: Quad = [
     { x: 330, y: 400 },
@@ -193,7 +193,7 @@ it('finds a small page whose edges are bent', async () => {
   small.forEach((a, i) => {
     const b = small[(i + 1) % 4];
     const length = Math.hypot(b.x - a.x, b.y - a.y);
-    const bow = (i % 2 ? 10 : -10) * 4;
+    const bow = i % 2 ? 40 : -40;
     for (let k = 0; k < 20; k++) {
       const t = k / 20;
       const off = bow * t * (1 - t);
@@ -211,7 +211,7 @@ it('finds a small page whose edges are bent', async () => {
   expectNear((await findPage('file:///cache/photo.jpg')).corners, small, 30);
 }, 30000);
 
-// Four drawn lines on one surface: edges everywhere, but the same ground inside and out.
+// Four drawn lines on one surface: strong edges along all four sides, but the same ground inside and out.
 it('falls back to the whole photo for a frame of lines that encloses only ground', async () => {
   const ground = 'rgb(150,120,90)';
   const surface = Skia.Surface.Make(W, H)!;
@@ -225,6 +225,31 @@ it('falls back to the whole photo for a frame of lines that encloses only ground
     { x: 700, y: 280 },
     { x: 670, y: 950 },
     { x: 180, y: 900 },
+  ];
+  frame.forEach((a, i) => {
+    const b = frame[(i + 1) % 4];
+    canvas.drawLine(a.x, a.y, b.x, b.y, paint);
+  });
+  mockFiles.set('file:///cache/photo.jpg', surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 92));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, wholePhoto, 1);
+}, 30000);
+
+// An oval paper patch fills ~64% of the drawn frame so ground share stays between MAX_BACKGROUND_SHARE and 0.5.
+it('falls back to the whole photo when ground fills between 15% and 50% of the frame', async () => {
+  const surface = Skia.Surface.Make(W, H)!;
+  const canvas = surface.getCanvas();
+  canvas.drawColor(Skia.Color('rgb(150,120,90)'));
+  const paint = Skia.Paint();
+  paint.setColor(Skia.Color('rgb(238,234,222)'));
+  canvas.drawOval(Skia.XYWHRect(225, 290, 450, 620), paint);
+  paint.setColor(Skia.Color('rgb(40,30,20)'));
+  paint.setStrokeWidth(4);
+  const frame: Quad = [
+    { x: 200, y: 260 },
+    { x: 700, y: 260 },
+    { x: 700, y: 940 },
+    { x: 200, y: 940 },
   ];
   frame.forEach((a, i) => {
     const b = frame[(i + 1) % 4];

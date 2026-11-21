@@ -8,7 +8,7 @@ import { findPage, type Point } from './crop';
 // hand-checked list made from overlays of the frame on the photo.
 // 'right': the frame hugs the page, so the corners must stay within TOLERANCE of the listed ones.
 // 'whole': no frame is known to be right, so a new frame is a wrong one until someone checks it.
-// 'bad': the frame listed was found and is loose or wrong; whole is better, anything else is worse.
+// 'bad': the listed frame and the whole photo pass, any other frame fails, and an improvement means updating the list.
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const path = require('path') as { join: (...parts: string[]) => string };
