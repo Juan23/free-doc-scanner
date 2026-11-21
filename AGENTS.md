@@ -41,7 +41,7 @@ A successful `expo run:ios|android` never exits: it keeps the dev server open af
 
 For a store build, bump `ios.buildNumber` and `android.versionCode` in `app.json`, run `npx expo prebuild --clean`, then `./gradlew bundleRelease` in `android/` and `xcodebuild … archive` and `-exportArchive` in `ios/`. Run `xcodebuild -exportArchive` with `PATH=/usr/bin:/bin:/usr/sbin:/sbin`: Homebrew's `rsync` comes first otherwise, and the export stops with "Copy failed".
 
-The iOS Simulator has no camera, so scanning on iOS needs a real iPhone. An Android emulator runs the camera screen and takes real photos: start the AVD with `-camera-back imagefile:<a 1200x1600 JPEG of a page> -gpu host` and that picture is the scene (the live view shows it after a few seconds; at 3024x4032 or without `-gpu host` it stays black), and the shutter saves it as 960x1280.
+The iOS Simulator has no camera, so scanning on iOS needs a real iPhone. An Android emulator runs the camera screen and takes real photos: start the AVD with `-camera-back imagefile:<a 1200x1600 JPEG of a page> -gpu host` and that picture is the scene (the live view shows it after a few seconds), and the shutter saves it as 960x1280.
 
 ## This app
 
