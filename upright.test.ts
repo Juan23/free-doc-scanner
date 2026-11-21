@@ -189,6 +189,21 @@ it.each([1, 2, 3])('turns justified text turned %i quarter turns clockwise uprig
   expect(difference(mockFiles.get(PAGE)!, letter(0, ARTICLE, 1090))).toBeLessThan(3);
 }, 30000);
 
+// A short page: half the letter's full stops and no commas. The detector finds three of them at 1 and
+// 2 quarter turns and two at 0 and 3 (below the full-stop gate), so turn 3 is not a row.
+const FEW_STOPS = LETTER.replace(/,/g, '')
+  .split('.')
+  .map((part, i, parts) => part + (i % 2 === 0 && i < parts.length - 1 ? '.' : ''))
+  .join('');
+
+it.each([1, 2])('turns a page with few full stops turned %i quarter turns clockwise upright', async (turns) => {
+  mockFiles.set(PAGE, letter(turns, FEW_STOPS));
+
+  await uprightPages([PAGE]);
+
+  expect(difference(mockFiles.get(PAGE)!, letter(0, FEW_STOPS))).toBeLessThan(3);
+}, 30000);
+
 const LARGE_LINES = [
   'Thank you for your letter of the third of June and for the copies of the',
   'signed lease. I have checked them against the draft we agreed in May, and',
@@ -339,6 +354,9 @@ describe.each([
   ['with a few yods inside words and full stops', { finalYodsEvery: 4, stopsEvery: 16, yodsEvery: 50 }],
   // The gap before each yod is more than twice and less than three times the one after: neither a full stop's nor alone.
   ['with yods between letters, a space on one side more than twice the other and no yods ending words', { yodsEvery: 13, finalYodsEvery: 1000, gaps: [17, 6] }],
+  // Short pages at the edges of the gates: eased to 1.4, SURE_STOPS turns the first, and eased to 6, MIN_SCRIPT_MARKS the second.
+  ['with 3 yods ending words and 3 full stops', { finalYodsEvery: 200, stopsEvery: 150 }],
+  ['with yods ending words, a few inside them, and full stops', { finalYodsEvery: 70, yodsEvery: 300, stopsEvery: 150 }],
   ['with nothing sticking up', { tallEvery: 0 }],
   ["with vowel points, its letters heavy at the top as Hebrew's are", { pointsEvery: 3, tallEvery: 5, bars: true }],
 ])('a page of a right-to-left script whose yods look like full stops upside down, %s,', (_, options) => {
@@ -453,10 +471,11 @@ it.each(Array.from({ length: 14 }, (_, i) => 26 + 2 * i))('turns a 3024 px lette
 }, 120000);
 
 // Real typefaces draw differently from CanvasKit's default. Not committed: skipped without macOS's fonts.
-// Only Latin must turn; Cyrillic and Hebrew stay as they are. Courier New's Latin turns only from 40 to
-// 48 px, so 44 is tested: at 32 px its marks look like another script's, at 52 px no full stops are found.
-// The Hebrew rows only check that real Hebrew stays. Real fonts stay even with the marks and
-// heavy-bottom rules off (24 to 56 px), so the made-up script above guards those two rules.
+// Only Latin must turn; Cyrillic and Hebrew stay as they are. Courier New's Latin turns at 40 and 44 px,
+// and at 48 px at 1 and 2 quarter turns only, so 44 is tested: at 24 to 28 px its strokes are too thin to
+// find lines, at 32 px its marks look like another script's, at 36 px its balance and stops fail, at 52 px no
+// full stops count. The Hebrew rows only check that real Hebrew stays. Real Cyrillic and Hebrew stay at
+// 24 to 56 px (steps of 4) even with the marks and heavy-bottom rules off, so the made-up script above guards those two rules.
 const FONTS = '/System/Library/Fonts/Supplemental/';
 const REAL_RUSSIAN = RUSSIAN.split('\n').slice(0, 5);
 const REAL_HEBREW = [
