@@ -149,6 +149,54 @@ it('finds a white page on a pale table when a bright glare patch touches the pag
   expectNear((await findPage('file:///cache/photo.jpg')).corners, tilted, 20);
 }, 30000);
 
+it('finds a page with a dark picture matching the desk', async () => {
+  const surface = Skia.Surface.Make(W, H)!;
+  const canvas = surface.getCanvas();
+  canvas.drawColor(Skia.Color('rgb(92,70,52)'));
+  const path = Skia.Path.Polygon(tilted, true);
+  const paint = Skia.Paint();
+  paint.setColor(Skia.Color('rgb(238,234,222)'));
+  canvas.drawPath(path, paint);
+  canvas.save();
+  canvas.clipPath(path, 1, true);
+  paint.setColor(Skia.Color('rgb(88,72,56)'));
+  canvas.drawRect(Skia.XYWHRect(240, 620, 360, 280), paint);
+  canvas.restore();
+  const snapshot = surface.makeImageSnapshot();
+  mockFiles.set('file:///cache/photo.jpg', snapshot.encodeToBytes(ImageFormat.JPEG, 92));
+  for (const o of [snapshot, surface, path, paint]) o.dispose();
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, tilted, 20);
+}, 30000);
+
+it('finds the right-hand page of an open book beside its neighbour', async () => {
+  const rightPage: Quad = [
+    { x: 310, y: 80 },
+    { x: 830, y: 80 },
+    { x: 830, y: 1130 },
+    { x: 310, y: 1130 },
+  ];
+  const surface = Skia.Surface.Make(W, H)!;
+  const canvas = surface.getCanvas();
+  canvas.drawColor(Skia.Color('rgb(92,70,52)'));
+  const paint = Skia.Paint();
+  paint.setColor(Skia.Color('rgb(238,234,222)'));
+  canvas.drawRect(Skia.XYWHRect(0, 90, 300, 1040), paint);
+  canvas.drawRect(Skia.XYWHRect(310, 80, 520, 1050), paint);
+  paint.setColor(Skia.Color('rgb(60,55,50)'));
+  canvas.drawRect(Skia.XYWHRect(300, 80, 10, 1050), paint);
+  paint.setColor(Skia.Color('rgb(30,30,35)'));
+  for (let y = 200; y < 1000; y += 40) {
+    canvas.drawRect(Skia.XYWHRect(360, y, 420, 8), paint);
+    canvas.drawRect(Skia.XYWHRect(20, y, 240, 8), paint);
+  }
+  const snapshot = surface.makeImageSnapshot();
+  mockFiles.set('file:///cache/photo.jpg', snapshot.encodeToBytes(ImageFormat.JPEG, 92));
+  for (const o of [snapshot, surface, paint]) o.dispose();
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, rightPage, 20);
+}, 30000);
+
 it('clamps found corners to the photo bounds when an intersection lies just outside', async () => {
   const clipped: Quad = [
     { x: 150, y: -15 },
