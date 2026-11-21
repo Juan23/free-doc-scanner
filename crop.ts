@@ -113,6 +113,8 @@ function edgeMap(rgba: Uint8Array, w: number, h: number) {
 const MAX_LINES_PER_SECTOR = 2;
 // Cap total Hough lines kept so the 4-line search stays bounded.
 const MAX_HOUGH_LINES = 24;
+// Bent or faint page sides cast few votes, so the floor is low; `backgroundShare` turns away the false frames it lets in.
+const MIN_VOTES = 14;
 
 /** Top straight lines found by oriented Hough voting on thinned edges. */
 function houghLines(gx: Int16Array, gy: Int16Array, nms: Float32Array, w: number, h: number): Line[] {
@@ -137,12 +139,11 @@ function houghLines(gx: Int16Array, gy: Int16Array, nms: Float32Array, w: number
     }
   }
 
-  const minVotes = Math.max(14, Math.round(0.10 * Math.min(w, h)));
   const peaks: (Line & { votes: number })[] = [];
   for (let t = 0; t < THETA_BINS; t++) {
     for (let r = 0; r < numRho; r++) {
       const v = acc[t * numRho + r];
-      if (v < minVotes) continue;
+      if (v < MIN_VOTES) continue;
       let best = true;
       for (let dt = -5; dt <= 5 && best; dt++) {
         let tt = t + dt;
@@ -312,6 +313,68 @@ const MAX_SIDE_RATIO = 3.5;
 // Minimum fraction of a candidate side that must sit on a real edge.
 const MIN_SIDE_SUPPORT = 0.45;
 
+// A frame is not the page when more of its inside than this looks like the ground just outside it.
+const MAX_BACKGROUND_SHARE = 0.15;
+// Ground inside a frame costs it score, so a frame hugging the page beats one spanning ground beside it.
+const BACKGROUND_PENALTY = 2;
+// Two colours count as alike when their red, green and blue differences add up to less than this.
+const ALIKE_COLOR = 25;
+// Distances outside a side, in search-copy px, where its outside colour is read; past the edge's blur.
+const OUTSIDE_PX = [4, 5, 6];
+
+/** The median colour a few px outside each side of the frame, as [r, g, b] per side. */
+function outsideColors(q: Quad, rgba: Uint8Array, w: number, h: number): number[][] {
+  const cx = (q[0].x + q[1].x + q[2].x + q[3].x) / 4;
+  const cy = (q[0].y + q[1].y + q[2].y + q[3].y) / 4;
+  const steps = 32;
+  return [0, 1, 2, 3].map((s) => {
+    const a = q[s];
+    const b = q[(s + 1) % 4];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    let nx = (b.y - a.y) / len;
+    let ny = -(b.x - a.x) / len;
+    if (nx * ((a.x + b.x) / 2 - cx) + ny * ((a.y + b.y) / 2 - cy) < 0) {
+      nx = -nx;
+      ny = -ny;
+    }
+    const channels: number[][] = [[], [], []];
+    // The ends are skipped: they sit at corners, where the neighbouring side is.
+    for (let i = 4; i < steps - 3; i++) {
+      for (const d of OUTSIDE_PX) {
+        const x = Math.max(0, Math.min(w - 1, Math.round(a.x + ((b.x - a.x) * i) / steps + nx * d)));
+        const y = Math.max(0, Math.min(h - 1, Math.round(a.y + ((b.y - a.y) * i) / steps + ny * d)));
+        for (let c = 0; c < 3; c++) channels[c].push(rgba[(y * w + x) * 4 + c]);
+      }
+    }
+    return channels.map((v) => v.sort((m, n) => m - n)[v.length >> 1]);
+  });
+}
+
+/** The share of the frame's inside whose colour matches what lies just outside one of its sides. */
+function backgroundShare(q: Quad, rgba: Uint8Array, w: number, h: number): number {
+  const outside = outsideColors(q, rgba, w, h);
+  const grid = 24;
+  let alike = 0;
+  let counted = 0;
+  for (let i = 0; i < grid; i++) {
+    const u = (i + 0.5) / grid;
+    const topX = q[0].x + (q[1].x - q[0].x) * u;
+    const topY = q[0].y + (q[1].y - q[0].y) * u;
+    const bottomX = q[3].x + (q[2].x - q[3].x) * u;
+    const bottomY = q[3].y + (q[2].y - q[3].y) * u;
+    for (let j = 0; j < grid; j++) {
+      const v = (j + 0.5) / grid;
+      const x = Math.round(topX + (bottomX - topX) * v);
+      const y = Math.round(topY + (bottomY - topY) * v);
+      if (x < 0 || y < 0 || x >= w || y >= h) continue;
+      const o = (y * w + x) * 4;
+      counted++;
+      if (outside.some((c) => Math.abs(c[0] - rgba[o]) + Math.abs(c[1] - rgba[o + 1]) + Math.abs(c[2] - rgba[o + 2]) < ALIKE_COLOR)) alike++;
+    }
+  }
+  return counted ? alike / counted : 1;
+}
+
 /** The page's corners in a small RGBA copy, or null when no page stands out from what is around it. */
 function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
   const { gx, gy, nms } = edgeMap(rgba, w, h);
@@ -369,8 +432,12 @@ function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
             }
             score += sup * Math.hypot(b.x - a.x, b.y - a.y);
           }
-          if (ok && score > bestScore) {
-            bestScore = score;
+          if (!ok) continue;
+          const share = backgroundShare(q, rgba, w, h);
+          if (share > MAX_BACKGROUND_SHARE) continue;
+          const weighted = score * (1 - BACKGROUND_PENALTY * share);
+          if (weighted > bestScore) {
+            bestScore = weighted;
             bestQuad = q;
           }
         }

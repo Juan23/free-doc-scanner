@@ -181,6 +181,60 @@ it('finds a page that fills nearly the whole photo', async () => {
   expectNear((await findPage('file:///cache/photo.jpg')).corners, close, 15);
 }, 30000);
 
+// A small page whose four sides bow out, so no straight run of any side casts many Hough votes.
+it('finds a small page whose edges are bent', async () => {
+  const small: Quad = [
+    { x: 330, y: 400 },
+    { x: 600, y: 420 },
+    { x: 580, y: 800 },
+    { x: 310, y: 780 },
+  ];
+  const points: { x: number; y: number }[] = [];
+  small.forEach((a, i) => {
+    const b = small[(i + 1) % 4];
+    const length = Math.hypot(b.x - a.x, b.y - a.y);
+    const bow = (i % 2 ? 10 : -10) * 4;
+    for (let k = 0; k < 20; k++) {
+      const t = k / 20;
+      const off = bow * t * (1 - t);
+      points.push({ x: a.x + (b.x - a.x) * t + ((b.y - a.y) / length) * off, y: a.y + (b.y - a.y) * t - ((b.x - a.x) / length) * off });
+    }
+  });
+  const surface = Skia.Surface.Make(W, H)!;
+  const canvas = surface.getCanvas();
+  canvas.drawColor(Skia.Color('rgb(92,70,52)'));
+  const paint = Skia.Paint();
+  paint.setColor(Skia.Color('rgb(238,234,222)'));
+  canvas.drawPath(Skia.Path.Polygon(points, true), paint);
+  mockFiles.set('file:///cache/photo.jpg', surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 92));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, small, 30);
+}, 30000);
+
+// Four drawn lines on one surface: edges everywhere, but the same ground inside and out.
+it('falls back to the whole photo for a frame of lines that encloses only ground', async () => {
+  const ground = 'rgb(150,120,90)';
+  const surface = Skia.Surface.Make(W, H)!;
+  const canvas = surface.getCanvas();
+  canvas.drawColor(Skia.Color(ground));
+  const paint = Skia.Paint();
+  paint.setColor(Skia.Color('rgb(40,30,20)'));
+  paint.setStrokeWidth(4);
+  const frame: Quad = [
+    { x: 200, y: 250 },
+    { x: 700, y: 280 },
+    { x: 670, y: 950 },
+    { x: 180, y: 900 },
+  ];
+  frame.forEach((a, i) => {
+    const b = frame[(i + 1) % 4];
+    canvas.drawLine(a.x, a.y, b.x, b.y, paint);
+  });
+  mockFiles.set('file:///cache/photo.jpg', surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 92));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, wholePhoto, 1);
+}, 30000);
+
 it('falls back to the whole photo when there is no page to find', async () => {
   const surface = Skia.Surface.Make(W, H)!;
   surface.getCanvas().drawColor(Skia.Color('rgb(120,120,120)'));
