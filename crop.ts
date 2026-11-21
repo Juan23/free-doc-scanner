@@ -113,6 +113,8 @@ function edgeMap(rgba: Uint8Array, w: number, h: number) {
 const MAX_LINES_PER_SECTOR = 2;
 // Cap total Hough lines kept so the 4-line search stays bounded.
 const MAX_HOUGH_LINES = 24;
+// Bent or faint page sides cast few votes, so the floor is low; `backgroundShare` turns away the false frames it lets in.
+const MIN_VOTES = 14;
 
 /** Top straight lines found by oriented Hough voting on thinned edges. */
 function houghLines(gx: Int16Array, gy: Int16Array, nms: Float32Array, w: number, h: number): Line[] {
@@ -137,12 +139,11 @@ function houghLines(gx: Int16Array, gy: Int16Array, nms: Float32Array, w: number
     }
   }
 
-  const minVotes = Math.max(14, Math.round(0.10 * Math.min(w, h)));
   const peaks: (Line & { votes: number })[] = [];
   for (let t = 0; t < THETA_BINS; t++) {
     for (let r = 0; r < numRho; r++) {
       const v = acc[t * numRho + r];
-      if (v < minVotes) continue;
+      if (v < MIN_VOTES) continue;
       let best = true;
       for (let dt = -5; dt <= 5 && best; dt++) {
         let tt = t + dt;
@@ -312,6 +313,170 @@ const MAX_SIDE_RATIO = 3.5;
 // Minimum fraction of a candidate side that must sit on a real edge.
 const MIN_SIDE_SUPPORT = 0.45;
 
+// A frame is not the page when more of its inside than this looks like the ground just outside it.
+const MAX_BACKGROUND_SHARE = 0.15;
+// Ground inside a frame costs it score, so a frame hugging the page beats one spanning ground beside it.
+const BACKGROUND_PENALTY = 2;
+// Two colours count as alike when their red, green and blue differences add up to less than this.
+const ALIKE_COLOR = 25;
+// Distances outside a side, in search-copy px, where its outside colour is read; past the edge's blur.
+const OUTSIDE_PX = [4, 5, 6];
+
+const medianColor = (channels: number[][]) =>
+  channels.map((v) => v.sort((m, n) => m - n)[v.length >> 1]);
+
+const colorDiff = (c: number[], r: number, g: number, b: number) =>
+  Math.abs(c[0] - r) + Math.abs(c[1] - g) + Math.abs(c[2] - b);
+
+function outwardNormal(q: Quad, s: number): { nx: number; ny: number } {
+  const cx = (q[0].x + q[1].x + q[2].x + q[3].x) / 4;
+  const cy = (q[0].y + q[1].y + q[2].y + q[3].y) / 4;
+  const a = q[s];
+  const b = q[(s + 1) % 4];
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  let nx = (b.y - a.y) / len;
+  let ny = -(b.x - a.x) / len;
+  if (nx * ((a.x + b.x) / 2 - cx) + ny * ((a.y + b.y) / 2 - cy) < 0) {
+    nx = -nx;
+    ny = -ny;
+  }
+  return { nx, ny };
+}
+
+/** True when side `s` sits on a continuous dark seam (like a book gutter) darker than `paper`. */
+function hasDarkGutter(q: Quad, s: number, paper: number[], rgba: Uint8Array, w: number, h: number): boolean {
+  const { nx, ny } = outwardNormal(q, s);
+  const a = q[s];
+  const b = q[(s + 1) % 4];
+  const steps = 32;
+  const sums: number[] = [];
+  for (let i = 4; i < steps - 3; i++) {
+    for (const d of [1, 2]) {
+      const x = Math.max(0, Math.min(w - 1, Math.round(a.x + ((b.x - a.x) * i) / steps + nx * d)));
+      const y = Math.max(0, Math.min(h - 1, Math.round(a.y + ((b.y - a.y) * i) / steps + ny * d)));
+      const o = (y * w + x) * 4;
+      sums.push(rgba[o] + rgba[o + 1] + rgba[o + 2]);
+    }
+  }
+  sums.sort((m, n) => m - n);
+  return paper[0] + paper[1] + paper[2] - sums[sums.length >> 1] >= ALIKE_COLOR * 6;
+}
+
+/** The median colour a few px outside each side of the frame, as [r, g, b] per side. */
+function outsideColors(q: Quad, rgba: Uint8Array, w: number, h: number): number[][] {
+  const steps = 32;
+  return [0, 1, 2, 3].map((s) => {
+    const a = q[s];
+    const b = q[(s + 1) % 4];
+    const { nx, ny } = outwardNormal(q, s);
+    const channels: number[][] = [[], [], []];
+    // The ends are skipped: they sit at corners, where the neighbouring side is.
+    for (let i = 4; i < steps - 3; i++) {
+      for (const d of OUTSIDE_PX) {
+        const x = Math.max(0, Math.min(w - 1, Math.round(a.x + ((b.x - a.x) * i) / steps + nx * d)));
+        const y = Math.max(0, Math.min(h - 1, Math.round(a.y + ((b.y - a.y) * i) / steps + ny * d)));
+        for (let c = 0; c < 3; c++) channels[c].push(rgba[(y * w + x) * 4 + c]);
+      }
+    }
+    return medianColor(channels);
+  });
+}
+
+/** Share of the frame's inside connected to its border that matches the ground outside a non-paper side. */
+function backgroundShare(q: Quad, rgba: Uint8Array, w: number, h: number): number {
+  const outside = outsideColors(q, rgba, w, h);
+  const grid = 24;
+  const n = grid * grid;
+  const offset = new Int32Array(n).fill(-1);
+  const channels: number[][] = [[], [], []];
+  let counted = 0;
+  for (let i = 0; i < grid; i++) {
+    const u = (i + 0.5) / grid;
+    const topX = q[0].x + (q[1].x - q[0].x) * u;
+    const topY = q[0].y + (q[1].y - q[0].y) * u;
+    const bottomX = q[3].x + (q[2].x - q[3].x) * u;
+    const bottomY = q[3].y + (q[2].y - q[3].y) * u;
+    for (let j = 0; j < grid; j++) {
+      const v = (j + 0.5) / grid;
+      const x = Math.round(topX + (bottomX - topX) * v);
+      const y = Math.round(topY + (bottomY - topY) * v);
+      if (x < 0 || y < 0 || x >= w || y >= h) continue;
+      const o = (y * w + x) * 4;
+      offset[i * grid + j] = o;
+      counted++;
+      for (let c = 0; c < 3; c++) channels[c].push(rgba[o + c]);
+    }
+  }
+  if (!counted) return 1;
+
+  const paper = medianColor(channels);
+  const nonPaper = outside.filter((c) => colorDiff(c, paper[0], paper[1], paper[2]) >= ALIKE_COLOR);
+  const spine = outside.findIndex((c) => colorDiff(c, paper[0], paper[1], paper[2]) < ALIKE_COLOR);
+  // A real open-book spine has a dark gutter and three non-paper sides; other interior matches are false cuts.
+  const isBookSpine =
+    nonPaper.length === 3 &&
+    nonPaper.every((c) => colorDiff(c, paper[0], paper[1], paper[2]) >= ALIKE_COLOR * 3) &&
+    hasDarkGutter(q, spine, paper, rgba, w, h);
+  const ground = isBookSpine ? nonPaper : outside;
+
+  const matchesGround = new Uint8Array(n);
+  // Textured ground varies past ALIKE_COLOR across speckles, so flood connectivity uses a 3x band.
+  const nearGround = new Uint8Array(n);
+  for (let k = 0; k < n; k++) {
+    const o = offset[k];
+    if (o < 0) continue;
+    const r = rgba[o];
+    const g = rgba[o + 1];
+    const b = rgba[o + 2];
+    if (ground.some((c) => colorDiff(c, r, g, b) < ALIKE_COLOR)) {
+      matchesGround[k] = 1;
+      nearGround[k] = 1;
+    } else if (ground.some((c) => colorDiff(c, r, g, b) < ALIKE_COLOR * 3)) {
+      nearGround[k] = 1;
+    }
+  }
+
+  const visited = new Uint8Array(n);
+  const queue: number[] = [];
+  const seed = (k: number) => {
+    if (nearGround[k] && !visited[k]) {
+      visited[k] = 1;
+      queue.push(k);
+    }
+  };
+  for (let i = 0; i < grid; i++) {
+    for (let j = 0; j < grid; j++) {
+      if (i !== 0 && i !== grid - 1 && j !== 0 && j !== grid - 1) continue;
+      const k = i * grid + j;
+      seed(k);
+      const o = offset[k];
+      // Step past an edge cell on a dark seam or text line, but never past a paper margin.
+      if (o >= 0 && !nearGround[k] && colorDiff(paper, rgba[o], rgba[o + 1], rgba[o + 2]) >= ALIKE_COLOR * 2) {
+        const ni = i === 0 ? 1 : i === grid - 1 ? grid - 2 : i;
+        const nj = j === 0 ? 1 : j === grid - 1 ? grid - 2 : j;
+        seed(ni * grid + nj);
+      }
+    }
+  }
+
+  let alike = 0;
+  for (let head = 0; head < queue.length; head++) {
+    const k = queue[head];
+    if (matchesGround[k]) alike++;
+    const i = Math.floor(k / grid);
+    const j = k % grid;
+    for (const [ni, nj] of [[i - 1, j], [i + 1, j], [i, j - 1], [i, j + 1]]) {
+      if (ni < 0 || ni >= grid || nj < 0 || nj >= grid) continue;
+      const nk = ni * grid + nj;
+      if (nearGround[nk] && !visited[nk]) {
+        visited[nk] = 1;
+        queue.push(nk);
+      }
+    }
+  }
+  return alike / counted;
+}
+
 /** The page's corners in a small RGBA copy, or null when no page stands out from what is around it. */
 function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
   const { gx, gy, nms } = edgeMap(rgba, w, h);
@@ -369,8 +534,12 @@ function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
             }
             score += sup * Math.hypot(b.x - a.x, b.y - a.y);
           }
-          if (ok && score > bestScore) {
-            bestScore = score;
+          if (!ok) continue;
+          const share = backgroundShare(q, rgba, w, h);
+          if (share > MAX_BACKGROUND_SHARE) continue;
+          const weighted = score * (1 - BACKGROUND_PENALTY * share);
+          if (weighted > bestScore) {
+            bestScore = weighted;
             bestQuad = q;
           }
         }
