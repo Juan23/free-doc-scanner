@@ -397,13 +397,13 @@ const PAPER_PERCENTILE = 0.9;
 // A page's soft edge leaves a ring of pixels this wide beside it: darker than the paper, lighter than the cutoff.
 const BACKGROUND_GROW = 3;
 
-/** Sets `out` to 255 on the dark background of `page`, the small copy (RGBA), when it covers the frame as above. */
-export function markDarkBackground(out: Uint8Array, page: Uint8Array, w: number, h: number): void {
+/** Sets `out` to 255 on the dark background of `fine`, the small copy with ink wiped out (RGBA), when it covers the frame as above. */
+export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number, h: number): void {
   const n = w * h;
   const lumas = new Uint8Array(n);
   const hist = new Int32Array(256);
   for (let i = 0; i < n; i++) {
-    lumas[i] = Math.round(LUMA[0] * page[i * 4] + LUMA[1] * page[i * 4 + 1] + LUMA[2] * page[i * 4 + 2]);
+    lumas[i] = Math.round(LUMA[0] * fine[i * 4] + LUMA[1] * fine[i * 4 + 1] + LUMA[2] * fine[i * 4 + 2]);
     hist[lumas[i]]++;
   }
   let paper = 0;
@@ -569,7 +569,7 @@ function analysePage(image: SkImage): Analysis {
       const finePixels = fine.readPixels(0, 0, rgba) as Uint8Array | null;
       // Unreadable copies just leave the edges as they are.
       const pastEdgesMask = pagePixels && finePixels ? pastEdges(pagePixels, finePixels, sw, sh) : new Uint8Array(sw * sh);
-      if (pagePixels) markDarkBackground(pastEdgesMask, pagePixels, sw, sh);
+      if (finePixels) markDarkBackground(pastEdgesMask, finePixels, sw, sh);
       const beyondData = own(Skia.Data.fromBytes(pastEdgesMask));
       const beyondMask = own(Skia.Image.MakeImage({ width: sw, height: sh, colorType: ColorType.Alpha_8, alphaType: AlphaType.Premul }, beyondData, sw)!);
       // Grown a pixel to take in the blurred edge of the paper, and softened.

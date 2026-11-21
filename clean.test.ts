@@ -1510,10 +1510,10 @@ describe('dark background', () => {
     expect(white).toBeGreaterThan(0.98);
   }, 30000);
 
-  // Table at 0.4 and 0.6 of the paper's brightness (233).
-  it('whitens a table at 0.4 of the paper and not one at 0.6', () => {
-    expect(cleanedTable(pageOnTable([107, 92, 85], PAGE_20_PERCENT), 360).white).toBeGreaterThan(0.98);
-    expect(cleanedTable(pageOnTable([163, 141, 130], PAGE_20_PERCENT), 360).white).toBeLessThan(0.9);
+  // Table at 0.32 and 0.51 of the paper's brightness (233).
+  it('whitens a table at 0.32 of the paper and not one at 0.51', () => {
+    expect(cleanedTable(pageOnTable([85, 73, 67], PAGE_20_PERCENT), 360).white).toBeGreaterThan(0.98);
+    expect(cleanedTable(pageOnTable([135, 117, 107], PAGE_20_PERCENT), 360).white).toBeLessThan(0.9);
   }, 60000);
 
   it('keeps a dark picture inside a well-framed page and one bleeding off its corner', () => {
@@ -1532,13 +1532,13 @@ describe('dark background', () => {
   it('grows the background 3 px into a page edge', () => {
     const w = 60;
     const h = 20;
-    const page = new Uint8Array(w * h * 4);
+    const fine = new Uint8Array(w * h * 4);
     for (let i = 0; i < w * h; i++) {
       const x = i % w;
-      page.fill(x < 30 ? 30 : x < 34 ? 150 : 230, i * 4, i * 4 + 3);
+      fine.fill(x < 30 ? 30 : x < 34 ? 150 : 230, i * 4, i * 4 + 3);
     }
     const out = new Uint8Array(w * h);
-    markDarkBackground(out, page, w, h);
+    markDarkBackground(out, fine, w, h);
     expect([29, 30, 31, 32, 33].map((x) => out[10 * w + x])).toEqual([255, 255, 255, 255, 0]);
   });
 });
