@@ -429,10 +429,14 @@ export function shrunkCopy(
  * past-edge analysis runs on the same small copy at any width, so a preview and the page stored from
  * the photo agree. A width under 500 px is cleaned at 500 px (or the photo's width, if narrower), then
  * shrunk: the final pass per output pixel would break text into fragments. A hairline the full-size
- * pass keeps can still vanish from such a preview (0.8 px grid on a 3024 px photo). A `shared`
- * analysis of `image` is used in place of a new one, and the caller disposes it.
+ * pass keeps can still vanish from such a preview (0.8 px grid on a 3024 px photo).
  */
-export function filterImage(image: SkImage, filter: Filter, width: number = image.width(), shared?: Analysis): SkImage {
+export function filterImage(image: SkImage, filter: Filter, width: number = image.width()): SkImage {
+  return filterWith(image, filter, width);
+}
+
+/** `filterImage` with a `shared` analysis of `image` in place of a new one; the caller disposes it. */
+function filterWith(image: SkImage, filter: Filter, width: number, shared?: Analysis): SkImage {
   const w = image.width();
   const h = image.height();
   const outW = Math.max(1, Math.round(width));
@@ -445,7 +449,7 @@ export function filterImage(image: SkImage, filter: Filter, width: number = imag
   // Strokes averaged into the final pass's few pixels fall under its darkness gates and the blurred ink mask.
   const middle = Math.min(w, SMALL_WIDTH);
   if (outW < middle) {
-    const cleaned = filterImage(image, filter, middle, shared);
+    const cleaned = filterWith(image, filter, middle, shared);
     try {
       return shrunkCopy(cleaned, outW, outH);
     } finally {
@@ -621,7 +625,7 @@ export async function filterPreviews(
   const photo = await readPage(heldPhoto(uri));
   const previews: Partial<Record<Filter['kind'], SkImage>> = {};
   // Clean and Grayscale measure the same paper and ink, so it is done once.
-  let analysis: Analysis | null = null;
+  let analysis: Analysis | undefined;
   try {
     for (const filter of PREVIEW_FILTERS) {
       // Lets taps and slides through between the heavy steps.
@@ -631,7 +635,7 @@ export async function filterPreviews(
         return null;
       }
       if (filter.kind !== 'original') analysis ??= analysePage(photo);
-      previews[filter.kind] = filterImage(photo, filter, width, analysis ?? undefined);
+      previews[filter.kind] = filterWith(photo, filter, width, analysis);
     }
   } catch (e) {
     for (const p of Object.values(previews)) p.dispose();
