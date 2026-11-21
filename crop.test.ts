@@ -206,7 +206,6 @@ const TEXT_HEIGHT = 0.008;
 const TEXT_LEFT = 0.12;
 const TEXT_RIGHT = 0.88;
 const RULE_TOP = 0.75;
-const RULE_HEIGHT = 0.02;
 const RULE_GAP = 0.03;
 
 function tiltedTextPage(rule?: { top: number; height: number; gap: number }): Uint8Array {
@@ -249,8 +248,9 @@ it('does not cut a tilted page at its own dense dark text lines', async () => {
   expect(isNear(corners, tilted, 20) || isNear(corners, wholePhoto, 1)).toBe(true);
 }, 30000);
 
-it('does not cut a tilted page at a dark rule over dense text lines', async () => {
-  mockFiles.set('file:///cache/photo.jpg', tiltedTextPage({ top: RULE_TOP, height: RULE_HEIGHT, gap: RULE_GAP }));
+// The thin rule fails a 4 to 6 px reach, the thick one a 4 to 8 px reach or a 50% paper share.
+it.each([0.012, 0.02])('does not cut a tilted page at a dark rule %f high over dense text lines', async (height) => {
+  mockFiles.set('file:///cache/photo.jpg', tiltedTextPage({ top: RULE_TOP, height, gap: RULE_GAP }));
 
   const { corners } = await findPage('file:///cache/photo.jpg');
   expect(isNear(corners, tilted, 20) || isNear(corners, wholePhoto, 1)).toBe(true);
