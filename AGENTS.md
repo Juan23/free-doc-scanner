@@ -74,4 +74,4 @@ Where they are:
 - If `ios/` and `android/` directories do not exist, they are generated (Continuous Native Generation). Never create or edit them by hand — configure native behavior in `app.json` and config plugins.
 - Expo Go only includes its bundled native modules. After adding a library with native code, the app needs a development build: `npx expo run:ios|android` locally.
 - Prefer recommended Expo modules over third-party libraries. Docs: https://docs.expo.dev/versions/latest/index.md
-- Core scanning UX comes first (owner, 2026-11-20). Accessibility work is on hold: no screen reader runs, and issues labelled `accessibility` wait. Keep the labels the code already has.
+- No accessibility work until the app is fully usable (owner, 2026-11-21): no screen reader runs and no accessibility issues. Keep the labels the code already has.
