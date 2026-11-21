@@ -321,10 +321,14 @@ const BACKGROUND_PENALTY = 2;
 const ALIKE_COLOR = 25;
 // Textured ground varies past ALIKE_COLOR across speckles, so flood connectivity uses this wider band.
 const NEAR_GROUND_COLOR = ALIKE_COLOR * 3;
+// Minimum share of paper-alike pixels outside a near-paper side that marks it as an internal cut, not a page edge.
+const MIN_OUTSIDE_PAPER = 0.35;
 // Dark seams and ink lines sit further than this from the page median, unlike a pale paper margin.
 const NON_PAPER_COLOR = ALIKE_COLOR * 2;
 // Distances outside a side, in search-copy px, where its outside colour is read; past the edge's blur.
 const OUTSIDE_PX = [4, 5, 6];
+// Wider distances outside a side, reaching past thick dark rules or text lines to check for paper beyond them.
+const CUT_CHECK_PX = [4, 6, 8, 10, 12];
 
 const medianColor = (channels: number[][]) =>
   channels.map((v) => v.sort((m, n) => m - n)[v.length >> 1]);
@@ -347,29 +351,38 @@ function outwardNormal(q: Quad, s: number): { nx: number; ny: number } {
   return { nx, ny };
 }
 
-/** The median colour a few px outside each side of the frame, as [r, g, b] per side. */
-function outsideColors(q: Quad, rgba: Uint8Array, w: number, h: number): number[][] {
+/** The median colour and wider cut-check pixel offsets outside each side of the frame. */
+function outsideSides(q: Quad, rgba: Uint8Array, w: number, h: number): { color: number[]; cutColor: number[]; offsets: number[] }[] {
   const steps = 32;
   return [0, 1, 2, 3].map((s) => {
     const a = q[s];
     const b = q[(s + 1) % 4];
     const { nx, ny } = outwardNormal(q, s);
     const channels: number[][] = [[], [], []];
+    const cutChannels: number[][] = [[], [], []];
+    const offsets: number[] = [];
+    const sample = (sx: number, sy: number, d: number, ch: number[][]) => {
+      const x = Math.max(0, Math.min(w - 1, Math.round(sx + nx * d)));
+      const y = Math.max(0, Math.min(h - 1, Math.round(sy + ny * d)));
+      const o = (y * w + x) * 4;
+      for (let c = 0; c < 3; c++) ch[c].push(rgba[o + c]);
+      return o;
+    };
     // The ends are skipped: they sit at corners, where the neighbouring side is.
     for (let i = 4; i < steps - 3; i++) {
-      for (const d of OUTSIDE_PX) {
-        const x = Math.max(0, Math.min(w - 1, Math.round(a.x + ((b.x - a.x) * i) / steps + nx * d)));
-        const y = Math.max(0, Math.min(h - 1, Math.round(a.y + ((b.y - a.y) * i) / steps + ny * d)));
-        for (let c = 0; c < 3; c++) channels[c].push(rgba[(y * w + x) * 4 + c]);
-      }
+      const sx = a.x + ((b.x - a.x) * i) / steps;
+      const sy = a.y + ((b.y - a.y) * i) / steps;
+      for (const d of OUTSIDE_PX) sample(sx, sy, d, channels);
+      for (const d of CUT_CHECK_PX) offsets.push(sample(sx, sy, d, cutChannels));
     }
-    return medianColor(channels);
+    return { color: medianColor(channels), cutColor: medianColor(cutChannels), offsets };
   });
 }
 
 /** Share of the frame's inside connected to its border that matches the ground outside its sides. */
 function backgroundShare(q: Quad, rgba: Uint8Array, w: number, h: number): number {
-  const ground = outsideColors(q, rgba, w, h);
+  const sides = outsideSides(q, rgba, w, h);
+  const ground = sides.map((s) => s.color);
   const grid = 24;
   const n = grid * grid;
   const offset = new Int32Array(n).fill(-1);
@@ -395,6 +408,17 @@ function backgroundShare(q: Quad, rgba: Uint8Array, w: number, h: number): numbe
   if (!counted) return 1;
 
   const paper = medianColor(channels);
+  // A real page edge has non-paper outside it; paper pixels outside a near-paper side mark a cut across the page.
+  if (
+    sides.some(
+      ({ cutColor, offsets }) =>
+        colorDiff(cutColor, paper[0], paper[1], paper[2]) < NEAR_GROUND_COLOR &&
+        offsets.filter((o) => colorDiff(paper, rgba[o], rgba[o + 1], rgba[o + 2]) < ALIKE_COLOR).length >=
+          MIN_OUTSIDE_PAPER * offsets.length,
+    )
+  ) {
+    return 1;
+  }
 
   const matchesGround = new Uint8Array(n);
   const nearGround = new Uint8Array(n);

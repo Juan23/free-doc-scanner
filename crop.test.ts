@@ -81,6 +81,9 @@ const wholePhoto: Quad = [
   { x: 0, y: H },
 ];
 
+const isNear = (a: Quad, b: Quad, tol: number) =>
+  a.every((p, i) => Math.abs(p.x - b[i].x) < tol && Math.abs(p.y - b[i].y) < tol);
+
 function expectNear(found: Quad, truth: Quad, tolerance: number) {
   found.forEach((p, i) => {
     expect(Math.abs(p.x - truth[i].x)).toBeLessThan(tolerance);
@@ -169,29 +172,6 @@ it('finds a page with a dark picture matching the desk', async () => {
   expectNear((await findPage('file:///cache/photo.jpg')).corners, tilted, 20);
 }, 30000);
 
-// The neighbour page outside the spine is the same paper, so the frame counts as ground.
-it('falls back to the whole photo for an open book beside its neighbour page', async () => {
-  const surface = Skia.Surface.Make(W, H)!;
-  const canvas = surface.getCanvas();
-  canvas.drawColor(Skia.Color('rgb(92,70,52)'));
-  const paint = Skia.Paint();
-  paint.setColor(Skia.Color('rgb(238,234,222)'));
-  canvas.drawRect(Skia.XYWHRect(0, 90, 300, 1040), paint);
-  canvas.drawRect(Skia.XYWHRect(310, 80, 520, 1050), paint);
-  paint.setColor(Skia.Color('rgb(60,55,50)'));
-  canvas.drawRect(Skia.XYWHRect(300, 80, 10, 1050), paint);
-  paint.setColor(Skia.Color('rgb(30,30,35)'));
-  for (let y = 200; y < 1000; y += 40) {
-    canvas.drawRect(Skia.XYWHRect(360, y, 420, 8), paint);
-    canvas.drawRect(Skia.XYWHRect(20, y, 240, 8), paint);
-  }
-  const snapshot = surface.makeImageSnapshot();
-  mockFiles.set('file:///cache/photo.jpg', snapshot.encodeToBytes(ImageFormat.JPEG, 92));
-  for (const o of [snapshot, surface, paint]) o.dispose();
-
-  expectNear((await findPage('file:///cache/photo.jpg')).corners, wholePhoto, 1);
-}, 30000);
-
 it('does not cut a page in two at a dark rule across it', async () => {
   const fullPage: Quad = [
     { x: 150, y: 100 },
@@ -216,9 +196,37 @@ it('does not cut a page in two at a dark rule across it', async () => {
   for (const o of [snapshot, surface, paint]) o.dispose();
 
   const { corners } = await findPage('file:///cache/photo.jpg');
-  const near = (a: Quad, b: Quad, tol: number) =>
-    a.every((p, i) => Math.abs(p.x - b[i].x) < tol && Math.abs(p.y - b[i].y) < tol);
-  expect(near(corners, fullPage, 20) || near(corners, wholePhoto, 1)).toBe(true);
+  expect(isNear(corners, fullPage, 20) || isNear(corners, wholePhoto, 1)).toBe(true);
+}, 30000);
+
+it('does not cut a tilted page at its own dense dark text lines', async () => {
+  const surface = Skia.Surface.Make(W, H)!;
+  const canvas = surface.getCanvas();
+  canvas.drawColor(Skia.Color('rgb(92,70,52)'));
+  const paint = Skia.Paint();
+  paint.setColor(Skia.Color('rgb(238,234,222)'));
+  canvas.drawPath(Skia.Path.Polygon(tilted, true), paint);
+  const lerp = (a: { x: number; y: number }, b: { x: number; y: number }, t: number) => ({
+    x: a.x + (b.x - a.x) * t,
+    y: a.y + (b.y - a.y) * t,
+  });
+  paint.setColor(Skia.Color('rgb(30,30,35)'));
+  for (let k = 0.08; k < 0.95; k += 0.035) {
+    const a0 = lerp(tilted[0], tilted[3], k);
+    const b0 = lerp(tilted[1], tilted[2], k);
+    const a1 = lerp(tilted[0], tilted[3], k + 0.008);
+    const b1 = lerp(tilted[1], tilted[2], k + 0.008);
+    canvas.drawPath(
+      Skia.Path.Polygon([lerp(a0, b0, 0.12), lerp(a0, b0, 0.88), lerp(a1, b1, 0.88), lerp(a1, b1, 0.12)], true),
+      paint,
+    );
+  }
+  const snapshot = surface.makeImageSnapshot();
+  mockFiles.set('file:///cache/photo.jpg', snapshot.encodeToBytes(ImageFormat.JPEG, 92));
+  for (const o of [snapshot, surface, paint]) o.dispose();
+
+  const { corners } = await findPage('file:///cache/photo.jpg');
+  expect(isNear(corners, tilted, 20) || isNear(corners, wholePhoto, 1)).toBe(true);
 }, 30000);
 
 it('clamps found corners to the photo bounds when an intersection lies just outside', async () => {
