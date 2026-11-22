@@ -1681,4 +1681,138 @@ describe('dark background', () => {
     // 9% bright paper leaves the 90th percentile on the dark background.
     expect(Math.max(...rectMask(100, 100, (x, y) => !(x >= 35 && x < 65 && y >= 35 && y < 65), 30))).toBe(0);
   });
+
+  type Place = 'inside' | 'off' | 'near' | 'touch' | 'corner' | 'offBoth';
+  type Bleed = {
+    tilt?: number;
+    widen?: number;
+    place: Place;
+    picture?: 'full' | 'left' | 'middle';
+    depth?: number;
+    colour?: number[];
+    carpet?: boolean;
+    second?: number[];
+  };
+  const NAVY = [30, 40, 90];
+  const NEAR_BLACK = [20, 20, 22];
+  const DARK_GREEN = [40, 80, 50];
+
+  // Picture and table are scored away from their edges (4 and 10 px), where the 3 px grow and soft colour edges belong to neither.
+  function bleedingPicture(s: Bleed) {
+    const w = 500;
+    const h = 667;
+    const turn = ((s.tilt ?? 0) * Math.PI) / 180;
+    const [cos, sin] = [Math.cos(turn), Math.sin(turn)];
+    const widen = (v: number) => ((s.widen ?? 0) * v) / 547;
+    const top = s.place === 'offBoth' ? -300 : 0;
+    const end = s.place === 'inside' ? 430 : 900;
+    let middle = 250;
+    const toPage = (x: number, y: number) => [100 + (x - middle) * cos + (y - 120) * sin, (y - 120) * cos - (x - middle) * sin];
+    const onPage = ([u, v]: number[]) => v >= top && v <= end && u >= -widen(v) && u <= 200 + widen(v);
+    if (s.place === 'near' || s.place === 'touch' || s.place === 'corner') {
+      let left = w;
+      for (let y = 0; y < h; y++) for (let x = -400; x < left; x++) if (onPage(toPage(x, y))) left = x;
+      middle += { near: 2, touch: 0, corner: -40 }[s.place] - left;
+    }
+    const pictureTop = s.place === 'inside' ? end - (s.depth ?? 200) : (546 - (s.depth ?? 200)) / cos;
+    const fine = new Uint8Array(w * h * 4);
+    const role = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const [u, v] = toPage(x, y);
+        const page = onPage([u, v]);
+        const [a, b] = s.picture === 'left' ? [-widen(v), 100] : s.picture === 'middle' ? [67, 133] : [-widen(v), 200.5 + widen(v)];
+        const inPicture = page && !!s.picture && v >= pictureTop && u >= a && u < b;
+        const grain = s.carpet ? ((x * 7919 + y * 104729) % 41) - 20 + (((x >> 2) * 31 + (y >> 2) * 17) % 9) - 4 : ((x * 7919 + y * 104729) % 23) - 11;
+        const table = s.carpet ? [60 + grain, 60 + grain, 63 + grain] : [70 + grain, 60 + grain, 55 + grain];
+        const ink = s.second && u >= 100 ? s.second : (s.colour ?? NAVY);
+        fine.set([...(inPicture ? ink : page ? [233, 230, 222] : table), 255], (y * w + x) * 4);
+        if (inPicture && v >= pictureTop + 4 && v <= end - 4 && u >= a + 4 && u < b - 4) role[y * w + x] = 1;
+        if (!page && (v < top - 10 || v > end + 10 || u < -widen(v) - 10 || u > 210 + widen(v))) role[y * w + x] = 2;
+      }
+    }
+    const out = new Uint8Array(w * h);
+    markDarkBackground(out, fine, w, h);
+    const share = (r: number) => {
+      let all = 0;
+      let marked = 0;
+      role.forEach((v, i) => v === r && (all++, (marked += out[i] ? 1 : 0)));
+      return marked / all;
+    };
+    return { picture: s.picture ? share(1) : 0, table: share(2) };
+  }
+
+  // Where the page reaches a corner of the photo the table may not show on two opposite sides, so only the picture is checked.
+  it.each([
+    [{ place: 'inside', picture: 'full', colour: NEAR_BLACK, carpet: true }],
+    [{ place: 'inside', tilt: 5, picture: 'left', depth: 100, colour: DARK_GREEN, carpet: true }],
+    [{ place: 'inside', widen: 8, picture: 'middle', depth: 100, colour: NEAR_BLACK }],
+    [{ place: 'off', picture: 'full', depth: 30 }],
+    [{ place: 'off', picture: 'left', depth: 100, colour: NEAR_BLACK, carpet: true }],
+    [{ place: 'off', tilt: 0.6, picture: 'full', depth: 100, colour: DARK_GREEN }],
+    [{ place: 'off', tilt: 2, picture: 'left' }],
+    [{ place: 'off', tilt: 5, picture: 'full', colour: NEAR_BLACK, carpet: true }],
+    [{ place: 'off', widen: 8, picture: 'full' }],
+    [{ place: 'off', picture: 'full', second: DARK_GREEN }],
+    [{ place: 'near', tilt: 0.6, picture: 'middle', carpet: true }],
+    [{ place: 'near', widen: 8, picture: 'left', colour: DARK_GREEN, carpet: true }],
+    [{ place: 'touch', tilt: 2, picture: 'full', colour: NEAR_BLACK }],
+    [{ place: 'touch', picture: 'full' }],
+    [{ place: 'corner', tilt: 5, picture: 'full', depth: 100 }],
+    [{ place: 'corner', widen: 8, picture: 'left', colour: DARK_GREEN }],
+    [{ place: 'offBoth', tilt: 2, picture: 'full', colour: DARK_GREEN }],
+    [{ place: 'offBoth', widen: 8, picture: 'left', depth: 100, colour: NEAR_BLACK, carpet: true }],
+    [{ place: 'inside', tilt: 5 }],
+    [{ place: 'off', tilt: 2, carpet: true }],
+    [{ place: 'near', widen: 8 }],
+    [{ place: 'offBoth', tilt: 0.6 }],
+  ] as [Bleed][])('keeps a dark picture bleeding off a page and whitens the table round it: %j', (scene) => {
+    const { picture, table } = bleedingPicture(scene);
+    if (scene.picture) expect(picture).toBeLessThan(0.1);
+    if (scene.place !== 'touch' && scene.place !== 'corner') expect(table).toBeGreaterThan(0.95);
+  });
+
+  it.each([
+    ['whitens the table above and below a page as wide as the photo', [70, 60, 55], 0.95],
+    ['keeps a picture bleeding off the foot of a page as wide as the photo', [30, 40, 90], 0],
+  ] as const)('%s', (_, below, least) => {
+    const w = 500;
+    const h = 667;
+    const fine = new Uint8Array(w * h * 4);
+    for (let p = 0; p < w * h; p++) {
+      const y = Math.floor(p / w);
+      const grain = ((p * 7919) % 23) - 11;
+      const colour = y < 120 ? [70 + grain, 60 + grain, 55 + grain] : y <= 466 ? [233, 230, 222] : below.map((c) => c + (below[0] === 70 ? grain : 0));
+      fine.set([...colour, 255], p * 4);
+    }
+    const out = new Uint8Array(w * h);
+    markDarkBackground(out, fine, w, h);
+    const marked = (top: number, bottom: number) => out.slice(top * w, bottom * w).filter(Boolean).length / ((bottom - top) * w);
+    expect(marked(0, 110)).toBeGreaterThanOrEqual(least);
+    if (least) expect(marked(477, h)).toBeGreaterThan(least);
+    else expect(marked(471, h)).toBe(0);
+  });
+
+  // As in DocUNet 22_1: light wood holds the photo's top corners, so the blanket above the page holds none.
+  it.each([
+    ['in one shade', 1],
+    ['lit unevenly, in two parts', 1.7],
+  ])('whitens a blanket above and below a page as wide as the photo, with wood across the top: %s', (_, shade) => {
+    const w = 500;
+    const h = 667;
+    const navy = (k: number) => [32, 40, 80].map((c) => Math.round(c * k));
+    const fine = new Uint8Array(w * h * 4);
+    for (let p = 0; p < w * h; p++) {
+      const x = p % w;
+      const y = (p - x) / w;
+      const above = navy(x < w / 2 ? 1 / Math.sqrt(shade) : Math.sqrt(shade));
+      const colour = y < 20 ? [200, 140, 70] : y < 120 ? above : y <= 466 ? [233, 230, 222] : navy(1);
+      fine.set([...colour, 255], p * 4);
+    }
+    const out = new Uint8Array(w * h);
+    markDarkBackground(out, fine, w, h);
+    const marked = (top: number, bottom: number) => out.slice(top * w, bottom * w).filter(Boolean).length / ((bottom - top) * w);
+    expect(marked(30, 110)).toBeGreaterThan(0.95);
+    expect(marked(477, h)).toBeGreaterThan(0.95);
+  });
 });
