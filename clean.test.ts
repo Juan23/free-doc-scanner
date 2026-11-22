@@ -427,9 +427,9 @@ function seededRandom(seed: number): () => number {
   };
 }
 
-// The mean of a pixel's colour channels in RGBA bytes `width` wide.
-function channelMean(px: Uint8Array, x: number, y: number, width = W): number {
-  const i = (y * width + x) * 4;
+// The mean of a pixel's colour channels in RGBA bytes W wide.
+function channelMean(px: Uint8Array, x: number, y: number): number {
+  const i = (y * W + x) * 4;
   return (px[i] + px[i + 1] + px[i + 2]) / 3;
 }
 
@@ -1519,16 +1519,36 @@ describe('dark background', () => {
   }, 30000);
 
   // A 180 px strip, deeper than a bent page edge can be.
-  it('whitens a background that covers 30% of the frame', () => {
-    const { white } = cleanedTable(pageOnTable(DARK_TABLE, [180, 0, 420, 800]), 150);
+  it('whitens a background that covers 37% of the frame', () => {
+    const { white } = cleanedTable(pageOnTable(DARK_TABLE, [180, 20, 400, 760]), 150);
     expect(white).toBeGreaterThan(0.98);
   }, 30000);
 
-  // Table at 0.32 and 0.51 of the paper's brightness (233).
-  it('whitens a table at 0.32 of the paper and not one at 0.51', () => {
+  // Table at 0.32 of the paper's brightness (233).
+  it('whitens a table at 0.32 of the paper', () => {
     expect(cleanedTable(pageOnTable([85, 73, 67], PAGE_20_PERCENT), 360).white).toBeGreaterThan(0.98);
-    expect(cleanedTable(pageOnTable([135, 117, 107], PAGE_20_PERCENT), 360).white).toBeLessThan(0.9);
-  }, 60000);
+  }, 30000);
+
+  // Like a black book cover photographed on a white table: the table is the frame's paper.
+  it('keeps light text on a dark page that joins the border', () => {
+    const surface = Skia.Surface.Make(W, H)!;
+    const canvas = surface.getCanvas();
+    canvas.drawColor(Skia.Color('rgb(40,38,36)'));
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color('rgb(235,232,224)'));
+    canvas.drawRect(Skia.XYWHRect(0, 700, W, 100), paint);
+    paint.setColor(Skia.Color('rgb(200,190,150)'));
+    for (let y = 100; y < 650; y += 60) canvas.drawRect(Skia.XYWHRect(60, y, 480, 10), paint);
+    const photo = decode(surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 95));
+    paint.dispose();
+    surface.dispose();
+    const out = filterImage(photo, { kind: 'clean', strength: 1 });
+    const px = readPixels(out);
+    // Each text row still stands out from the page right beside it.
+    for (let y = 100; y < 650; y += 60) expect(channelMean(px, 300, y + 5) - channelMean(px, 300, y - 4)).toBeGreaterThan(60);
+    out.dispose();
+    photo.dispose();
+  }, 30000);
 
   it('keeps a dark picture inside a well-framed page and one bleeding off its corner', () => {
     const photo = pageWithDarkPicture();
@@ -1549,18 +1569,20 @@ describe('dark background', () => {
     const fine = new Uint8Array(w * h * 4);
     for (let i = 0; i < w * h; i++) {
       const x = i % w;
-      fine.fill(x < 30 ? 30 : x < 34 ? 150 : 230, i * 4, i * 4 + 3);
+      const y = (i - x) / w;
+      const page = x < w - 1 && y > 0 && y < h - 1;
+      fine.fill(!page || x < 30 ? 30 : x < 34 ? 150 : 230, i * 4, i * 4 + 3);
     }
     const out = new Uint8Array(w * h);
     markDarkBackground(out, fine, w, h);
     expect([29, 30, 31, 32, 33].map((x) => out[10 * w + x])).toEqual([255, 255, 255, 255, 0]);
   });
 
-  function rectMask(w: number, h: number, inside: (x: number, y: number) => boolean, dark: number, light = 230) {
+  function rectMask(w: number, h: number, dark: (x: number, y: number) => boolean, level: number, light = 230) {
     const fine = new Uint8Array(w * h * 4);
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
-        fine.fill(inside(x, y) ? dark : light, (y * w + x) * 4, (y * w + x) * 4 + 3);
+        fine.fill(dark(x, y) ? level : light, (y * w + x) * 4, (y * w + x) * 4 + 3);
       }
     }
     const out = new Uint8Array(w * h);
@@ -1568,23 +1590,31 @@ describe('dark background', () => {
     return out;
   }
 
+  // Dark everywhere but a light page from column `left` to one short of the right border, a row in from top and bottom.
+  const besidePage = (w: number, h: number, left: number) => (x: number, y: number) => x < left || x === w - 1 || y === 0 || y === h - 1;
+
   it('pins the half-paper brightness cutoff', () => {
-    expect(rectMask(40, 20, (x) => x < 20, 114)[10 * 40 + 10]).toBe(255);
-    expect(rectMask(40, 20, (x) => x < 20, 115)[10 * 40 + 10]).toBe(0);
+    expect(rectMask(40, 20, besidePage(40, 20, 20), 114)[10 * 40 + 10]).toBe(255);
+    expect(rectMask(40, 20, besidePage(40, 20, 20), 115)[10 * 40 + 10]).toBe(0);
   });
 
+  // 2454 and 2552 of 10000 pixels outside the page.
   it('pins the quarter-frame area gate', () => {
-    expect(Math.max(...rectMask(100, 20, (x) => x < 25, 30))).toBe(0);
-    expect(rectMask(100, 20, (x) => x < 26, 30)[10 * 100 + 10]).toBe(255);
+    expect(Math.max(...rectMask(100, 100, besidePage(100, 100, 22), 30))).toBe(0);
+    expect(rectMask(100, 100, besidePage(100, 100, 23), 30)[50 * 100 + 10]).toBe(255);
   });
 
-  it('requires at least a quarter of the border perimeter and border connectedness', () => {
-    // 30.4% of the frame touching 98 of 396 border pixels (< 25%).
-    expect(Math.max(...rectMask(100, 100, (x, y) => x >= 1 && x <= 98 && y <= 30, 30))).toBe(0);
-    // 30.4% of the frame touching exactly 99 of 396 border pixels (25%).
-    expect(rectMask(100, 100, (x, y) => (x === 0 && y === 0) || (x >= 1 && x <= 98 && y <= 30), 30)[10 * 100 + 50]).toBe(255);
-    // 30% interior rectangle touching no border.
-    expect(Math.max(...rectMask(100, 100, (x, y) => x >= 20 && x < 80 && y >= 20 && y < 70, 30))).toBe(0);
+  it('marks nothing without a light page clear of the border', () => {
+    expect(Math.max(...rectMask(100, 100, (x) => x < 40, 30))).toBe(0);
+  });
+
+  // A dark band across the page's top joins the table, with light letters reaching down into the page.
+  it('keeps a dark band on the page inside the page outline', () => {
+    const inPage = (x: number, y: number) => x >= 30 && x < 70 && y >= 30 && y < 80;
+    const letter = (x: number, y: number) => y >= 34 && [35, 45, 55].some((l) => x >= l && x < l + 4);
+    const out = rectMask(100, 100, (x, y) => !inPage(x, y) || (y < 40 && !letter(x, y)), 30);
+    expect(out[38 * 100 + 41]).toBe(0);
+    expect(out[10 * 100 + 10]).toBe(255);
   });
 
   it('leaves a small page under 10% of the frame unchanged', () => {

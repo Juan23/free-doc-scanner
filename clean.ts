@@ -386,20 +386,17 @@ function pastEdges(page: Uint8Array, fine: Uint8Array, w: number, h: number): Ui
   return out;
 }
 
-// A page in a wide frame has a table or carpet round it; there the paper estimate is the background
-// itself, so dividing by it leaves speckle. That background joins at least BACKGROUND_BORDER of the
-// border, is darker than BACKGROUND_SHARE of the frame's paper (its PAPER_PERCENTILE of luma) and
-// covers over BACKGROUND_AREA of the frame. A dark picture inside the page does not join enough of
-// the border (even if a cropped edge grazes it), and one bleeding off an edge covers less.
+// A page in a wide frame has a table or carpet round it; there the paper estimate is the background itself, so dividing by it leaves speckle.
 const BACKGROUND_SHARE = 0.5;
 const BACKGROUND_AREA = 0.25;
-const BACKGROUND_BORDER = 0.25;
 const PAPER_PERCENTILE = 0.9;
+// Light text on a dark page or band would pass for the background; only what lies outside a light page's convex hull counts.
+const PAGE_SHARE = 0.5;
 
 // A page's soft edge leaves a ring of pixels this wide beside it: darker than the paper, lighter than the cutoff.
 const BACKGROUND_GROW = 3;
 
-/** Sets `out` to 255 on the dark background of `fine`, the small copy with ink wiped out (RGBA), when it covers the frame as above. */
+/** Sets `out` to 255 on the table round the page in `fine`, the small copy with ink wiped out (RGBA). */
 export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number, h: number): void {
   const n = w * h;
   const lumas = new Uint8Array(n);
@@ -411,13 +408,9 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
   let paper = 0;
   for (let below = hist[0]; below < PAPER_PERCENTILE * n; ) below += hist[++paper];
   const cutoff = BACKGROUND_SHARE * paper;
-  const region: number[] = [];
-  const seen = new Uint8Array(n);
-  const join = (p: number) => {
-    if (!seen[p]) {
-      seen[p] = 1;
-      region.push(p);
-    }
+  const onBorder = (p: number) => {
+    const x = p % w;
+    return x === 0 || x === w - 1 || p < w || p >= n - w;
   };
   const around = (p: number, fn: (q: number) => void) => {
     const x = p % w;
@@ -428,14 +421,49 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
       if (u >= 0 && v >= 0 && u < w && v < h) fn(v * w + u);
     }
   };
-  for (let p = 0; p < n; p++) {
+
+  const seen = new Uint8Array(n);
+  let page: number[] = [];
+  let light = 0;
+  for (let s = 0; s < n; s++) {
+    if (lumas[s] < cutoff || seen[s]) continue;
+    const patch = [s];
+    seen[s] = 1;
+    let clear = true;
+    for (let i = 0; i < patch.length; i++) {
+      if (onBorder(patch[i])) clear = false;
+      around(patch[i], (q) => {
+        if (lumas[q] >= cutoff && !seen[q]) {
+          seen[q] = 1;
+          patch.push(q);
+        }
+      });
+    }
+    light += patch.length;
+    if (clear && patch.length > page.length) page = patch;
+  }
+  if (!page.length || page.length < PAGE_SHARE * light) return;
+  const hull = convexHull(page.map((p) => [p % w, Math.floor(p / w)] as const));
+  const onPage = (p: number) => {
     const x = p % w;
     const y = (p - x) / w;
-    if ((x === 0 || y === 0 || x === w - 1 || y === h - 1) && lumas[p] < cutoff) join(p);
-  }
-  const perimeter = w <= 1 || h <= 1 ? n : 2 * (w + h - 2);
-  if (region.length < BACKGROUND_BORDER * perimeter) return;
-  for (let i = 0; i < region.length; i++) around(region[i], (q) => lumas[q] < cutoff && join(q));
+    return hull.every(([ax, ay], i) => {
+      const [bx, by] = hull[(i + 1) % hull.length];
+      return (bx - ax) * (y - ay) - (by - ay) * (x - ax) >= 0;
+    });
+  };
+
+  seen.fill(0);
+  const region: number[] = [];
+  const join = (p: number) => {
+    if (!seen[p]) {
+      seen[p] = 1;
+      region.push(p);
+    }
+  };
+  const background = (p: number) => lumas[p] < cutoff && !onPage(p);
+  for (let p = 0; p < n; p++) if (onBorder(p) && background(p)) join(p);
+  for (let i = 0; i < region.length; i++) around(region[i], (q) => background(q) && join(q));
   if (region.length <= BACKGROUND_AREA * n) return;
   for (let layer = 0, from = 0; layer < BACKGROUND_GROW; layer++) {
     const to = region.length;
@@ -443,6 +471,24 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
     from = to;
   }
   for (const p of region) out[p] = 255;
+}
+
+type Point2 = readonly [number, number];
+
+/** The convex hull of `points` by the monotone chain, turning so a point inside is on the positive side of each edge. */
+function convexHull(points: Point2[]): Point2[] {
+  const sorted = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o: Point2, a: Point2, b: Point2) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const half = (list: Point2[]) => {
+    const chain: Point2[] = [];
+    for (const p of list) {
+      while (chain.length >= 2 && cross(chain[chain.length - 2], chain[chain.length - 1], p) <= 0) chain.pop();
+      chain.push(p);
+    }
+    chain.pop();
+    return chain;
+  };
+  return [...half(sorted), ...half(sorted.reverse())];
 }
 
 function withDisposables<T>(fn: (own: <D extends Disposable>(o: D) => D) => T): T {
@@ -571,7 +617,7 @@ function analysePage(image: SkImage): Analysis {
       const rgba = { width: sw, height: sh, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul };
       const pagePixels = smallPage.readPixels(0, 0, rgba) as Uint8Array | null;
       const finePixels = fine.readPixels(0, 0, rgba) as Uint8Array | null;
-      // Unreadable copies just leave the edges as they are.
+      // A copy that cannot be read leaves nothing marked from it.
       const pastEdgesMask = pagePixels && finePixels ? pastEdges(pagePixels, finePixels, sw, sh) : new Uint8Array(sw * sh);
       if (finePixels) markDarkBackground(pastEdgesMask, finePixels, sw, sh);
       const beyondData = own(Skia.Data.fromBytes(pastEdgesMask));

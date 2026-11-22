@@ -82,8 +82,8 @@ function readLuma(image: SkImage): Uint8Array {
 const BLOCK = 32;
 const BORDER = 0.05;
 
-/** Each 32 px block's 90th-percentile luma. */
-function blockPaper(luma: Uint8Array, w: number, h: number) {
+/** Contrast c = local paper level - luma; paper is each 32 px block's 90th-percentile luma, 3x3-smoothed and sampled bilinearly. */
+function contrastMap(luma: Uint8Array, w: number, h: number): Float32Array {
   const bw = Math.ceil(w / BLOCK);
   const bh = Math.ceil(h / BLOCK);
   const raw = new Float32Array(bw * bh);
@@ -101,66 +101,6 @@ function blockPaper(luma: Uint8Array, w: number, h: number) {
       raw[by * bw + bx] = v;
     }
   }
-  return { bw, bh, raw };
-}
-
-/** Blocks belonging to a dark border-connected background (32 px block mean below half of the frame's 90th-percentile luma, covering > 25% of blocks and >= 25% of the border), grown by 1 block. */
-function darkBackgroundBlocks(luma: Uint8Array, w: number, h: number): Uint8Array {
-  const bw = Math.ceil(w / BLOCK);
-  const bh = Math.ceil(h / BLOCK);
-  const n = bw * bh;
-  const allHist = new Int32Array(256);
-  for (let i = 0; i < luma.length; i++) allHist[luma[i]]++;
-  let acc = 0;
-  let framePaper = 0;
-  while (framePaper < 255 && (acc += allHist[framePaper]) < Math.ceil(0.9 * luma.length)) framePaper++;
-  const mean = new Float32Array(n);
-  for (let by = 0; by < bh; by++) {
-    for (let bx = 0; bx < bw; bx++) {
-      let sum = 0;
-      let count = 0;
-      for (let y = by * BLOCK; y < Math.min(h, (by + 1) * BLOCK); y++) {
-        for (let x = bx * BLOCK; x < Math.min(w, (bx + 1) * BLOCK); x++, count++) sum += luma[y * w + x];
-      }
-      mean[by * bw + bx] = sum / count;
-    }
-  }
-  const cutoff = 0.5 * framePaper;
-  const darkBg = new Uint8Array(n);
-  const seen = new Uint8Array(n);
-  const region: number[] = [];
-  const join = (b: number) => {
-    if (!seen[b]) {
-      seen[b] = 1;
-      region.push(b);
-    }
-  };
-  const around = (b: number, fn: (q: number) => void) => {
-    const bx = b % bw;
-    const by = (b - bx) / bw;
-    if (bx > 0) fn(b - 1);
-    if (bx + 1 < bw) fn(b + 1);
-    if (by > 0) fn(b - bw);
-    if (by + 1 < bh) fn(b + bw);
-  };
-  for (let b = 0; b < n; b++) {
-    const bx = b % bw;
-    const by = (b - bx) / bw;
-    if ((bx === 0 || by === 0 || bx === bw - 1 || by === bh - 1) && mean[b] < cutoff) join(b);
-  }
-  const perimeter = bw <= 1 || bh <= 1 ? n : 2 * (bw + bh - 2);
-  if (region.length < 0.25 * perimeter) return darkBg;
-  for (let i = 0; i < region.length; i++) around(region[i], (q) => mean[q] < cutoff && join(q));
-  if (region.length <= 0.25 * n) return darkBg;
-  const to = region.length;
-  for (let i = 0; i < to; i++) around(region[i], join);
-  for (const b of region) darkBg[b] = 1;
-  return darkBg;
-}
-
-/** Contrast c = local paper level - luma; paper is each 32 px block's 90th-percentile luma, 3x3-smoothed and sampled bilinearly. */
-function contrastMap(luma: Uint8Array, w: number, h: number, paper = blockPaper(luma, w, h)): Float32Array {
-  const { bw, bh, raw } = paper;
   const at = (g: Float32Array, x: number, y: number) =>
     g[Math.max(0, Math.min(bh - 1, y)) * bw + Math.max(0, Math.min(bw - 1, x))];
   const grid = new Float32Array(bw * bh);
@@ -195,7 +135,7 @@ function paperBothSides(c: Float32Array, idx: number, step: number, room: [numbe
   return side(-1, room[0]) && side(1, room[1]);
 }
 
-function inputMasks(cIn: Float32Array, w: number, h: number, darkBg: Uint8Array, bw: number) {
+function inputMasks(cIn: Float32Array, w: number, h: number) {
   const x0 = Math.floor(w * BORDER);
   const x1 = Math.ceil(w * (1 - BORDER));
   const y0 = Math.floor(h * BORDER);
@@ -205,7 +145,6 @@ function inputMasks(cIn: Float32Array, w: number, h: number, darkBg: Uint8Array,
     for (let x = x0; x < x1; x++) {
       const i = y * w + x;
       if (
-        !darkBg[(y >> 5) * bw + (x >> 5)] &&
         cIn[i] >= 20 &&
         (paperBothSides(cIn, i, 1, [x, w - 1 - x]) || paperBothSides(cIn, i, w, [y, h - 1 - y]))
       ) {
@@ -226,7 +165,7 @@ function inputMasks(cIn: Float32Array, w: number, h: number, darkBg: Uint8Array,
       if (rows[y * w + x]) for (let k = Math.max(0, y - 5); k <= Math.min(h - 1, y + 5); k++) near[k * w + x] = 1;
     }
   }
-  return { x0, x1, y0, y1, stroke, near, darkBg, bw };
+  return { x0, x1, y0, y1, stroke, near };
 }
 
 function measure(cIn: Float32Array, m: ReturnType<typeof inputMasks>, lumaOut: Uint8Array, w: number, h: number) {
@@ -234,7 +173,6 @@ function measure(cIn: Float32Array, m: ReturnType<typeof inputMasks>, lumaOut: U
   const n = { pale: 0, paleKept: 0, dark: 0, darkKept: 0, paper: 0, paperClean: 0, nearPaper: 0, nearPaperClean: 0, all: 0, white: 0 };
   for (let y = m.y0; y < m.y1; y++) {
     for (let x = m.x0; x < m.x1; x++) {
-      if (m.darkBg[(y >> 5) * m.bw + (x >> 5)]) continue;
       const i = y * w + x;
       n.all++;
       if (lumaOut[i] >= 235) n.white++;
@@ -264,11 +202,11 @@ function measure(cIn: Float32Array, m: ReturnType<typeof inputMasks>, lumaOut: U
 
 type Counts = ReturnType<typeof measure>;
 type Floor = Omit<ReturnType<typeof shares>, 'pageWhite'>;
-// Means over docunet-original, whole or a SHARD=i/4 quarter, skipping dark-background blocks so
-// background texture is not scored as print or paper; each quarter clears them by 0.7+ points.
+// Means over docunet-original, whole or a SHARD=i/4 quarter, that the filter clears by 0.7+ points; shards of another size are only scored.
+// paleKept and darkKept score table or carpet texture as print, so they fall where Clean whitens the table (11 photos, such as 26_1).
 const FLOORS: Record<number, Floor> = {
-  1: { paleKept: 47, darkKept: 98, paperClean: 92, nearPaperClean: 94 },
-  2: { paleKept: 24, darkKept: 97, paperClean: 93, nearPaperClean: 96 },
+  1: { paleKept: 50, darkKept: 94, paperClean: 92, nearPaperClean: 94 },
+  2: { paleKept: 29, darkKept: 93, paperClean: 93, nearPaperClean: 96 },
 };
 const pct = (a: number, b: number) => (a / (b || 1)) * 100;
 function shares(n: Counts) {
@@ -313,10 +251,8 @@ function selectShard(files: string[], shard?: string): { files: string[]; n: num
         const w = page.width();
         const h = page.height();
         const lumaIn = readLuma(page);
-        const paper = blockPaper(lumaIn, w, h);
-        const cIn = contrastMap(lumaIn, w, h, paper);
-        const darkBg = darkBackgroundBlocks(lumaIn, w, h);
-        const masks = inputMasks(cIn, w, h, darkBg, paper.bw);
+        const cIn = contrastMap(lumaIn, w, h);
+        const masks = inputMasks(cIn, w, h);
 
         for (const strength of Object.keys(FLOORS).map(Number)) {
           const t0 = performance.now();
