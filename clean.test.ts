@@ -1562,6 +1562,28 @@ describe('dark background', () => {
     }
   }, 30000);
 
+  // A magazine page's photo bleeding off its foot with light captions in it, 160 px deep: farther
+  // past the paper than print along a page's edge reaches (a quarter of the page's width).
+  it('keeps a dark picture bleeding off the page\'s foot, however deep', () => {
+    const photo = pageOnTable(DARK_TABLE, [150, 100, 300, 600]);
+    const surface = Skia.Surface.Make(W, H)!;
+    const canvas = surface.getCanvas();
+    canvas.drawImage(photo, 0, 0);
+    photo.dispose();
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color('rgb(30,40,90)'));
+    canvas.drawRect(Skia.XYWHRect(150, 540, 300, 160), paint);
+    paint.setColor(Skia.Color('rgb(235,232,224)'));
+    const captions = [555, 655];
+    for (const top of captions) canvas.drawRect(Skia.XYWHRect(180, top, 240, 10), paint);
+    const pictured = decode(surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 92));
+    paint.dispose();
+    surface.dispose();
+    const { white, px } = cleanedTable(pictured, 130);
+    expect(white).toBeGreaterThan(0.98);
+    for (const top of captions) expect(channelMean(px, 300, top + 5) - channelMean(px, 300, top - 7)).toBeGreaterThan(60);
+  }, 30000);
+
   it('whitens a table at 0.32 of the paper', () => {
     expect(cleanedTable(pageOnTable([85, 73, 67], PAGE_20_PERCENT), 360).white).toBeGreaterThan(0.98);
   }, 30000);
