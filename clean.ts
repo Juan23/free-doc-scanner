@@ -387,11 +387,13 @@ function pastEdges(page: Uint8Array, fine: Uint8Array, w: number, h: number): Ui
 }
 
 // A page in a wide frame has a table or carpet round it; there the paper estimate is the background
-// itself, so dividing by it leaves speckle. That background joins the border, is darker than
-// BACKGROUND_SHARE of the frame's paper (its PAPER_PERCENTILE of luma) and covers over BACKGROUND_AREA
-// of it. A dark picture inside the page does not join the border, and one bleeding off an edge covers less.
+// itself, so dividing by it leaves speckle. That background joins at least BACKGROUND_BORDER of the
+// border, is darker than BACKGROUND_SHARE of the frame's paper (its PAPER_PERCENTILE of luma) and
+// covers over BACKGROUND_AREA of the frame. A dark picture inside the page does not join enough of
+// the border (even if a cropped edge grazes it), and one bleeding off an edge covers less.
 const BACKGROUND_SHARE = 0.5;
 const BACKGROUND_AREA = 0.25;
+const BACKGROUND_BORDER = 0.25;
 const PAPER_PERCENTILE = 0.9;
 
 // A page's soft edge leaves a ring of pixels this wide beside it: darker than the paper, lighter than the cutoff.
@@ -431,6 +433,8 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
     const y = (p - x) / w;
     if ((x === 0 || y === 0 || x === w - 1 || y === h - 1) && lumas[p] < cutoff) join(p);
   }
+  const perimeter = w <= 1 || h <= 1 ? n : 2 * (w + h - 2);
+  if (region.length < BACKGROUND_BORDER * perimeter) return;
   for (let i = 0; i < region.length; i++) around(region[i], (q) => lumas[q] < cutoff && join(q));
   if (region.length <= BACKGROUND_AREA * n) return;
   for (let layer = 0, from = 0; layer < BACKGROUND_GROW; layer++) {

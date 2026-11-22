@@ -1470,10 +1470,10 @@ describe('dark background', () => {
     return decode(bytes);
   }
 
-  // Clean Normal of `photo`, which this frees; the table's share of white pixels and mean colour spread
+  // Filtered `photo` (which this frees); the table's share of white pixels and mean colour spread
   // over x < `tableWidth`, and the output's pixels.
-  function cleanedTable(photo: SkImage, tableWidth: number) {
-    const out = filterImage(photo, { kind: 'clean', strength: 1 });
+  function cleanedTable(photo: SkImage, tableWidth: number, filter: Filter = { kind: 'clean', strength: 1 }) {
+    const out = filterImage(photo, filter);
     const px = readPixels(out);
     let white = 0;
     let spreadSum = 0;
@@ -1497,6 +1497,20 @@ describe('dark background', () => {
     expect(channelMean(px, 470, 326)).toBeLessThan(60);
     expect(channelMean(px, 470, 230)).toBeGreaterThan(245);
   }, 30000);
+
+  it('whitens a dark background and keeps print at Light, Strong and Grayscale', () => {
+    for (const filter of [
+      { kind: 'clean', strength: 0 },
+      { kind: 'clean', strength: 2 },
+      { kind: 'gray', strength: 1 },
+    ] as Filter[]) {
+      const { white, spread, px } = cleanedTable(pageOnTable(DARK_TABLE, PAGE_20_PERCENT), 360, filter);
+      expect(white).toBeGreaterThan(0.98);
+      expect(spread).toBeLessThan(2);
+      expect(channelMean(px, 470, 206)).toBeLessThan(60);
+      expect(channelMean(px, 470, 230)).toBeGreaterThan(245);
+    }
+  }, 60000);
 
   it('keeps print inside a dark picture on the page that does not join the border', () => {
     const { px } = cleanedTable(pageOnTable(DARK_TABLE, PAGE_20_PERCENT, [400, 560, 140, 100]), 360);
@@ -1540,5 +1554,41 @@ describe('dark background', () => {
     const out = new Uint8Array(w * h);
     markDarkBackground(out, fine, w, h);
     expect([29, 30, 31, 32, 33].map((x) => out[10 * w + x])).toEqual([255, 255, 255, 255, 0]);
+  });
+
+  function rectMask(w: number, h: number, inside: (x: number, y: number) => boolean, dark: number, light = 230) {
+    const fine = new Uint8Array(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        fine.fill(inside(x, y) ? dark : light, (y * w + x) * 4, (y * w + x) * 4 + 3);
+      }
+    }
+    const out = new Uint8Array(w * h);
+    markDarkBackground(out, fine, w, h);
+    return out;
+  }
+
+  it('pins the half-paper brightness cutoff', () => {
+    expect(rectMask(40, 20, (x) => x < 20, 114)[10 * 40 + 10]).toBe(255);
+    expect(rectMask(40, 20, (x) => x < 20, 115)[10 * 40 + 10]).toBe(0);
+  });
+
+  it('pins the quarter-frame area gate', () => {
+    expect(Math.max(...rectMask(100, 20, (x) => x < 25, 30))).toBe(0);
+    expect(rectMask(100, 20, (x) => x < 26, 30)[10 * 100 + 10]).toBe(255);
+  });
+
+  it('requires at least a quarter of the border perimeter and border connectedness', () => {
+    // 30.4% of the frame touching 98 of 396 border pixels (< 25%).
+    expect(Math.max(...rectMask(100, 100, (x, y) => x >= 1 && x <= 98 && y <= 30, 30))).toBe(0);
+    // 30.4% of the frame touching exactly 99 of 396 border pixels (25%).
+    expect(rectMask(100, 100, (x, y) => (x === 0 && y === 0) || (x >= 1 && x <= 98 && y <= 30), 30)[10 * 100 + 50]).toBe(255);
+    // 30% interior rectangle touching no border.
+    expect(Math.max(...rectMask(100, 100, (x, y) => x >= 20 && x < 80 && y >= 20 && y < 70, 30))).toBe(0);
+  });
+
+  it('leaves a small page under 10% of the frame unchanged', () => {
+    // 9% bright paper leaves the 90th percentile on the dark background.
+    expect(Math.max(...rectMask(100, 100, (x, y) => !(x >= 35 && x < 65 && y >= 35 && y < 65), 30))).toBe(0);
   });
 });
