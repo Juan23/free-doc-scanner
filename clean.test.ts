@@ -1512,7 +1512,7 @@ describe('dark background', () => {
     }
   }, 60000);
 
-  it('keeps print inside a dark picture on the page that does not join the border', () => {
+  it('keeps print inside a dark picture on the page', () => {
     const { px } = cleanedTable(pageOnTable(DARK_TABLE, PAGE_20_PERCENT, [400, 560, 140, 100]), 360);
     expect(channelMean(px, 470, 585)).toBeLessThan(80);
     expect(channelMean(px, 470, 625)).toBeLessThan(80);
@@ -1524,7 +1524,44 @@ describe('dark background', () => {
     expect(white).toBeGreaterThan(0.98);
   }, 30000);
 
-  // Table at 0.32 of the paper's brightness (233).
+  // Like a receipt running off the photo's right edge, with the table above, below and to its left.
+  it('whitens the table round a page that runs off the frame\'s edge', () => {
+    const { white, spread, px } = cleanedTable(pageOnTable(DARK_TABLE, [300, 100, 300, 600]), 280);
+    expect(white).toBeGreaterThan(0.98);
+    expect(spread).toBeLessThan(2);
+    expect(channelMean(px, 450, 173)).toBeLessThan(60);
+    expect(channelMean(px, 450, 200)).toBeGreaterThan(245);
+  }, 30000);
+
+  // A page on the table with a dark green header, a navy band across it and a near-black footer, each
+  // holding a row of light text: printed colours, unlike the table's. Each band is probed beside the
+  // paper, where Clean keeps even a band it does not mark.
+  it('keeps a dark header, footer and band across the page, each with light text', () => {
+    const photo = pageOnTable(DARK_TABLE, [150, 100, 300, 600]);
+    const surface = Skia.Surface.Make(W, H)!;
+    const canvas = surface.getCanvas();
+    canvas.drawImage(photo, 0, 0);
+    photo.dispose();
+    const paint = Skia.Paint();
+    // Colour, top and the row beside the paper; the rows of print sit clear of each band.
+    const bands: [string, number, number][] = [['rgb(40,80,50)', 100, 132], ['rgb(30,40,90)', 303, 311], ['rgb(25,25,28)', 660, 668]];
+    for (const [colour, top] of bands) {
+      paint.setColor(Skia.Color(colour));
+      canvas.drawRect(Skia.XYWHRect(150, top, 300, 40), paint);
+      paint.setColor(Skia.Color('rgb(235,232,224)'));
+      canvas.drawRect(Skia.XYWHRect(180, top + 15, 240, 10), paint);
+    }
+    const banded = decode(surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 92));
+    paint.dispose();
+    surface.dispose();
+    const { white, px } = cleanedTable(banded, 130);
+    expect(white).toBeGreaterThan(0.98);
+    for (const [, top, beside] of bands) {
+      expect(channelMean(px, 300, beside)).toBeLessThan(110);
+      expect(channelMean(px, 300, top + 20) - channelMean(px, 300, beside)).toBeGreaterThan(60);
+    }
+  }, 30000);
+
   it('whitens a table at 0.32 of the paper', () => {
     expect(cleanedTable(pageOnTable([85, 73, 67], PAGE_20_PERCENT), 360).white).toBeGreaterThan(0.98);
   }, 30000);
@@ -1604,7 +1641,7 @@ describe('dark background', () => {
     expect(rectMask(100, 100, besidePage(100, 100, 23), 30)[50 * 100 + 10]).toBe(255);
   });
 
-  it('marks nothing without a light page clear of the border', () => {
+  it('marks nothing when the dark lies on one side of the light only', () => {
     expect(Math.max(...rectMask(100, 100, (x) => x < 40, 30))).toBe(0);
   });
 

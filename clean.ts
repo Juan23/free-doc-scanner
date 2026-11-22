@@ -390,92 +390,270 @@ function pastEdges(page: Uint8Array, fine: Uint8Array, w: number, h: number): Ui
 const BACKGROUND_SHARE = 0.5;
 const BACKGROUND_AREA = 0.25;
 const PAPER_PERCENTILE = 0.9;
-// Light text on a dark page or band would pass for the background; only what lies outside a light page's convex hull counts.
+// The page is the largest light patch and any a tenth its size clear of the border (paper a band across it cuts off), once they hold half the light.
+const PAGE_PART = 0.1;
 const PAGE_SHARE = 0.5;
+// Print along a page's edge (a header, a banner's curled corner) reaches at most this share of the page's short side past its light paper.
+const EDGE_PRINT = 0.25;
+// Within that reach the table keeps the colour it has farther out: about its chromaticity and brightness, where print beside it does not.
+const TABLE_HUE = 0.06;
+const TABLE_RATIO = 1.5;
+// Colours are compared averaged over the dark pixels in (2 * GRAIN + 1)² around, so grain does not count.
+const GRAIN = 2;
 
 // A page's soft edge leaves a ring of pixels this wide beside it: darker than the paper, lighter than the cutoff.
 const BACKGROUND_GROW = 3;
 
-/** Sets `out` to 255 on the table round the page in `fine`, the small copy with ink wiped out (RGBA). */
-export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number, h: number): void {
-  const n = w * h;
+/** Calls `fn` with each pixel beside `p`, above, below, left and right, in a `w` wide image of `n` pixels. */
+function eachBeside(p: number, w: number, n: number, fn: (q: number) => void): void {
+  const x = p % w;
+  if (x > 0) fn(p - 1);
+  if (x < w - 1) fn(p + 1);
+  if (p >= w) fn(p - w);
+  if (p < n - w) fn(p + w);
+}
+
+/** 1 where `fine` (RGBA) is darker than half of its paper, the frame's 90th percentile luma. */
+function darkerThanPaper(fine: Uint8Array, n: number): Uint8Array {
   const lumas = new Uint8Array(n);
   const hist = new Int32Array(256);
   for (let i = 0; i < n; i++) {
-    lumas[i] = Math.round(LUMA[0] * fine[i * 4] + LUMA[1] * fine[i * 4 + 1] + LUMA[2] * fine[i * 4 + 2]);
+    // `| 0` rounds: a Math.round call per pixel took 20 of the pass's 30 ms in Jest.
+    lumas[i] = (LUMA[0] * fine[i * 4] + LUMA[1] * fine[i * 4 + 1] + LUMA[2] * fine[i * 4 + 2] + 0.5) | 0;
     hist[lumas[i]]++;
   }
   let paper = 0;
   for (let below = hist[0]; below < PAPER_PERCENTILE * n; ) below += hist[++paper];
   const cutoff = BACKGROUND_SHARE * paper;
-  const onBorder = (p: number) => {
-    const x = p % w;
-    return x === 0 || x === w - 1 || p < w || p >= n - w;
-  };
-  const around = (p: number, fn: (q: number) => void) => {
-    const x = p % w;
-    const y = (p - x) / w;
-    for (let d = 0; d < 4; d++) {
-      const u = x + STEP_X[d];
-      const v = y + STEP_Y[d];
-      if (u >= 0 && v >= 0 && u < w && v < h) fn(v * w + u);
+  for (let i = 0; i < n; i++) lumas[i] = lumas[i] < cutoff ? 1 : 0;
+  return lumas;
+}
+
+type Box = { left: number; top: number; right: number; bottom: number };
+
+/**
+ * The convex hull of the page's light patches as 1s, its least width and the patches' bounding box;
+ * null when they hold under half the light.
+ */
+function pageHull(dark: Uint8Array, w: number, h: number): { inside: Uint8Array; width: number; box: Box } | null {
+  const n = w * h;
+  const patch = new Int32Array(n).fill(-1);
+  const patches: { size: number; onBorder: boolean; box: Box }[] = [];
+  const stack: number[] = [];
+  const spread = (q: number) => {
+    if (!dark[q] && patch[q] < 0) {
+      patch[q] = patches.length;
+      stack.push(q);
     }
   };
-
-  const seen = new Uint8Array(n);
-  let page: number[] = [];
-  let light = 0;
   for (let s = 0; s < n; s++) {
-    if (lumas[s] < cutoff || seen[s]) continue;
-    const patch = [s];
-    seen[s] = 1;
-    let clear = true;
-    for (let i = 0; i < patch.length; i++) {
-      if (onBorder(patch[i])) clear = false;
-      around(patch[i], (q) => {
-        if (lumas[q] >= cutoff && !seen[q]) {
-          seen[q] = 1;
-          patch.push(q);
-        }
-      });
+    if (dark[s] || patch[s] >= 0) continue;
+    const found = { size: 0, onBorder: false, box: { left: w, top: h, right: -1, bottom: -1 } };
+    patch[s] = patches.length;
+    stack.push(s);
+    while (stack.length) {
+      const p = stack.pop()!;
+      const x = p % w;
+      const y = (p - x) / w;
+      found.size++;
+      if (x === 0 || x === w - 1 || y === 0 || y === h - 1) found.onBorder = true;
+      if (x < found.box.left) found.box.left = x;
+      if (x > found.box.right) found.box.right = x;
+      if (y < found.box.top) found.box.top = y;
+      if (y > found.box.bottom) found.box.bottom = y;
+      eachBeside(p, w, n, spread);
     }
-    light += patch.length;
-    if (clear && patch.length > page.length) page = patch;
+    patches.push(found);
   }
-  if (!page.length || page.length < PAGE_SHARE * light) return;
-  const hull = convexHull(page.map((p) => [p % w, Math.floor(p / w)] as const));
-  const onPage = (p: number) => {
+  const largest = patches.reduce((a, { size }) => Math.max(a, size), 0);
+  const isPage = patches.map(({ size, onBorder }) => size === largest || (!onBorder && size >= PAGE_PART * largest));
+  let light = 0;
+  let pageSize = 0;
+  const box = { left: w, top: h, right: -1, bottom: -1 };
+  patches.forEach((found, i) => {
+    light += found.size;
+    if (!isPage[i]) return;
+    pageSize += found.size;
+    box.left = Math.min(box.left, found.box.left);
+    box.top = Math.min(box.top, found.box.top);
+    box.right = Math.max(box.right, found.box.right);
+    box.bottom = Math.max(box.bottom, found.box.bottom);
+  });
+  if (!largest || pageSize < PAGE_SHARE * light) return null;
+  const rowEnds: Point2[] = [];
+  for (let y = box.top; y <= box.bottom; y++) {
+    let lo = -1;
+    let hi = -1;
+    for (let x = box.left; x <= box.right; x++) {
+      const id = patch[y * w + x];
+      if (id < 0 || !isPage[id]) continue;
+      if (lo < 0) lo = x;
+      hi = x;
+    }
+    if (hi >= 0) rowEnds.push([lo, y], [hi, y]);
+  }
+  const hull = convexHull(rowEnds);
+  return { inside: hullMask(rowEnds, hull, w, h), width: leastWidth(hull), box };
+}
+
+/** 1 on each pixel outside `inside` that `steps` or fewer steps to a side reach from it. */
+function withinSteps(inside: Uint8Array, steps: number, w: number, h: number): Uint8Array {
+  const n = w * h;
+  const near = new Uint8Array(n);
+  let next: number[] = [];
+  const reach = (q: number) => {
+    if (!inside[q] && !near[q]) {
+      near[q] = 1;
+      next.push(q);
+    }
+  };
+  if (steps < 1) return near;
+  for (let p = 0; p < n; p++) if (inside[p]) eachBeside(p, w, n, reach);
+  for (let step = 1; step < steps && next.length; step++) {
+    const front = next;
+    next = [];
+    for (const p of front) eachBeside(p, w, n, reach);
+  }
+  return near;
+}
+
+/**
+ * Sets `out` to 255 on the table round the page in `fine`, the small copy with ink wiped out (RGBA):
+ * what is dark, joins the border outside the page's convex hull and shows on two opposite sides of it.
+ * A light strip beside a dark page, as when a black cover is cropped with the table below it, shows on one side only.
+ */
+export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number, h: number): void {
+  const n = w * h;
+  const dark = darkerThanPaper(fine, n);
+  const page = pageHull(dark, w, h);
+  if (!page) return;
+  const { inside, width, box } = page;
+
+  // Of what is dark and joins the border outside the hull, the table is all beyond reach of the hull and, within reach, what keeps the colour it has beyond.
+  const reach = Math.round(EDGE_PRINT * (width + 1));
+  const near = withinSteps(inside, reach, w, h);
+  // 1: joined within reach; 2: the table.
+  const state = new Uint8Array(n);
+  const joined: number[] = [];
+  const joinDark = (q: number) => {
+    if (state[q] || !dark[q] || inside[q]) return;
+    state[q] = near[q] ? 1 : 2;
+    joined.push(q);
+  };
+  for (let p = 0; p < n; p++) {
+    const x = p % w;
+    if (x === 0 || x === w - 1 || p < w || p >= n - w) joinDark(p);
+  }
+  for (let i = 0; i < joined.length; i++) eachBeside(joined[i], w, n, joinDark);
+  const region = joined.filter((p) => state[p] === 2);
+  const nearDark = joined.filter((p) => state[p] === 1);
+  // Colours are compared only within reach of the page and a pixel beyond.
+  const x0 = Math.max(0, box.left - reach - 1);
+  const y0 = Math.max(0, box.top - reach - 1);
+  const x1 = Math.min(w - 1, box.right + reach + 1);
+  const y1 = Math.min(h - 1, box.bottom + reach + 1);
+  const colour = boxMean(fine, dark, w, h, GRAIN, x0, y0, x1, y1);
+  const tint = new Float32Array(n * 3);
+  const bright = new Float32Array(n);
+  for (let y = y0; y <= y1; y++) {
+    for (let p = y * w + x0; p <= y * w + x1; p++) {
+      const sum = colour[p * 3] + colour[p * 3 + 1] + colour[p * 3 + 2] + 1;
+      for (let c = 0; c < 3; c++) tint[p * 3 + c] = colour[p * 3 + c] / sum;
+      bright[p] = LUMA[0] * colour[p * 3] + LUMA[1] * colour[p * 3 + 1] + LUMA[2] * colour[p * 3 + 2] + 1;
+    }
+  }
+  const close = (d: number, limit: number) => d <= limit && d >= -limit;
+  const sameColour = (a: number, b: number) => {
+    const ratio = bright[a] / bright[b];
+    return ratio <= TABLE_RATIO && ratio >= 1 / TABLE_RATIO && close(tint[a * 3] - tint[b * 3], TABLE_HUE)
+      && close(tint[a * 3 + 1] - tint[b * 3 + 1], TABLE_HUE) && close(tint[a * 3 + 2] - tint[b * 3 + 2], TABLE_HUE);
+  };
+  // The pixel beyond reach each one is compared with; a reference that drifted would creep along a printed edge.
+  const source = new Int32Array(n);
+  let from = 0;
+  const join = (q: number) => {
+    if (state[q] !== 1 || !sameColour(q, source[from])) return;
+    state[q] = 2;
+    source[q] = source[from];
+    region.push(q);
+  };
+  const start = region.length;
+  for (const q of nearDark) {
+    eachBeside(q, w, n, (p) => {
+      if (state[q] !== 1 || state[p] !== 2 || near[p] || !sameColour(q, p)) return;
+      state[q] = 2;
+      source[q] = p;
+      region.push(q);
+    });
+  }
+  for (let i = start; i < region.length; i++) {
+    from = region[i];
+    eachBeside(from, w, n, join);
+  }
+
+  const sides = { left: false, right: false, above: false, below: false };
+  for (const p of region) {
     const x = p % w;
     const y = (p - x) / w;
-    return hull.every(([ax, ay], i) => {
-      const [bx, by] = hull[(i + 1) % hull.length];
-      return (bx - ax) * (y - ay) - (by - ay) * (x - ax) >= 0;
-    });
-  };
-
-  seen.fill(0);
-  const region: number[] = [];
-  const join = (p: number) => {
-    if (!seen[p]) {
-      seen[p] = 1;
-      region.push(p);
+    if (y >= box.top && y <= box.bottom) {
+      sides.left ||= x < box.left;
+      sides.right ||= x > box.right;
+    }
+    if (x >= box.left && x <= box.right) {
+      sides.above ||= y < box.top;
+      sides.below ||= y > box.bottom;
+    }
+  }
+  if (!(sides.left && sides.right) && !(sides.above && sides.below)) return;
+  if (region.length <= BACKGROUND_AREA * n) return;
+  const grow = (q: number) => {
+    if (state[q] !== 2) {
+      state[q] = 2;
+      region.push(q);
     }
   };
-  const background = (p: number) => lumas[p] < cutoff && !onPage(p);
-  for (let p = 0; p < n; p++) if (onBorder(p) && background(p)) join(p);
-  for (let i = 0; i < region.length; i++) around(region[i], (q) => background(q) && join(q));
-  if (region.length <= BACKGROUND_AREA * n) return;
-  for (let layer = 0, from = 0; layer < BACKGROUND_GROW; layer++) {
-    const to = region.length;
-    for (let i = from; i < to; i++) around(region[i], join);
-    from = to;
+  for (let layer = 0, start = 0; layer < BACKGROUND_GROW; layer++) {
+    const end = region.length;
+    for (let i = start; i < end; i++) eachBeside(region[i], w, n, grow);
+    start = end;
   }
   for (const p of region) out[p] = 255;
 }
 
 type Point2 = readonly [number, number];
 
-/** The convex hull of `points` by the monotone chain, turning so a point inside is on the positive side of each edge. */
+/** 1 inside `hull`, the convex hull of `points`, which hold each row's leftmost and rightmost point; 0 elsewhere. */
+function hullMask(points: Point2[], hull: Point2[], w: number, h: number): Uint8Array {
+  const lo = new Float64Array(h).fill(Infinity);
+  const hi = new Float64Array(h).fill(-Infinity);
+  const extend = (x: number, y: number) => {
+    lo[y] = Math.min(lo[y], x);
+    hi[y] = Math.max(hi[y], x);
+  };
+  for (const [x, y] of points) extend(x, y);
+  hull.forEach(([ax, ay], i) => {
+    const [bx, by] = hull[(i + 1) % hull.length];
+    for (let y = Math.min(ay, by) + 1; y < Math.max(ay, by); y++) extend(ax + ((bx - ax) * (y - ay)) / (by - ay), y);
+  });
+  const mask = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = Math.ceil(lo[y]); x <= hi[y]; x++) mask[y * w + x] = 1;
+  return mask;
+}
+
+/** The least distance between two parallel lines that hold the convex `hull` between them, one along an edge. */
+function leastWidth(hull: Point2[]): number {
+  let least = 0;
+  hull.forEach(([ax, ay], i) => {
+    const [bx, by] = hull[(i + 1) % hull.length];
+    const length = Math.hypot(bx - ax, by - ay);
+    let widest = 0;
+    for (const [x, y] of hull) widest = Math.max(widest, Math.abs((bx - ax) * (y - ay) - (by - ay) * (x - ax)) / length);
+    if (!least || widest < least) least = widest;
+  });
+  return least;
+}
+
+/** The convex hull of `points` by the monotone chain. */
 function convexHull(points: Point2[]): Point2[] {
   const sorted = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   const cross = (o: Point2, a: Point2, b: Point2) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
@@ -489,6 +667,49 @@ function convexHull(points: Point2[]): Point2[] {
     return chain;
   };
   return [...half(sorted), ...half(sorted.reverse())];
+}
+
+/**
+ * Each pixel's RGB from `rgba` in columns x0 to x1 and rows y0 to y1, averaged over the `counted`
+ * pixels in the (2r + 1)² square around it; its own where there are none.
+ */
+function boxMean(
+  rgba: Uint8Array, counted: Uint8Array, w: number, h: number, r: number, x0: number, y0: number, x1: number, y1: number,
+): Float32Array {
+  // Sums of R, G, B and the count along each pixel's row of the square, then down its column of those.
+  const across = new Float32Array(w * h * 4);
+  const add = (sums: Float64Array, p: number, sign: number) => {
+    if (!counted[p]) return;
+    for (let c = 0; c < 3; c++) sums[c] += sign * rgba[p * 4 + c];
+    sums[3] += sign;
+  };
+  const sums = new Float64Array(4);
+  for (let y = Math.max(0, y0 - r); y <= Math.min(h - 1, y1 + r); y++) {
+    sums.fill(0);
+    const first = Math.max(0, x0 - r);
+    for (let u = first; u < Math.min(w, x0 + r); u++) add(sums, y * w + u, 1);
+    for (let x = x0; x <= x1; x++) {
+      if (x + r < w) add(sums, y * w + x + r, 1);
+      if (x - r - 1 >= first) add(sums, y * w + x - r - 1, -1);
+      across.set(sums, (y * w + x) * 4);
+    }
+  }
+  const mean = new Float32Array(w * h * 3);
+  for (let x = x0; x <= x1; x++) {
+    sums.fill(0);
+    const first = Math.max(0, y0 - r);
+    const down = (v: number, sign: number) => {
+      for (let c = 0; c < 4; c++) sums[c] += sign * across[(v * w + x) * 4 + c];
+    };
+    for (let v = first; v < Math.min(h, y0 + r); v++) down(v, 1);
+    for (let y = y0; y <= y1; y++) {
+      if (y + r < h) down(y + r, 1);
+      if (y - r - 1 >= first) down(y - r - 1, -1);
+      const p = y * w + x;
+      for (let c = 0; c < 3; c++) mean[p * 3 + c] = sums[3] ? sums[c] / sums[3] : rgba[p * 4 + c];
+    }
+  }
+  return mean;
 }
 
 function withDisposables<T>(fn: (own: <D extends Disposable>(o: D) => D) => T): T {
@@ -617,7 +838,6 @@ function analysePage(image: SkImage): Analysis {
       const rgba = { width: sw, height: sh, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul };
       const pagePixels = smallPage.readPixels(0, 0, rgba) as Uint8Array | null;
       const finePixels = fine.readPixels(0, 0, rgba) as Uint8Array | null;
-      // A copy that cannot be read leaves nothing marked from it.
       const pastEdgesMask = pagePixels && finePixels ? pastEdges(pagePixels, finePixels, sw, sh) : new Uint8Array(sw * sh);
       if (finePixels) markDarkBackground(pastEdgesMask, finePixels, sw, sh);
       const beyondData = own(Skia.Data.fromBytes(pastEdgesMask));

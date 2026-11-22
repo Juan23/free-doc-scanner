@@ -203,10 +203,10 @@ function measure(cIn: Float32Array, m: ReturnType<typeof inputMasks>, lumaOut: U
 type Counts = ReturnType<typeof measure>;
 type Floor = Omit<ReturnType<typeof shares>, 'pageWhite'>;
 // Means over docunet-original, whole or a SHARD=i/4 quarter, that the filter clears by 0.7+ points; shards of another size are only scored.
-// paleKept and darkKept score table or carpet texture as print, so they fall where Clean whitens the table (11 photos, such as 26_1).
+// paleKept and darkKept score table or carpet texture as print, so they fall where Clean whitens the table (such as 26_1).
 const FLOORS: Record<number, Floor> = {
-  1: { paleKept: 50, darkKept: 94, paperClean: 92, nearPaperClean: 94 },
-  2: { paleKept: 29, darkKept: 93, paperClean: 93, nearPaperClean: 96 },
+  1: { paleKept: 48, darkKept: 94, paperClean: 95, nearPaperClean: 96 },
+  2: { paleKept: 27, darkKept: 93, paperClean: 96, nearPaperClean: 97 },
 };
 const pct = (a: number, b: number) => (a / (b || 1)) * 100;
 function shares(n: Counts) {
