@@ -1562,19 +1562,20 @@ describe('dark background', () => {
     }
   }, 30000);
 
-  // A magazine page's photo bleeding off its foot with light captions in it, 160 px deep: farther
-  // past the paper than print along a page's edge reaches (a quarter of the page's width).
-  it('keeps a dark picture bleeding off the page\'s foot, however deep', () => {
-    const photo = pageOnTable(DARK_TABLE, [150, 100, 300, 600]);
+  // A magazine photo with light captions, deeper than print along a page's edge reaches (a quarter of the page's width).
+  it.each([
+    ['ends on the table', 600, [555, 655]],
+    ['runs off the photo', 700, [555, 755]],
+  ] as const)('keeps a dark picture bleeding off the foot of a page that %s, however deep', (_, pageHeight, captions) => {
+    const photo = pageOnTable(DARK_TABLE, [150, 100, 300, pageHeight]);
     const surface = Skia.Surface.Make(W, H)!;
     const canvas = surface.getCanvas();
     canvas.drawImage(photo, 0, 0);
     photo.dispose();
     const paint = Skia.Paint();
     paint.setColor(Skia.Color('rgb(30,40,90)'));
-    canvas.drawRect(Skia.XYWHRect(150, 540, 300, 160), paint);
+    canvas.drawRect(Skia.XYWHRect(150, 540, 300, pageHeight - 440), paint);
     paint.setColor(Skia.Color('rgb(235,232,224)'));
-    const captions = [555, 655];
     for (const top of captions) canvas.drawRect(Skia.XYWHRect(180, top, 240, 10), paint);
     const pictured = decode(surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 92));
     paint.dispose();

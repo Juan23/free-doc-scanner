@@ -543,7 +543,7 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
   const dark = darkerThanPaper(fine, n);
   let darkCount = 0;
   for (let p = 0; p < n; p++) darkCount += dark[p];
-  // The table is part of the dark and must cover over BACKGROUND_AREA of the frame.
+  // A well-framed page stops here, before the costly hull.
   if (darkCount <= BACKGROUND_AREA * n) return;
   const page = pageHull(dark, w, h);
   if (!page) return;
@@ -579,14 +579,37 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
   const state = new Uint8Array(n);
   const reference = new Int32Array(n);
   const region: number[] = [];
-  for (let p = 0; p < n; p++) {
-    const x = p % w;
-    if (!(x === 0 || x === w - 1 || p < w || p >= n - w) || !tableSide(p) || near(p)) continue;
+  const refused: number[] = [];
+  const starts: number[] = [];
+  // On an edge with table on both sides of the page, dark in line with it and unlike that table may be a picture the page runs off the photo with.
+  const sortEdge = (edge: number[], first: number, last: number) => {
+    const beyond = (i: number) => tableSide(edge[i]) && !near(edge[i]);
+    // The table beside it is compared from past the averaging square, which takes in some of the picture.
+    let before = first - 1 - GRAIN;
+    while (before >= 0 && !beyond(before)) before--;
+    let after = last + 1 + GRAIN;
+    while (after < edge.length && !beyond(after)) after++;
+    const flanked = before >= 0 && after < edge.length;
+    edge.forEach((p, i) => {
+      if (!beyond(i)) return;
+      const unlikeTable = flanked && apart(p, edge[before]) === FAR && apart(p, edge[after]) === FAR;
+      if (i >= first && i <= last && unlikeTable) refused.push(p);
+      else starts.push(p);
+    });
+  };
+  const row = (y: number) => Array.from({ length: w }, (_, x) => y * w + x);
+  const column = (x: number) => Array.from({ length: h }, (_, y) => y * w + x);
+  sortEdge(row(0), box.left, box.right);
+  sortEdge(row(h - 1), box.left, box.right);
+  sortEdge(column(0), box.top, box.bottom);
+  sortEdge(column(w - 1), box.top, box.bottom);
+  // In raster order, as the flood's references depend on which seed reaches a pixel first; a corner is on two edges.
+  for (const p of starts.sort((a, b) => a - b)) {
+    if (state[p]) continue;
     state[p] = TABLE;
     reference[p] = p;
     region.push(p);
   }
-  const refused: number[] = [];
   const join = (q: number, from: number) => {
     if (state[q] || !dark[q] || inside[q]) return;
     // Within reach the reference is the table just beyond it, as light can shade the table nearer the page.
@@ -662,7 +685,7 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
 
 type Point2 = readonly [number, number];
 
-/** How many TABLE pixels in `state` the convex hull of `hull`'s corners and the pixels `part` takes in. */
+/** Counts the TABLE pixels in `state` inside the convex hull of `hull`'s corners and the pixels of `part`. */
 function tableInOutline(hull: Point2[], part: number[], state: Uint8Array, w: number, h: number): number {
   const lo = new Int32Array(h).fill(w);
   const hi = new Int32Array(h).fill(-1);
@@ -910,7 +933,6 @@ function analysePage(image: SkImage): Analysis {
       const rgba = { width: sw, height: sh, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul };
       const pagePixels = smallPage.readPixels(0, 0, rgba) as Uint8Array | null;
       const finePixels = fine.readPixels(0, 0, rgba) as Uint8Array | null;
-      // A copy that cannot be read leaves nothing marked from it.
       const pastEdgesMask = pagePixels && finePixels ? pastEdges(pagePixels, finePixels, sw, sh) : new Uint8Array(sw * sh);
       if (finePixels) markDarkBackground(pastEdgesMask, finePixels, sw, sh);
       const beyondData = own(Skia.Data.fromBytes(pastEdgesMask));
