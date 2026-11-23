@@ -417,17 +417,17 @@ const PAGE_GAP = 2;
 const PICTURE_FILL = 0.1;
 // Turns round the middle of the page, in equal parts.
 const ANGLES = 64;
-// A picture lies within the page's sides; table round it fills the space past two sides that meet, out to the photo's edge.
-// Past both by over JUT_MARGIN px, sides at least JUT_TURN apart, on over JUT_SHARE of a part.
+// A picture lies within the page's sides; table fills the space past two that meet (JUT_TURN apart) out to the photo's edge, over JUT_SHARE of it.
 const JUT_SHARE = 0.02;
-const JUT_MARGIN = 3;
 const JUT_TURN = Math.PI / 4;
+// A foot curling toward the camera bends a picture this share of the page's least width past the sides.
+const JUT_MARGIN = 0.05;
 // The hull's sides are runs of edges turning less than this, at least this share of the page's least width long.
 const SIDE_TURN = Math.PI / 6;
 const SIDE_LENGTH = 0.1;
 
 // A page's soft edge leaves a ring of pixels this wide beside it: darker than the paper, lighter than the cutoff.
-const BACKGROUND_GROW = 3;
+const SOFT_EDGE = 3;
 
 // Pixel states in `markDarkBackground`: print, table, light or inside the hull (the table never spreads there), kept picture.
 const NOT_TABLE = 1;
@@ -590,7 +590,6 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
     if (brighter > TABLE_RATIO || hue > TABLE_HUE) return FAR;
     return brighter > driftRatio || hue > driftHue ? NEAR : SAME;
   };
-  // On the photo's border only the pixels inside it are checked; elsewhere all eight must be there.
   const evenBeside = (q: number, onBorder = false) => {
     const x = q % w;
     const y = (q - x) / w;
@@ -683,14 +682,14 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
     surfaces[owner[p] - 1].corner ||= p === 0 || p === w - 1 || p === n - w || p === n - 1;
   }
   const sides = hullSides(page.hull, SIDE_LENGTH * page.width);
-  // Bit masks of the sides a pixel may lie past together, as two sides that meet at a corner.
   const cornerPairs: number[] = [];
   sides.forEach((a, i) => sides.forEach((b, j) => j > i && Math.acos(a.nx * b.nx + a.ny * b.ny) >= JUT_TURN && cornerPairs.push((1 << i) | (1 << j))));
   const pastPair = (mask: number) => {
     for (const pair of cornerPairs) if ((mask & pair) === pair) return true;
     return false;
   };
-  const juts = (part: number[], from = 0, to = part.length) => {
+  const jutMargin = JUT_MARGIN * page.width;
+  const juts = (part: number[], from = 0, to = part.length, toEdge = true) => {
     if (!cornerPairs.length) return false;
     let past = 0;
     let far = false;
@@ -699,24 +698,23 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
       const x = p % w;
       const y = (p - x) / w;
       let beyond = 0;
-      for (let k = 0; k < sides.length; k++) if (sides[k].nx * x + sides[k].ny * y - sides[k].offset > JUT_MARGIN) beyond |= 1 << k;
-      // Past one side at most, as most pixels are.
-      if (!(beyond & (beyond - 1)) || !pastPair(beyond)) continue;
+      for (let k = 0; k < sides.length; k++) if (sides[k].nx * x + sides[k].ny * y - sides[k].offset > jutMargin) beyond |= 1 << k;
+      const pastOneAtMost = !(beyond & (beyond - 1));
+      if (pastOneAtMost || !pastPair(beyond)) continue;
       past++;
       far ||= x === 0 || x === w - 1 || y === 0 || y === h - 1;
     }
-    return far && past > JUT_SHARE * (to - from);
+    return (far || !toEdge) && past > JUT_SHARE * (to - from);
   };
   // One that does not come within 2 px of the page is judged later with the dark that joins it to the page.
   for (const s of surfaces) s.table = surround(s.turns) || (s.beside && juts(flooded, s.start, s.end));
 
-  // Pixels marked in `marked` before each pixel, and those of them inside the hull of the page and `part`.
-  const countBefore = (marked: Uint8Array) => {
+  const prefixSums = (marked: Uint8Array) => {
     const before = new Int32Array(n + 1);
     for (let p = 0; p < n; p++) before[p + 1] = before[p] + marked[p];
     return before;
   };
-  const inOutline = (before: Int32Array, part: number[]) => {
+  const markedInOutline = (before: Int32Array, part: number[]) => {
     const { lo, hi } = outlineWith(page.hull, part, w, h);
     let inside = 0;
     for (let y = 0; y < h; y++) {
@@ -726,16 +724,15 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
     }
     return inside;
   };
-  // Print bleeding off the page, in one colour or many, completes the page's outline: the hull of the two takes in little other dark.
   // Kept pictures are page; nor does the paper's soft edge count, as a part's own soft edge far off tilts the hull over it.
   const counted = new Uint8Array(n);
   let darkBefore: Int32Array | null = null;
   const completesPage = (part: number[]) => {
     if (!darkBefore) {
-      for (let p = 0; p < n; p++) counted[p] = state[p] !== BARRED && state[p] !== PICTURE && !(stepsOut[p] && stepsOut[p] <= GRAIN + 1) ? 1 : 0;
-      darkBefore = countBefore(counted);
+      for (let p = 0; p < n; p++) counted[p] = state[p] !== BARRED && state[p] !== PICTURE && !(stepsOut[p] && stepsOut[p] <= SOFT_EDGE) ? 1 : 0;
+      darkBefore = prefixSums(counted);
     }
-    let other = inOutline(darkBefore, part);
+    let other = markedInOutline(darkBefore, part);
     for (const p of part) other -= counted[p];
     return other <= PICTURE_FILL * part.length;
   };
@@ -744,8 +741,8 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
   let unsure: Surface[] = [];
   for (const s of surfaces) if (!s.table) (s.beside && completesPage(pixelsOf(s)) ? kept : unsure).push(s);
 
-  // A page as wide as the photo, or running off two opposite sides of it, leaves the table in two parts, alike beside the page, one holding corners of the photo (wood or a floor may hold the other's); a picture bleeding off the page is unlike the table.
-  const corners = surfaces.filter((s) => s.corner && !(s.beside && surround(s.turns)));
+  // A page as wide as the photo cuts the table in two, alike beside the page, one with corners of the photo (wood may hold the other's), as a stripe's stub lies round it with stripes of its colour; a picture is unlike them, and table round the page alone proves nothing.
+  const tableParts = surfaces.filter((s) => (s.corner || s.table) && !(s.beside && surround(s.turns)));
   const colours = new Map<Surface, { tint: number[]; bright: number }>();
   const colourOf = (s: Surface) => {
     if (!colours.has(s)) {
@@ -769,13 +766,15 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
   };
   for (const a of [...kept, ...unsure]) {
     if (a.table || !a.beside) continue;
-    for (const b of corners) if (b !== a && alike(a, b) && surround(a.turns.map((v, i) => v | b.turns[i]))) a.table = b.table = true;
+    const like = tableParts.filter((b) => b !== a && alike(a, b));
+    const turns = a.turns.slice();
+    for (const b of like) b.turns.forEach((v, i) => (turns[i] |= v));
+    if (surround(turns)) for (const s of [a, ...like]) s.table = true;
   }
   unsure = unsure.filter((s) => !s.table);
 
   // Averaging mixes two table surfaces where they meet, as at a shadow's edge; both refuse that seam, so it is table too.
-  // The table surface first met from `p` in direction `k` within SEAM, past other loose dark, or 0.
-  const tableToward = (p: number, k: number) => {
+  const tableSurfaceToward = (p: number, k: number) => {
     const x = p % w;
     const y = (p - x) / w;
     for (let i = 1; i <= SEAM; i++) {
@@ -788,8 +787,8 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
     return 0;
   };
   const between = (p: number, k: number) => {
-    const a = tableToward(p, k);
-    const b = a && tableToward(p, k + 1);
+    const a = tableSurfaceToward(p, k);
+    const b = a && tableSurfaceToward(p, k + 1);
     return b && b !== a;
   };
   const seams: number[] = [];
@@ -811,6 +810,7 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
   };
   seams.forEach(makeTable);
   const beside: number[][] = [];
+  const leftOver = new Uint8Array(n);
   for (let r = 0; r < refused.length; r++) {
     const first = refused[r];
     if (state[first]) continue;
@@ -861,16 +861,25 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
       continue;
     }
     if (!surround(turns) && !juts(part) && completesPage(part)) continue;
-    // Its surfaces are table, and the dark between them is judged anew.
+    // Its surfaces are table, so are the seams between them, and the rest of its dark is judged anew: stripes' seams would tie a picture to the table.
     for (const p of part) state[p] = 0;
-    for (const id of met) pixelsOf(surfaces[id - 1]).forEach(makeTable);
-    for (const p of part) if (!state[p]) refused.push(p);
+    for (const id of met) {
+      surfaces[id - 1].table = true;
+      pixelsOf(surfaces[id - 1]).forEach(makeTable);
+    }
+    part.filter((p) => !state[p] && (between(p, 0) || between(p, 2))).forEach(makeTable);
+    for (const p of part) {
+      if (state[p]) continue;
+      leftOver[p] = 1;
+      refused.push(p);
+    }
   }
   if (beside.length) {
     const table = new Uint8Array(n);
     for (let p = 0; p < n; p++) table[p] = state[p] === TABLE ? 1 : 0;
-    const tableBefore = countBefore(table);
-    for (const part of beside) if (juts(part) || inOutline(tableBefore, part) > OUTLINE_SLACK * part.length) part.forEach(makeTable);
+    const tableBefore = prefixSums(table);
+    // What is left of a failed piece need not reach the photo's edge to jut, as the piece did: a checked cloth's inner squares start no surface.
+    for (const part of beside) if (juts(part, 0, part.length, !leftOver[part[0]]) || markedInOutline(tableBefore, part) > OUTLINE_SLACK * part.length) part.forEach(makeTable);
   }
 
   const tableIn = (left: number, right: number, top: number, bottom: number) => {
@@ -881,7 +890,7 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
   const along = tableIn(box.left, box.right, 0, box.top - 1) && tableIn(box.left, box.right, box.bottom + 1, h - 1);
   if (!across && !along) return;
   if (region.length <= BACKGROUND_AREA * n) return;
-  for (let layer = 0, layerStart = 0; layer < BACKGROUND_GROW; layer++) {
+  for (let layer = 0, layerStart = 0; layer < SOFT_EDGE; layer++) {
     const layerEnd = region.length;
     for (let i = layerStart; i < layerEnd; i++) {
       const p = region[i];

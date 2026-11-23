@@ -1686,11 +1686,15 @@ describe('dark background', () => {
   type Bleed = {
     tilt?: number;
     widen?: number;
+    // Px each side flares out by 345 px below the page's top, growing with the square of the depth: a foot curling toward the camera.
+    curl?: number;
     place: Place;
     picture?: 'full' | 'left' | 'middle';
     depth?: number;
     colour?: number[];
     carpet?: boolean;
+    // Red and blue stripes 20 px wide, upright.
+    stripes?: boolean;
     // A second colour over part of the picture.
     accent?: ['right' | 'frame' | 'band' | 'top' | 'inset' | 'strip', number[]];
     // The table right of the page's middle is this many times darker.
@@ -1707,7 +1711,7 @@ describe('dark background', () => {
     const h = 667;
     const turn = ((s.tilt ?? 0) * Math.PI) / 180;
     const [cos, sin] = [Math.cos(turn), Math.sin(turn)];
-    const widen = (v: number) => ((s.widen ?? 0) * v) / 547;
+    const widen = (v: number) => ((s.widen ?? 0) * v) / 547 + (s.curl ?? 0) * (v / 345) ** 2;
     const top = s.place === 'offBoth' ? -300 : 0;
     const end = s.place === 'inside' ? 430 : 900;
     let middle = 250;
@@ -1729,7 +1733,8 @@ describe('dark background', () => {
         const inPicture = page && !!s.picture && v >= pictureTop && u >= a && u < b;
         const grain = s.carpet ? ((x * 7919 + y * 104729) % 41) - 20 + (((x >> 2) * 31 + (y >> 2) * 17) % 9) - 4 : ((x * 7919 + y * 104729) % 23) - 11;
         const shade = s.step && x >= middle ? 1 / s.step : 1;
-        const table = (s.carpet ? [60 + grain, 60 + grain, 63 + grain] : [70 + grain, 60 + grain, 55 + grain]).map((c) => Math.round(c * shade));
+        const tableColour = s.stripes ? (Math.floor(x / 20) % 2 ? [90, 35, 35] : [35, 40, 95]) : s.carpet ? [60, 60, 63] : [70, 60, 55];
+        const table = tableColour.map((c) => Math.round((c + grain) * shade));
         const [kind, accent] = s.accent ?? [];
         const inAccent = {
           right: u >= 100,
@@ -1769,6 +1774,9 @@ describe('dark background', () => {
     [{ place: 'off', tilt: 5, picture: 'full', colour: NEAR_BLACK, carpet: true }],
     [{ place: 'off', widen: 8, picture: 'full' }],
     [{ place: 'off', picture: 'full', accent: ['right', DARK_GREEN] }],
+    [{ place: 'off', picture: 'full', curl: 16 }],
+    [{ place: 'off', picture: 'full', curl: 20 }],
+    [{ place: 'inside', picture: 'full', depth: 100, colour: NEAR_BLACK, stripes: true }],
     [{ place: 'near', tilt: 0.6, picture: 'middle', carpet: true }],
     [{ place: 'near', widen: 8, picture: 'left', colour: DARK_GREEN, carpet: true }],
     [{ place: 'touch', tilt: 2, picture: 'full', colour: NEAR_BLACK }],
@@ -1787,7 +1795,6 @@ describe('dark background', () => {
     if (scene.place !== 'touch' && scene.place !== 'corner') expect(table).toBeGreaterThan(0.95);
   });
 
-  // Pictures of several colours where the page runs off the photo, and a table lit unevenly by a hard shadow through the page's middle.
   it.each([
     [{ place: 'off', picture: 'full', accent: ['frame', NEAR_BLACK] }],
     [{ place: 'off', tilt: 2, picture: 'full', accent: ['band', DARK_GREEN] }],
@@ -1799,7 +1806,7 @@ describe('dark background', () => {
     [{ place: 'near', widen: 8, step: 1.6 }],
   ] as [Bleed][])('keeps every colour of a picture and whitens a table shaded through the page: %j', (scene) => {
     const { picture, table } = bleedingPicture(scene);
-    expect(picture).toBeLessThan(0.02);
+    if (scene.picture) expect(picture).toBeLessThan(0.02);
     expect(table).toBeGreaterThan(0.95);
   });
 
@@ -1807,8 +1814,15 @@ describe('dark background', () => {
     const grain = ((x * 7919 + y * 104729) % 23) - 11;
     return [70 + grain, 60 + grain, 55 + grain];
   };
+  const stripes = (width: number, odd: number[], even: number[]) => (x: number, y: number) => {
+    const grain = ((x * 7919 + y * 104729) % 23) - 11;
+    return (Math.floor(x / width) % 2 ? odd : even).map((c) => c + grain);
+  };
   it.each([
     ['keeps a dark band round a corner of the page', brownAt, true],
+    ['whitens a table of red and blue stripes 20 px wide', stripes(20, [90, 35, 35], [35, 40, 95]), false],
+    ['whitens a table of brown stripes 20 px wide, every other one 1.6 times darker', (x: number, y: number) => brownAt(x, y).map((c) => Math.round(Math.floor(x / 20) % 2 ? c / 1.6 : c)), false],
+    ['whitens a table of red and blue stripes 40 px wide', stripes(40, [90, 35, 35], [35, 40, 95]), false],
     ['whitens a table whose half beside the page is a checked cloth', (x: number, y: number) => (x < 250 ? brownAt(x, y) : ((x / 40) ^ (y / 40)) & 1 ? [90, 30, 30] : [30, 30, 70]), false],
     // Blocks too uneven to start a surface, so the half is dark the table turns away.
     ['whitens a table whose half beside the page is dark blocks of many colours', (x: number, y: number) => {
