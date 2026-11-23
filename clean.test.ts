@@ -1990,6 +1990,47 @@ describe('dark background', () => {
     expect(tableWhitened).toBeGreaterThan(0.95);
   });
 
+  const slanting = (x: number, y: number) => (Math.floor((x + y) / 28) % 2 ? RED_STRIPE : BLUE_STRIPE).map((c) => c + grainAt(x, y));
+  // A black bar at the photo's edge across a page (x 150 to 349) running off its foot from y 120, or both ends.
+  it.each([
+    // A footer within reach was taken for an object tied to the table, as it reaches the photo's foot.
+    ['a footer 30 px deep on a page running off the foot, on red and navy checks', checks, 120, [637, 667], [641, 667]],
+    // A footer just inside the reach of print (a quarter of the page's width) was taken for an object tied to the table.
+    ['a footer 45 px deep on a page running off the foot, on red and navy checks', checks, 120, [622, 667], [626, 667]],
+    // A header within reach was taken for an object tied to the table, as it reaches the photo's top.
+    ['a header 40 px deep on a page running off both ends, on slanting red and blue stripes', slanting, 0, [0, 40], [0, 36]],
+  ] as const)('keeps %s', (_, table, pageTop, [barTop, barBottom], [scoredTop, scoredBottom]) => {
+    const [barWhitened, tableWhitened] = markedShares(
+      (x, y) => (x >= 150 && x < 350 && y >= pageTop ? (y >= barTop && y < barBottom ? NEAR_BLACK : PAPER) : table(x, y)),
+      (x, y) => x >= 154 && x < 346 && y >= scoredTop && y < scoredBottom,
+      (x, y) => x < 140 || x >= 360 || y < pageTop - 10,
+    );
+    expect(barWhitened).toBe(0);
+    expect(tableWhitened).toBeGreaterThan(0.95);
+  });
+
+  // The page (x 150 to 349) runs off the photo's foot from y 120; the header is 60 px deep and the picture 100 px.
+  it.each([
+    // The picture's surface counted with the object's as two table surfaces of their colour, so the header was whitened.
+    ['black', 'brown', NEAR_BLACK, brownAt, [150, 250], [350, 500]],
+    // A navy picture across the foot and a navy object left of the page made navy a table colour on carpet too.
+    ['navy', 'carpet', NAVY, carpetAt, [150, 350], [0, 150]],
+  ] as const)('keeps a %s header and picture beside an object of their colour on a %s table', (_, __, colour, table, [pictureLeft, pictureRight], [objectLeft, objectRight]) => {
+    const inObject = (x: number, y: number) => x >= objectLeft && x < objectRight && y >= 300 && y < 420;
+    const [print, object, tableWhitened] = markedShares(
+      (x, y) => {
+        if (!(x >= 150 && x < 350 && y >= 120)) return inObject(x, y) ? colour : table(x, y);
+        return y < 180 || (y >= 567 && x >= pictureLeft && x < pictureRight) ? colour : PAPER;
+      },
+      (x, y) => (x >= 154 && x < 346 && y >= 124 && y < 176) || (x >= pictureLeft + 4 && x < pictureRight - 4 && y >= 571),
+      (x, y) => x >= objectLeft + 4 && x < objectRight - 4 && y >= 304 && y < 416,
+      (x, y) => (x < 140 || x >= 360 || y < 110) && !(x >= objectLeft - 10 && x < objectRight + 10 && y >= 290 && y < 430),
+    );
+    expect(print).toBe(0);
+    expect(object).toBeGreaterThan(0.95);
+    expect(tableWhitened).toBeGreaterThan(0.95);
+  });
+
   it.each([
     ["a page touching the photo's side, with a band 20 px deep round its corner, on checks", { place: 'touch', table: checks, band: ['corner', 20, NEAR_BLACK] }],
     [
