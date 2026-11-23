@@ -438,6 +438,11 @@ const PICTURE = 4;
 const SAME = 0;
 const NEAR = 1;
 const FAR = 2;
+// Bits of the photo's sides that dark beside the page reaches in `markDarkBackground`.
+const LEFT_SIDE = 1;
+const RIGHT_SIDE = 2;
+const TOP_SIDE = 4;
+const BOTTOM_SIDE = 8;
 
 /** Calls `fn` with each pixel beside `p`, above, below, left and right, in a `w` wide image of `n` pixels. */
 function eachBeside(p: number, w: number, n: number, fn: (q: number) => void): void {
@@ -959,15 +964,18 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
       eachBeside(p, w, n, (q) => (touches ||= state[q] === PICTURE));
       return touches;
     };
-    // A header or footer lies between the one photo side it reaches and the paper's points nearest it.
-    const acrossEnd = (sidesMet: number, span: Box) => {
-      if (sidesMet & (sidesMet - 1)) return false;
-      const depth = ([x, y]: Point2) => (sidesMet === 1 ? x : sidesMet === 2 ? -x : sidesMet === 4 ? y : -y);
+    // A header or footer completes the page's outline between the one photo side it reaches and the paper's points nearest it;
+    // the outline of an object under the corner of a turned page takes in the table beside the rest of the paper's end.
+    const acrossEnd = (one: number[], sidesMet: number, span: Box) => {
+      if (!sidesMet) return true;
+      if (sidesMet & (sidesMet - 1) || !completesPage(one)) return false;
+      const depth = ([x, y]: Point2) => (sidesMet === LEFT_SIDE ? x : sidesMet === RIGHT_SIDE ? -x : sidesMet === TOP_SIDE ? y : -y);
       const nearest = Math.min(...page.hull.map(depth));
       return page.hull.every((corner) => {
         const [x, y] = corner;
         if (depth(corner) > nearest + 1) return true;
-        return sidesMet < 4 ? y >= span.top - PAGE_GAP && y <= span.bottom + PAGE_GAP : x >= span.left - PAGE_GAP && x <= span.right + PAGE_GAP;
+        if (sidesMet <= RIGHT_SIDE) return y >= span.top - PAGE_GAP && y <= span.bottom + PAGE_GAP;
+        return x >= span.left - PAGE_GAP && x <= span.right + PAGE_GAP;
       });
     };
     for (const part of beside) {
@@ -993,13 +1001,12 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
         if (state[first]) continue;
         state[first] = NOT_TABLE;
         const one = [first];
-        // Bits of the photo's sides it reaches: 1 left, 2 right, 4 top, 8 bottom.
         let sidesMet = 0;
         const span: Box = { left: w, top: h, right: -1, bottom: -1 };
         for (let i = 0; i < one.length; i++) {
           const x = one[i] % w;
           const y = (one[i] - x) / w;
-          sidesMet |= (x === 0 ? 1 : 0) | (x === w - 1 ? 2 : 0) | (y === 0 ? 4 : 0) | (y === h - 1 ? 8 : 0);
+          sidesMet |= (x === 0 ? LEFT_SIDE : 0) | (x === w - 1 ? RIGHT_SIDE : 0) | (y === 0 ? TOP_SIDE : 0) | (y === h - 1 ? BOTTOM_SIDE : 0);
           span.left = Math.min(span.left, x);
           span.right = Math.max(span.right, x);
           span.top = Math.min(span.top, y);
@@ -1011,7 +1018,7 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
           });
         }
         // A band, object or strip reaching the photo's edge beside the page is tied to the table there.
-        if (one.some(touchesPage) && (one.every(near) || passes(one)) && (!sidesMet || acrossEnd(sidesMet, span))) for (const p of one) loose[p] = 1;
+        if (one.some(touchesPage) && (one.every(near) || passes(one)) && acrossEnd(one, sidesMet, span)) for (const p of one) loose[p] = 1;
         else one.forEach(makeTable);
       }
     }

@@ -1993,11 +1993,11 @@ describe('dark background', () => {
   const slanting = (x: number, y: number) => (Math.floor((x + y) / 28) % 2 ? RED_STRIPE : BLUE_STRIPE).map((c) => c + grainAt(x, y));
   // A black bar at the photo's edge across a page (x 150 to 349) running off its foot from y 120, or both ends.
   it.each([
-    // A footer within reach was taken for an object tied to the table, as it reaches the photo's foot.
+    // A footer within reach reaches the photo's foot as an object tied to the table does, but spans the paper's end.
     ['a footer 30 px deep on a page running off the foot, on red and navy checks', checks, 120, [637, 667], [641, 667]],
-    // A footer just inside the reach of print (a quarter of the page's width) was taken for an object tied to the table.
+    // A footer just inside the reach of print (a quarter of the page's width) spans the paper's end too.
     ['a footer 45 px deep on a page running off the foot, on red and navy checks', checks, 120, [622, 667], [626, 667]],
-    // A header within reach was taken for an object tied to the table, as it reaches the photo's top.
+    // A header within reach reaches the photo's top and spans the paper's end.
     ['a header 40 px deep on a page running off both ends, on slanting red and blue stripes', slanting, 0, [0, 40], [0, 36]],
   ] as const)('keeps %s', (_, table, pageTop, [barTop, barBottom], [scoredTop, scoredBottom]) => {
     const [barWhitened, tableWhitened] = markedShares(
@@ -2009,13 +2009,37 @@ describe('dark background', () => {
     expect(tableWhitened).toBeGreaterThan(0.95);
   });
 
+  // A page turned about its middle on checks, with a black object past its corner nearest one side of the photo, reaching that side.
+  it.each([
+    ['below its lowest corner', 2, [150, 120, 349, 646], [315, 643, 365, 667]],
+    ['above its highest corner', 2, [150, 20, 349, 560], [134, 0, 184, 23]],
+    ['left of its leftmost corner', 5, [40, 120, 239, 560], [0, 525, 27, 575]],
+  ] as const)('whitens an object %s on a page turned %i degrees', (_, tilt, [left, top, right, bottom], [x0, y0, x1, y1]) => {
+    const turn = (tilt * Math.PI) / 180;
+    const [cx, cy] = [(left + right) / 2, (top + bottom) / 2];
+    const byPage = (x: number, y: number, margin: number) => {
+      const u = cx + (x - cx) * Math.cos(turn) + (y - cy) * Math.sin(turn);
+      const v = cy - (x - cx) * Math.sin(turn) + (y - cy) * Math.cos(turn);
+      return u >= left - margin && u <= right + margin && v >= top - margin && v <= bottom + margin;
+    };
+    const inObject = (x: number, y: number, margin: number) => x >= x0 - margin && x < x1 + margin && y >= y0 - margin && y < y1 + margin;
+    const [object, table] = markedShares(
+      (x, y) => (byPage(x, y, 0) ? PAPER : inObject(x, y, 0) ? NEAR_BLACK : checks(x, y)),
+      (x, y) => inObject(x, y, -4) && !byPage(x, y, 10),
+      (x, y) => !byPage(x, y, 10) && !inObject(x, y, 10),
+    );
+    // An object under the corner of a turned page spans the paper's nearest point, but its hull with the page takes in table: no footer.
+    expect(object).toBeGreaterThan(0.95);
+    expect(table).toBeGreaterThan(0.95);
+  });
+
   // The page (x 150 to 349) runs off the photo's foot from y 120; the header is 60 px deep and the picture 100 px.
   it.each([
-    // The picture's surface counted with the object's as two table surfaces of their colour, so the header was whitened.
-    ['black', 'brown', NEAR_BLACK, brownAt, [150, 250], [350, 500]],
-    // A navy picture across the foot and a navy object left of the page made navy a table colour on carpet too.
-    ['navy', 'carpet', NAVY, carpetAt, [150, 350], [0, 150]],
-  ] as const)('keeps a %s header and picture beside an object of their colour on a %s table', (_, __, colour, table, [pictureLeft, pictureRight], [objectLeft, objectRight]) => {
+    // A kept picture adds no surface to its colour, so the object's one surface makes no table colour that takes the header.
+    ['black header and picture beside a black object on a brown table', NEAR_BLACK, brownAt, [150, 250], [350, 500]],
+    // On carpet too, a navy picture across the foot and a navy object left of the page make no navy table colour.
+    ['navy header and picture beside a navy object on a carpet table', NAVY, carpetAt, [150, 350], [0, 150]],
+  ] as const)('keeps a %s', (_, colour, table, [pictureLeft, pictureRight], [objectLeft, objectRight]) => {
     const inObject = (x: number, y: number) => x >= objectLeft && x < objectRight && y >= 300 && y < 420;
     const [print, object, tableWhitened] = markedShares(
       (x, y) => {
