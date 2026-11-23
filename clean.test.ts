@@ -2009,11 +2009,22 @@ describe('dark background', () => {
     expect(tableWhitened).toBeGreaterThan(0.95);
   });
 
-  // A page turned about its middle on checks, with a black object past its corner nearest one side of the photo, reaching that side.
+  // A footer 30 px deep at the foot of a turned page curling toward the camera and running off the photo's foot.
   it.each([
-    ['below its lowest corner', 2, [150, 120, 349, 646], [315, 643, 365, 667]],
-    ['above its highest corner', 2, [150, 20, 349, 560], [134, 0, 184, 23]],
-    ['left of its leftmost corner', 5, [40, 120, 239, 560], [0, 525, 27, 575]],
+    ['black', 'slanting red and blue stripes', { tilt: -5, curl: 20, colour: NEAR_BLACK, table: slanting }],
+    ['green', 'red and navy checks', { tilt: -4, curl: 18, colour: DARK_GREEN, table: checks }],
+  ] as const)('keeps a %s footer at the curled foot of a turned page on %s', (_, __, scene) => {
+    // The curl puts table in the footer's hull with the page, which took it for an object under the page's corner.
+    const { picture, table } = bleedingPicture({ place: 'off', picture: 'full', depth: 30, ...scene });
+    expect(picture).toBeLessThan(0.1);
+    expect(table).toBeGreaterThan(0.95);
+  });
+
+  // A page turned about its middle on checks, with a black object from the photo's side to just past the page's corner nearest it.
+  it.each([
+    ['across its lowest corner', 2, [150, 120, 349, 646], [315, 643, 365, 667]],
+    ['across its highest corner', 2, [150, 20, 349, 560], [134, 0, 184, 23]],
+    ['across its leftmost corner', 5, [40, 120, 239, 560], [0, 525, 27, 575]],
   ] as const)('whitens an object %s on a page turned %i degrees', (_, tilt, [left, top, right, bottom], [x0, y0, x1, y1]) => {
     const turn = (tilt * Math.PI) / 180;
     const [cx, cy] = [(left + right) / 2, (top + bottom) / 2];
@@ -2028,7 +2039,7 @@ describe('dark background', () => {
       (x, y) => inObject(x, y, -4) && !byPage(x, y, 10),
       (x, y) => !byPage(x, y, 10) && !inObject(x, y, 10),
     );
-    // An object under the corner of a turned page spans the paper's nearest point, but its hull with the page takes in table: no footer.
+    // It spans the paper's nearest corner, which passed it as a footer.
     expect(object).toBeGreaterThan(0.95);
     expect(table).toBeGreaterThan(0.95);
   });
