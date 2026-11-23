@@ -1704,6 +1704,14 @@ describe('dark background', () => {
   const NEAR_BLACK = [20, 20, 22];
   const DARK_GREEN = [40, 80, 50];
   const DARK_RED = [100, 25, 25];
+  const RED_STRIPE = [90, 35, 35];
+  const BLUE_STRIPE = [35, 40, 95];
+
+  const grainAt = (x: number, y: number) => ((x * 7919 + y * 104729) % 23) - 11;
+  const brownAt = (x: number, y: number) => [70, 60, 55].map((c) => c + grainAt(x, y));
+  const stripes = (width: number, odd = RED_STRIPE, even = BLUE_STRIPE) => (x: number, y: number) =>
+    (Math.floor(x / width) % 2 ? odd : even).map((c) => c + grainAt(x, y));
+  const brownStripes = (x: number, y: number) => brownAt(x, y).map((c) => Math.round(Math.floor(x / 20) % 2 ? c / 1.6 : c));
 
   // Picture and table are scored away from their edges (4 and 10 px), where the 3 px grow and soft colour edges belong to neither.
   function bleedingPicture(s: Bleed) {
@@ -1731,10 +1739,10 @@ describe('dark background', () => {
         const page = onPage([u, v]);
         const [a, b] = s.picture === 'left' ? [-widen(v), 100] : s.picture === 'middle' ? [67, 133] : [-widen(v), 200.5 + widen(v)];
         const inPicture = page && !!s.picture && v >= pictureTop && u >= a && u < b;
-        const grain = s.carpet ? ((x * 7919 + y * 104729) % 41) - 20 + (((x >> 2) * 31 + (y >> 2) * 17) % 9) - 4 : ((x * 7919 + y * 104729) % 23) - 11;
+        const carpetGrain = ((x * 7919 + y * 104729) % 41) - 20 + (((x >> 2) * 31 + (y >> 2) * 17) % 9) - 4;
         const shade = s.step && x >= middle ? 1 / s.step : 1;
-        const tableColour = s.stripes ? (Math.floor(x / 20) % 2 ? [90, 35, 35] : [35, 40, 95]) : s.carpet ? [60, 60, 63] : [70, 60, 55];
-        const table = tableColour.map((c) => Math.round((c + grain) * shade));
+        const tableColour = s.stripes ? stripes(20)(x, y) : s.carpet ? [60, 60, 63].map((c) => c + carpetGrain) : brownAt(x, y);
+        const table = tableColour.map((c) => Math.round(c * shade));
         const [kind, accent] = s.accent ?? [];
         const inAccent = {
           right: u >= 100,
@@ -1810,25 +1818,23 @@ describe('dark background', () => {
     expect(table).toBeGreaterThan(0.95);
   });
 
-  const brownAt = (x: number, y: number) => {
-    const grain = ((x * 7919 + y * 104729) % 23) - 11;
-    return [70 + grain, 60 + grain, 55 + grain];
-  };
-  const stripes = (width: number, odd: number[], even: number[]) => (x: number, y: number) => {
-    const grain = ((x * 7919 + y * 104729) % 23) - 11;
-    return (Math.floor(x / width) % 2 ? odd : even).map((c) => c + grain);
-  };
+  // A band 40 px deep round the page's top left corner, past the reach of print along one side.
   it.each([
-    ['keeps a dark band round a corner of the page', brownAt, true],
-    ['whitens a table of red and blue stripes 20 px wide', stripes(20, [90, 35, 35], [35, 40, 95]), false],
-    ['whitens a table of brown stripes 20 px wide, every other one 1.6 times darker', (x: number, y: number) => brownAt(x, y).map((c) => Math.round(Math.floor(x / 20) % 2 ? c / 1.6 : c)), false],
-    ['whitens a table of red and blue stripes 40 px wide', stripes(40, [90, 35, 35], [35, 40, 95]), false],
-    ['whitens a table whose half beside the page is a checked cloth', (x: number, y: number) => (x < 250 ? brownAt(x, y) : ((x / 40) ^ (y / 40)) & 1 ? [90, 30, 30] : [30, 30, 70]), false],
+    ['keeps a dark band round a corner of the page', brownAt, NAVY],
+    ['keeps a green band round a corner of the page on brown stripes, every other one 1.6 times darker', brownStripes, DARK_GREEN],
+    ['keeps a black band round a corner of the page on red and blue stripes 20 px wide', stripes(20), NEAR_BLACK],
+    ['keeps a green band round a corner of the page on red and blue stripes 20 px wide', stripes(20), DARK_GREEN],
+    ['keeps a black band round a corner of the page on red and blue stripes 40 px wide', stripes(40), NEAR_BLACK],
+    ['keeps a green band round a corner of the page on red and blue stripes 40 px wide', stripes(40), DARK_GREEN],
+    ['whitens a table of red and blue stripes 20 px wide', stripes(20), null],
+    ['whitens a table of brown stripes 20 px wide, every other one 1.6 times darker', brownStripes, null],
+    ['whitens a table of red and blue stripes 40 px wide', stripes(40), null],
+    ['whitens a table whose half beside the page is a checked cloth', (x: number, y: number) => (x < 250 ? brownAt(x, y) : ((x / 40) ^ (y / 40)) & 1 ? [90, 30, 30] : [30, 30, 70]), null],
     // Blocks too uneven to start a surface, so the half is dark the table turns away.
     ['whitens a table whose half beside the page is dark blocks of many colours', (x: number, y: number) => {
       const k = (Math.floor(x / 5) * 7919 + Math.floor(y / 5) * 104729) % 97;
       return x < 250 ? brownAt(x, y) : [30 + (k % 7) * 9, 25 + ((k >> 1) % 5) * 10, 30 + ((k >> 2) % 6) * 9];
-    }, false],
+    }, null],
   ] as const)('%s', (_, table, band) => {
     const w = 500;
     const h = 667;
@@ -1836,25 +1842,27 @@ describe('dark background', () => {
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const page = x >= 150 && x < 350 && y >= 120 && y < 550;
-        const colour = page && band && (x < 190 || y < 160) ? NAVY : page ? [233, 230, 222] : table(x, y);
+        const colour = page && band && (x < 190 || y < 160) ? band : page ? [233, 230, 222] : table(x, y);
         fine.set([...colour, 255], (y * w + x) * 4);
       }
     }
     const out = new Uint8Array(w * h);
     markDarkBackground(out, fine, w, h);
-    let marked = 0;
-    let all = 0;
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        // The band's left arm 4 px in from its edges, or the table 10 px from the page.
-        const scored = band ? x >= 154 && x < 186 && y >= 124 && y < 546 : x < 140 || x >= 360 || y < 110 || y >= 560;
-        if (!scored) continue;
-        all++;
-        if (out[y * w + x]) marked++;
+    // The band's left arm 4 px in from its edges, and the table 10 px from the page.
+    const share = (scored: (x: number, y: number) => boolean) => {
+      let marked = 0;
+      let all = 0;
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          if (!scored(x, y)) continue;
+          all++;
+          if (out[y * w + x]) marked++;
+        }
       }
-    }
-    if (band) expect(marked).toBe(0);
-    else expect(marked / all).toBeGreaterThan(0.95);
+      return marked / all;
+    };
+    if (band) expect(share((x, y) => x >= 154 && x < 186 && y >= 124 && y < 546)).toBe(0);
+    expect(share((x, y) => x < 140 || x >= 360 || y < 110 || y >= 560)).toBeGreaterThan(0.95);
   });
 
   it.each([
