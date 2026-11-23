@@ -1691,11 +1691,15 @@ describe('dark background', () => {
     depth?: number;
     colour?: number[];
     carpet?: boolean;
-    second?: number[];
+    // A second colour over part of the picture.
+    accent?: ['right' | 'frame' | 'band' | 'top' | 'inset' | 'strip', number[]];
+    // The table right of the page's middle is this many times darker.
+    step?: number;
   };
   const NAVY = [30, 40, 90];
   const NEAR_BLACK = [20, 20, 22];
   const DARK_GREEN = [40, 80, 50];
+  const DARK_RED = [100, 25, 25];
 
   // Picture and table are scored away from their edges (4 and 10 px), where the 3 px grow and soft colour edges belong to neither.
   function bleedingPicture(s: Bleed) {
@@ -1724,8 +1728,19 @@ describe('dark background', () => {
         const [a, b] = s.picture === 'left' ? [-widen(v), 100] : s.picture === 'middle' ? [67, 133] : [-widen(v), 200.5 + widen(v)];
         const inPicture = page && !!s.picture && v >= pictureTop && u >= a && u < b;
         const grain = s.carpet ? ((x * 7919 + y * 104729) % 41) - 20 + (((x >> 2) * 31 + (y >> 2) * 17) % 9) - 4 : ((x * 7919 + y * 104729) % 23) - 11;
-        const table = s.carpet ? [60 + grain, 60 + grain, 63 + grain] : [70 + grain, 60 + grain, 55 + grain];
-        const ink = s.second && u >= 100 ? s.second : (s.colour ?? NAVY);
+        const shade = s.step && x >= middle ? 1 / s.step : 1;
+        const table = (s.carpet ? [60 + grain, 60 + grain, 63 + grain] : [70 + grain, 60 + grain, 55 + grain]).map((c) => Math.round(c * shade));
+        const [kind, accent] = s.accent ?? [];
+        const inAccent = {
+          right: u >= 100,
+          frame: v < pictureTop + 3 || u < a + 3 || u >= b - 3,
+          band: v < pictureTop + 10,
+          top: v < pictureTop + 60,
+          inset: Math.abs(u - 100) < 20 && Math.abs(v - pictureTop - 100) < 20,
+          strip: u >= b - 20,
+          none: false,
+        }[kind ?? 'none'];
+        const ink = inAccent ? accent! : (s.colour ?? NAVY);
         fine.set([...(inPicture ? ink : page ? [233, 230, 222] : table), 255], (y * w + x) * 4);
         if (inPicture && v >= pictureTop + 4 && v <= end - 4 && u >= a + 4 && u < b - 4) role[y * w + x] = 1;
         if (!page && (v < top - 10 || v > end + 10 || u < -widen(v) - 10 || u > 210 + widen(v))) role[y * w + x] = 2;
@@ -1753,7 +1768,7 @@ describe('dark background', () => {
     [{ place: 'off', tilt: 2, picture: 'left' }],
     [{ place: 'off', tilt: 5, picture: 'full', colour: NEAR_BLACK, carpet: true }],
     [{ place: 'off', widen: 8, picture: 'full' }],
-    [{ place: 'off', picture: 'full', second: DARK_GREEN }],
+    [{ place: 'off', picture: 'full', accent: ['right', DARK_GREEN] }],
     [{ place: 'near', tilt: 0.6, picture: 'middle', carpet: true }],
     [{ place: 'near', widen: 8, picture: 'left', colour: DARK_GREEN, carpet: true }],
     [{ place: 'touch', tilt: 2, picture: 'full', colour: NEAR_BLACK }],
@@ -1770,6 +1785,62 @@ describe('dark background', () => {
     const { picture, table } = bleedingPicture(scene);
     if (scene.picture) expect(picture).toBeLessThan(0.1);
     if (scene.place !== 'touch' && scene.place !== 'corner') expect(table).toBeGreaterThan(0.95);
+  });
+
+  // Pictures of several colours where the page runs off the photo, and a table lit unevenly by a hard shadow through the page's middle.
+  it.each([
+    [{ place: 'off', picture: 'full', accent: ['frame', NEAR_BLACK] }],
+    [{ place: 'off', tilt: 2, picture: 'full', accent: ['band', DARK_GREEN] }],
+    [{ place: 'off', widen: 8, picture: 'full', colour: NEAR_BLACK, carpet: true, accent: ['top', DARK_GREEN] }],
+    [{ place: 'off', picture: 'full', accent: ['inset', DARK_RED] }],
+    [{ place: 'offBoth', tilt: -5, picture: 'full', depth: 100, colour: NEAR_BLACK, accent: ['strip', NAVY] }],
+    [{ place: 'inside', step: 2 }],
+    [{ place: 'off', step: 3, carpet: true }],
+    [{ place: 'near', widen: 8, step: 1.6 }],
+  ] as [Bleed][])('keeps every colour of a picture and whitens a table shaded through the page: %j', (scene) => {
+    const { picture, table } = bleedingPicture(scene);
+    expect(picture).toBeLessThan(0.02);
+    expect(table).toBeGreaterThan(0.95);
+  });
+
+  const brownAt = (x: number, y: number) => {
+    const grain = ((x * 7919 + y * 104729) % 23) - 11;
+    return [70 + grain, 60 + grain, 55 + grain];
+  };
+  it.each([
+    ['keeps a dark band round a corner of the page', brownAt, true],
+    ['whitens a table whose half beside the page is a checked cloth', (x: number, y: number) => (x < 250 ? brownAt(x, y) : ((x / 40) ^ (y / 40)) & 1 ? [90, 30, 30] : [30, 30, 70]), false],
+    // Blocks too uneven to start a surface, so the half is dark the table turns away.
+    ['whitens a table whose half beside the page is dark blocks of many colours', (x: number, y: number) => {
+      const k = (Math.floor(x / 5) * 7919 + Math.floor(y / 5) * 104729) % 97;
+      return x < 250 ? brownAt(x, y) : [30 + (k % 7) * 9, 25 + ((k >> 1) % 5) * 10, 30 + ((k >> 2) % 6) * 9];
+    }, false],
+  ] as const)('%s', (_, table, band) => {
+    const w = 500;
+    const h = 667;
+    const fine = new Uint8Array(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const page = x >= 150 && x < 350 && y >= 120 && y < 550;
+        const colour = page && band && (x < 190 || y < 160) ? NAVY : page ? [233, 230, 222] : table(x, y);
+        fine.set([...colour, 255], (y * w + x) * 4);
+      }
+    }
+    const out = new Uint8Array(w * h);
+    markDarkBackground(out, fine, w, h);
+    let marked = 0;
+    let all = 0;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        // The band's left arm 4 px in from its edges, or the table 10 px from the page.
+        const scored = band ? x >= 154 && x < 186 && y >= 124 && y < 546 : x < 140 || x >= 360 || y < 110 || y >= 560;
+        if (!scored) continue;
+        all++;
+        if (out[y * w + x]) marked++;
+      }
+    }
+    if (band) expect(marked).toBe(0);
+    else expect(marked / all).toBeGreaterThan(0.95);
   });
 
   it.each([
