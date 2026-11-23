@@ -1887,19 +1887,19 @@ describe('dark background', () => {
   });
 
   // As in DocUNet 22_1: light wood holds the photo's top corners, so the blanket above the page holds none.
+  const navy = (k: number) => () => [32, 40, 80].map((c) => Math.round(c * k));
   it.each([
-    ['in one shade', 1],
-    ['lit unevenly, in two parts', 1.7],
-  ])('whitens a blanket above and below a page as wide as the photo, with wood across the top: %s', (_, shade) => {
+    ['in one shade', navy(1), navy(1)],
+    ['lit unevenly, in two parts', (x: number) => navy(x < 250 ? 1 / Math.sqrt(1.7) : Math.sqrt(1.7))(), navy(1)],
+    ['in red and blue stripes 20 px wide', stripes(20), stripes(20)],
+  ] as const)('whitens a blanket above and below a page as wide as the photo, with wood across the top: %s', (_, above, below) => {
     const w = 500;
     const h = 667;
-    const navy = (k: number) => [32, 40, 80].map((c) => Math.round(c * k));
     const fine = new Uint8Array(w * h * 4);
     for (let p = 0; p < w * h; p++) {
       const x = p % w;
       const y = (p - x) / w;
-      const above = navy(x < w / 2 ? 1 / Math.sqrt(shade) : Math.sqrt(shade));
-      const colour = y < 20 ? [200, 140, 70] : y < 120 ? above : y <= 466 ? [233, 230, 222] : navy(1);
+      const colour = y < 20 ? [200, 140, 70] : y < 120 ? above(x, y) : y <= 466 ? [233, 230, 222] : below(x, y);
       fine.set([...colour, 255], p * 4);
     }
     const out = new Uint8Array(w * h);

@@ -767,12 +767,26 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
     const cb = colourOf(b);
     return Math.max(ca.bright / cb.bright, cb.bright / ca.bright) <= TABLE_RATIO && ca.tint.every((t, c) => Math.abs(t - cb.tint[c]) <= TABLE_HUE);
   };
-  for (const a of [...kept, ...unsure]) {
-    if (a.table || !a.beside) continue;
-    const like = tableParts.filter((b) => b !== a && alike(a, b));
-    const turns = a.turns.slice();
-    for (const b of like) b.turns.forEach((v, i) => (turns[i] |= v));
-    if (surround(turns)) for (const s of [a, ...like]) s.table = true;
+  // Table colours found by matching parts or by failed pieces, as the surfaces they seeded from: loose dark left in one is table too.
+  const colourIds: number[] = [];
+  const seedOf = (id: number) => flooded[surfaces[id - 1].start];
+  const addColour = (id: number) => {
+    if (colourIds.every((k) => apart(seedOf(k), seedOf(id)) === FAR)) colourIds.push(id);
+  };
+  // Repeated until none is added, as a part found table is table already for those before it: DocUNet 22_1's stubs above the page pass those below.
+  for (let added = true; added; ) {
+    added = false;
+    for (const a of [...kept, ...unsure]) {
+      if (a.table || !a.beside) continue;
+      const like = tableParts.filter((b) => b !== a && alike(a, b));
+      const turns = a.turns.slice();
+      for (const b of like) b.turns.forEach((v, i) => (turns[i] |= v));
+      if (!surround(turns)) continue;
+      for (const s of [a, ...like]) s.table = true;
+      tableParts.push(a);
+      addColour(surfaces.indexOf(a) + 1);
+      added = true;
+    }
   }
   unsure = unsure.filter((s) => !s.table);
 
@@ -814,8 +828,6 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
   seams.forEach(makeTable);
   const beside: number[][] = [];
   const leftOver: number[] = [];
-  const colourIds: number[] = [];
-  const seedOf = (id: number) => flooded[surfaces[id - 1].start];
   for (let r = 0; r < refused.length; r++) {
     const first = refused[r];
     if (state[first]) continue;
@@ -865,13 +877,17 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
       part.forEach(makeTable);
       continue;
     }
-    if (!surround(turns) && !juts(part) && completesPage(part)) continue;
+    if (!surround(turns) && !juts(part) && completesPage(part)) {
+      // Its dark that starts no surface is judged by colour too, as stripes between the page and a floor across the photo's corners.
+      for (const p of part) if (!owner[p]) leftOver.push(p);
+      continue;
+    }
     // Its surfaces are table, so are the seams between them, and the rest is judged anew: stripes' seams would tie a picture to the table.
     for (const p of part) state[p] = 0;
     for (const id of met) {
       surfaces[id - 1].table = true;
       pixelsOf(surfaces[id - 1]).forEach(makeTable);
-      if (colourIds.every((k) => apart(seedOf(k), seedOf(id)) === FAR)) colourIds.push(id);
+      addColour(id);
     }
     part.filter((p) => !state[p] && (between(p, 0) || between(p, 2))).forEach(makeTable);
     for (const p of part) {
@@ -884,9 +900,13 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
     const table = new Uint8Array(n);
     for (let p = 0; p < n; p++) table[p] = state[p] === TABLE ? 1 : 0;
     const tableBefore = prefixSums(table);
-    for (const part of beside) if (juts(part) || markedInOutline(tableBefore, part) > OUTLINE_SLACK * part.length) part.forEach(makeTable);
+    for (const part of beside) {
+      if (juts(part) || markedInOutline(tableBefore, part) > OUTLINE_SLACK * part.length) part.forEach(makeTable);
+      // Stripes cut off from the photo's edge, as by wood across DocUNet 22_1's top, start no surface.
+      else for (const p of part) leftOver.push(p);
+    }
   }
-  // What stays of those pieces in a colour their surfaces started from is table, as a checked cloth's inner squares start no surface.
+  // What stays in a table colour is table, as a checked cloth's inner squares start no surface.
   for (const p of leftOver) {
     const id = state[p] === TABLE ? 0 : colourIds.find((k) => apart(p, seedOf(k)) !== FAR);
     if (!id) continue;
