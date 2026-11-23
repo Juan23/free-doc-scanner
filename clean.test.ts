@@ -1887,10 +1887,10 @@ describe('dark background', () => {
   });
 
   // As in DocUNet 22_1: light wood holds the photo's top corners, so the blanket above the page holds none.
-  const navy = (k: number) => () => [32, 40, 80].map((c) => Math.round(c * k));
+  const navy = (k: number) => [32, 40, 80].map((c) => Math.round(c * k));
   it.each([
-    ['in one shade', navy(1), navy(1)],
-    ['lit unevenly, in two parts', (x: number) => navy(x < 250 ? 1 / Math.sqrt(1.7) : Math.sqrt(1.7))(), navy(1)],
+    ['in one shade', () => navy(1), () => navy(1)],
+    ['lit unevenly, in two parts', (x: number) => navy(x < 250 ? 1 / Math.sqrt(1.7) : Math.sqrt(1.7)), () => navy(1)],
     ['in red and blue stripes 20 px wide', stripes(20), stripes(20)],
   ] as const)('whitens a blanket above and below a page as wide as the photo, with wood across the top: %s', (_, above, below) => {
     const w = 500;
@@ -1907,5 +1907,70 @@ describe('dark background', () => {
     const marked = (top: number, bottom: number) => out.slice(top * w, bottom * w).filter(Boolean).length / ((bottom - top) * w);
     expect(marked(30, 110)).toBeGreaterThan(0.95);
     expect(marked(477, h)).toBeGreaterThan(0.95);
+  });
+
+  // The share of each region whitened in the 500 x 667 small copy `colourAt` paints.
+  function markedShares(colourAt: (x: number, y: number) => number[], ...regions: ((x: number, y: number) => boolean)[]) {
+    const w = 500;
+    const h = 667;
+    const fine = new Uint8Array(w * h * 4);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) fine.set([...colourAt(x, y), 255], (y * w + x) * 4);
+    const out = new Uint8Array(w * h);
+    markDarkBackground(out, fine, w, h);
+    return regions.map((inRegion) => {
+      let all = 0;
+      let marked = 0;
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          if (!inRegion(x, y)) continue;
+          all++;
+          if (out[y * w + x]) marked++;
+        }
+      }
+      return marked / all;
+    });
+  }
+  const PAPER = [233, 230, 222];
+  const checks = (x: number, y: number) => (((x / 40) ^ (y / 40)) & 1 ? [90, 30, 30] : [30, 30, 70]).map((c) => c + grainAt(x, y));
+
+  // The object touches the page and the photo's edge, or the page's foot, and the band reaches past the reach of print.
+  it.each([
+    [NEAR_BLACK, 60, 'left of', 'brown'],
+    [NAVY, 80, 'right of', 'brown'],
+    [DARK_GREEN, 120, 'below', 'brown'],
+    [NEAR_BLACK, 120, 'right of', 'brown'],
+    [NAVY, 60, 'below', 'brown'],
+    [DARK_GREEN, 80, 'left of', 'brown'],
+    [NEAR_BLACK, 80, 'left of', 'checks'],
+    [NEAR_BLACK, 80, 'left of', 'stripes'],
+  ] as const)('keeps a %j header band %i px deep beside an object of its colour %s the page on a %s table', (colour, depth, place, tableName) => {
+    const [x0, x1, y0, y1] = { 'left of': [0, 150, 300, 360], 'right of': [350, 500, 400, 440], below: [200, 260, 550, 667] }[place];
+    const tableAt = { brown: brownAt, checks, stripes: stripes(20) }[tableName];
+    const inObject = (x: number, y: number) => x >= x0 && x < x1 && y >= y0 && y < y1;
+    const [band, object, table] = markedShares(
+      (x, y) => (x >= 150 && x < 350 && y >= 120 && y < 550 ? (y < 120 + depth ? colour : PAPER) : inObject(x, y) ? colour : tableAt(x, y)),
+      (x, y) => x >= 154 && x < 346 && y >= 124 && y < 116 + depth,
+      (x, y) => x >= x0 + 4 && x < x1 - 4 && y >= y0 + 4 && y < y1 - 4,
+      (x, y) => (x < 140 || x >= 360 || y < 110 || y >= 560) && !(x >= x0 - 10 && x < x1 + 10 && y >= y0 - 10 && y < y1 + 10),
+    );
+    expect(band).toBe(0);
+    expect(object).toBeGreaterThan(0.95);
+    expect(table).toBeGreaterThan(0.95);
+  });
+
+  // The page (x 150 to 349) runs off the photo's top and foot; the picture starts 200 px above the foot.
+  it.each([
+    ['a black and green picture on red and navy checks', checks, (x: number) => (x < 250 ? NEAR_BLACK : DARK_GREEN), 471, 663],
+    // Navy on blue stripes is the table's own colour, so only the black band is checked.
+    ['a black band over a navy picture on red and blue stripes', stripes(20), (_: number, y: number) => (y < 487 ? NEAR_BLACK : NAVY), 470, 484],
+  ] as const)('keeps %s at the foot of a page running off both ends', (_, table, picture, top, bottom) => {
+    const [kept, tableMarked] = markedShares(
+      (x, y) => (x >= 150 && x < 350 ? (y >= 467 ? picture(x, y) : PAPER) : table(x, y)),
+      (x, y) => x >= 154 && x < 346 && y >= top && y < bottom,
+      (x) => x < 140 || x >= 360,
+    );
+    // Where the band meets the table, its 2 px colour seam and the 3 px grow reach 5 px in.
+    expect(kept).toBeLessThan(0.01);
+    expect(tableMarked).toBeGreaterThan(0.95);
   });
 });

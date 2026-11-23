@@ -739,13 +739,6 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
     for (const p of part) other -= counted[p];
     return other <= PICTURE_FILL * part.length;
   };
-  const pixelsOf = (s: Surface) => flooded.slice(s.start, s.end);
-  const kept: Surface[] = [];
-  let unsure: Surface[] = [];
-  for (const s of surfaces) if (!s.table) (s.beside && completesPage(pixelsOf(s)) ? kept : unsure).push(s);
-
-  // A page across the photo cuts the table in two, and stripes into stubs, so alike parts lie round it together; one round it alone would pass any alike part.
-  const tableParts = surfaces.filter((s) => (s.corner || s.table) && !(s.beside && surround(s.turns)));
   const colours = new Map<Surface, { tint: number[]; bright: number }>();
   const colourOf = (s: Surface) => {
     if (!colours.has(s)) {
@@ -767,13 +760,71 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
     const cb = colourOf(b);
     return Math.max(ca.bright / cb.bright, cb.bright / ca.bright) <= TABLE_RATIO && ca.tint.every((t, c) => Math.abs(t - cb.tint[c]) <= TABLE_HUE);
   };
-  // Table colours found by matching parts or by failed pieces, as the surfaces they seeded from: loose dark left in one is table too.
-  const colourIds: number[] = [];
-  const seedOf = (id: number) => flooded[surfaces[id - 1].start];
-  const addColour = (id: number) => {
-    if (colourIds.every((k) => apart(seedOf(k), seedOf(id)) === FAR)) colourIds.push(id);
+  const pixelsOf = (s: Surface) => flooded.slice(s.start, s.end);
+  const kept: Surface[] = [];
+  let unsure: Surface[] = [];
+  for (const s of surfaces) if (!s.table) (s.beside && completesPage(pixelsOf(s)) ? kept : unsure).push(s);
+
+  // The owner of the first pixel past loose dark, at most a seam away from `p` in direction `k` (0 right, 1 left, 2 down, 3 up).
+  const surfaceToward = (p: number, k: number) => {
+    const x = p % w;
+    const y = (p - x) / w;
+    for (let i = 1; i <= SEAM; i++) {
+      const qx = x + i * STEP_X[k];
+      const qy = y + i * STEP_Y[k];
+      if (qx < 0 || qx >= w || qy < 0 || qy >= h) return 0;
+      const q = qy * w + qx;
+      if (state[q]) return owner[q];
+    }
+    return 0;
   };
-  // Repeated until none is added, as a part found table is table already for those before it: DocUNet 22_1's stubs above the page pass those below.
+  // A picture in several colours fails in each alone, as its hull with the page takes in the others.
+  // So unsure surfaces beside the page a seam apart, none alike, are tried together.
+  // Table cut by a shadow or by a page across the photo holds the photo's corners, so such surfaces are left out.
+  // So are stubs of stripes, which are alike stripes found table, and table in two colours that lies round the page does not pass.
+  const groupOf = surfaces.map((_, k) => k);
+  const rootOf = (k: number): number => (groupOf[k] === k ? k : (groupOf[k] = rootOf(groupOf[k])));
+  const tableSoFar = surfaces.filter((s) => s.table);
+  const unsureBeside = unsure.filter((s) => s.beside && !s.corner && !tableSoFar.some((t) => alike(s, t)));
+  const isUnsureBeside = new Uint8Array(surfaces.length + 1);
+  for (const s of unsureBeside) isUnsureBeside[owner[flooded[s.start]]] = 1;
+  for (const s of unsureBeside) {
+    const id = owner[flooded[s.start]];
+    for (let i = s.start; i < s.end; i++) {
+      const p = flooded[i];
+      for (let k = 0; k < 4; k += 2) {
+        // Inside the surface, as most of its pixels are, there is nothing to walk past.
+        const next = p + (k ? w : 1);
+        if (next < n && owner[next] === id) continue;
+        const other = surfaceToward(p, k);
+        if (other && other !== id && isUnsureBeside[other]) groupOf[rootOf(other - 1)] = rootOf(id - 1);
+      }
+    }
+  }
+  const groups = new Map<number, Surface[]>();
+  for (const s of unsureBeside) {
+    const root = rootOf(owner[flooded[s.start]] - 1);
+    const group = groups.get(root);
+    if (group) group.push(s);
+    else groups.set(root, [s]);
+  }
+  for (const group of groups.values()) {
+    if (group.length < 2 || group.some((a, i) => group.some((b, j) => j > i && alike(a, b)))) continue;
+    const turns = new Uint8Array(ANGLES);
+    for (const s of group) s.turns.forEach((v, i) => (turns[i] |= v));
+    if (surround(turns) || !completesPage(group.flatMap(pixelsOf))) continue;
+    kept.push(...group);
+    unsure = unsure.filter((s) => !group.includes(s));
+  }
+
+  // A page across the photo cuts the table in two, and stripes into stubs, so alike parts lie round it together.
+  // A part that lies round the page alone is left out, as it would pass any part alike it.
+  const tableParts = surfaces.filter((s) => (s.corner || s.table) && !(s.beside && surround(s.turns)));
+  // Colours of parts that lie round the page with alike parts, as the ids of surfaces that started from them.
+  const pairColours: number[] = [];
+  const seedOf = (id: number) => flooded[surfaces[id - 1].start];
+  // Repeated until none is added, as a part found table counts for those judged before it.
+  // So stubs above a page as wide as the photo, whose photo corners wood holds, pass with those below.
   for (let added = true; added; ) {
     added = false;
     for (const a of [...kept, ...unsure]) {
@@ -784,7 +835,8 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
       if (!surround(turns)) continue;
       for (const s of [a, ...like]) s.table = true;
       tableParts.push(a);
-      addColour(surfaces.indexOf(a) + 1);
+      const id = surfaces.indexOf(a) + 1;
+      if (pairColours.every((k) => apart(seedOf(k), seedOf(id)) === FAR)) pairColours.push(id);
       added = true;
     }
   }
@@ -792,16 +844,8 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
 
   // Averaging mixes two table surfaces where they meet, as at a shadow's edge; both refuse that seam, so it is table too.
   const tableSurfaceToward = (p: number, k: number) => {
-    const x = p % w;
-    const y = (p - x) / w;
-    for (let i = 1; i <= SEAM; i++) {
-      const qx = x + i * STEP_X[k];
-      const qy = y + i * STEP_Y[k];
-      if (qx < 0 || qx >= w || qy < 0 || qy >= h) return 0;
-      const q = qy * w + qx;
-      if (state[q]) return owner[q] && surfaces[owner[q] - 1].table ? owner[q] : 0;
-    }
-    return 0;
+    const id = surfaceToward(p, k);
+    return id && surfaces[id - 1].table ? id : 0;
   };
   const between = (p: number, k: number) => {
     const a = tableSurfaceToward(p, k);
@@ -827,7 +871,8 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
   };
   seams.forEach(makeTable);
   const beside: number[][] = [];
-  const leftOver: number[] = [];
+  // Dark without a surface that failed pieces leave or that stays, judged by colour at the end.
+  const loose = new Uint8Array(n);
   for (let r = 0; r < refused.length; r++) {
     const first = refused[r];
     if (state[first]) continue;
@@ -878,8 +923,8 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
       continue;
     }
     if (!surround(turns) && !juts(part) && completesPage(part)) {
-      // Its dark that starts no surface is judged by colour too, as stripes between the page and a floor across the photo's corners.
-      for (const p of part) if (!owner[p]) leftOver.push(p);
+      // As stripes between the page and a floor across the photo's corners.
+      for (const p of part) if (!owner[p]) loose[p] = 1;
       continue;
     }
     // Its surfaces are table, so are the seams between them, and the rest is judged anew: stripes' seams would tie a picture to the table.
@@ -887,34 +932,84 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
     for (const id of met) {
       surfaces[id - 1].table = true;
       pixelsOf(surfaces[id - 1]).forEach(makeTable);
-      addColour(id);
     }
     part.filter((p) => !state[p] && (between(p, 0) || between(p, 2))).forEach(makeTable);
     for (const p of part) {
       if (state[p]) continue;
-      leftOver.push(p);
+      loose[p] = 1;
       refused.push(p);
     }
   }
+  // A table colour starts two table surfaces or more: a pattern's squares or stripes, or table that a shadow or the page cuts in parts.
+  // An object beside the page starts one, and a band on the page may share its colour.
+  const tableColours: { id: number; surfaces: number }[] = [];
+  surfaces.forEach((s, k) => {
+    if (!s.table) return;
+    const known = tableColours.find((c) => apart(seedOf(c.id), seedOf(k + 1)) !== FAR);
+    if (known) known.surfaces++;
+    else tableColours.push({ id: k + 1, surfaces: 1 });
+  });
+  const tableColour = (p: number) =>
+    pairColours.find((k) => apart(p, seedOf(k)) !== FAR) ?? tableColours.find((c) => c.surfaces > 1 && apart(p, seedOf(c.id)) !== FAR)?.id;
   if (beside.length) {
     const table = new Uint8Array(n);
     for (let p = 0; p < n; p++) table[p] = state[p] === TABLE ? 1 : 0;
     const tableBefore = prefixSums(table);
+    const passes = (part: number[]) => !juts(part) && markedInOutline(tableBefore, part) <= OUTLINE_SLACK * part.length;
+    const touchesPage = (p: number) => {
+      let touches = besidePage(p);
+      eachBeside(p, w, n, (q) => (touches ||= state[q] === PICTURE));
+      return touches;
+    };
     for (const part of beside) {
-      if (juts(part) || markedInOutline(tableBefore, part) > OUTLINE_SLACK * part.length) part.forEach(makeTable);
-      // Stripes cut off from the photo's edge, as by wood across DocUNet 22_1's top, start no surface.
-      else for (const p of part) leftOver.push(p);
+      // As stripes that wood across the photo's top cuts off from its edge.
+      if (passes(part)) {
+        for (const p of part) loose[p] = 1;
+        continue;
+      }
+      const colours = part.map(tableColour);
+      if (!colours.some(Boolean)) {
+        part.forEach(makeTable);
+        continue;
+      }
+      // Its dark in a table colour is table, so are the seams beside it, and what is left is judged again:
+      // stripes too narrow to start a surface would tie a band across the page to the table.
+      part.forEach((p, i) => {
+        state[p] = 0;
+        if (!colours[i]) return;
+        owner[p] = colours[i]!;
+        makeTable(p);
+      });
+      part.filter((p) => !state[p] && (between(p, 0) || between(p, 2))).forEach(makeTable);
+      for (const first of part) {
+        if (state[first]) continue;
+        state[first] = NOT_TABLE;
+        const one = [first];
+        for (let i = 0; i < one.length; i++) {
+          eachBeside(one[i], w, n, (q) => {
+            if (state[q]) return;
+            state[q] = NOT_TABLE;
+            one.push(q);
+          });
+        }
+        if (one.some(touchesPage) && (one.every(near) || passes(one))) for (const p of one) loose[p] = 1;
+        else one.forEach(makeTable);
+      }
     }
   }
-  // What stays in a table colour is table, as a checked cloth's inner squares start no surface.
-  for (const p of leftOver) {
-    const id = state[p] === TABLE ? 0 : colourIds.find((k) => apart(p, seedOf(k)) !== FAR);
-    if (!id) continue;
+  // Loose dark in a table colour is table, as a checked cloth's inner squares start no surface.
+  const rest: number[] = [];
+  for (let p = 0; p < n; p++) {
+    if (!loose[p] || state[p] === TABLE) continue;
+    const id = tableColour(p);
+    if (!id) {
+      rest.push(p);
+      continue;
+    }
     // Owned, so the seams between such squares are table too.
     owner[p] = id;
     makeTable(p);
   }
-  const rest = leftOver.filter((p) => state[p] !== TABLE);
   // Cleared, as `between` looks past loose dark only.
   for (const p of rest) state[p] = 0;
   const restSeams = rest.filter((p) => between(p, 0) || between(p, 2));
