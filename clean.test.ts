@@ -1699,6 +1699,14 @@ describe('dark background', () => {
     accent?: ['right' | 'frame' | 'band' | 'top' | 'inset' | 'strip', number[]];
     // The table right of the page's middle is this many times darker.
     step?: number;
+    // The table's colour at (x, y), u across and v down the page from its top left corner, in place of brown, carpet or stripes.
+    table?: (x: number, y: number, u: number, v: number) => number[];
+    // A band this deep along the page's left side, and for 'corner' along its top too.
+    band?: ['corner' | 'side', number, number[]];
+    // An object on the table against the page's left or right side, this long from 180 px down it.
+    object?: ['left' | 'right', number, number[]];
+    // This colour 20 px down both sides of the photo, as light wood, which is not scored.
+    rim?: number[];
   };
   const NAVY = [30, 40, 90];
   const NEAR_BLACK = [20, 20, 22];
@@ -1712,8 +1720,9 @@ describe('dark background', () => {
   const stripes = (width: number, odd = RED_STRIPE, even = BLUE_STRIPE) => (x: number, y: number) =>
     (Math.floor(x / width) % 2 ? odd : even).map((c) => c + grainAt(x, y));
   const brownStripes = (x: number, y: number) => brownAt(x, y).map((c) => Math.round(Math.floor(x / 20) % 2 ? c / 1.6 : c));
+  const carpetAt = (x: number, y: number) => [60, 60, 63].map((c) => c + ((x * 7919 + y * 104729) % 41) - 20 + (((x >> 2) * 31 + (y >> 2) * 17) % 9) - 4);
 
-  // Picture and table are scored away from their edges (4 and 10 px), where the 3 px grow and soft colour edges belong to neither.
+  // Picture, object and table are scored away from their edges (4, 4 and 10 px), where the 3 px grow and soft colour edges belong to neither.
   function bleedingPicture(s: Bleed) {
     const w = 500;
     const h = 667;
@@ -1739,10 +1748,14 @@ describe('dark background', () => {
         const page = onPage([u, v]);
         const [a, b] = s.picture === 'left' ? [-widen(v), 100] : s.picture === 'middle' ? [67, 133] : [-widen(v), 200.5 + widen(v)];
         const inPicture = page && !!s.picture && v >= pictureTop && u >= a && u < b;
-        const carpetGrain = ((x * 7919 + y * 104729) % 41) - 20 + (((x >> 2) * 31 + (y >> 2) * 17) % 9) - 4;
         const shade = s.step && x >= middle ? 1 / s.step : 1;
-        const tableColour = s.stripes ? stripes(20)(x, y) : s.carpet ? [60, 60, 63].map((c) => c + carpetGrain) : brownAt(x, y);
+        const tableColour = s.table ? s.table(x, y, u, v) : s.stripes ? stripes(20)(x, y) : s.carpet ? carpetAt(x, y) : brownAt(x, y);
         const table = tableColour.map((c) => Math.round(c * shade));
+        const [bandKind, bandDepth = 0, bandColour] = s.band ?? [];
+        const inBand = page && !!s.band && (u < -widen(v) + bandDepth || (bandKind === 'corner' && v < top + bandDepth));
+        const [objectAt, objectLength = 0, objectColour] = s.object ?? [];
+        const inObject = (margin: number) =>
+          !!s.object && v >= 180 - margin && v < 180 + objectLength + margin && (objectAt === 'left' ? u < -widen(v) + margin : u > 200 + widen(v) - margin);
         const [kind, accent] = s.accent ?? [];
         const inAccent = {
           right: u >= 100,
@@ -1754,9 +1767,12 @@ describe('dark background', () => {
           none: false,
         }[kind ?? 'none'];
         const ink = inAccent ? accent! : (s.colour ?? NAVY);
-        fine.set([...(inPicture ? ink : page ? [233, 230, 222] : table), 255], (y * w + x) * 4);
+        const rimOut = (margin: number) => !!s.rim && (x < 20 + margin || x >= w - 20 - margin);
+        const off = rimOut(0) ? s.rim! : inObject(0) ? objectColour! : table;
+        fine.set([...(inBand ? bandColour! : inPicture ? ink : page ? [233, 230, 222] : off), 255], (y * w + x) * 4);
         if (inPicture && v >= pictureTop + 4 && v <= end - 4 && u >= a + 4 && u < b - 4) role[y * w + x] = 1;
-        if (!page && (v < top - 10 || v > end + 10 || u < -widen(v) - 10 || u > 210 + widen(v))) role[y * w + x] = 2;
+        if (!page && !inObject(10) && !rimOut(10) && (v < top - 10 || v > end + 10 || u < -widen(v) - 10 || u > 210 + widen(v))) role[y * w + x] = 2;
+        if (!page && inObject(-4)) role[y * w + x] = 3;
       }
     }
     const out = new Uint8Array(w * h);
@@ -1767,7 +1783,7 @@ describe('dark background', () => {
       role.forEach((v, i) => v === r && (all++, (marked += out[i] ? 1 : 0)));
       return marked / all;
     };
-    return { picture: s.picture ? share(1) : 0, table: share(2) };
+    return { picture: s.picture ? share(1) : 0, table: share(2), object: s.object ? share(3) : 0 };
   }
 
   // Where the page reaches a corner of the photo the table may not show on two opposite sides, so only the picture is checked.
@@ -1964,13 +1980,44 @@ describe('dark background', () => {
     // Navy on blue stripes is the table's own colour, so only the black band is checked.
     ['a black band over a navy picture on red and blue stripes', stripes(20), (_: number, y: number) => (y < 487 ? NEAR_BLACK : NAVY), 470, 484],
   ] as const)('keeps %s at the foot of a page running off both ends', (_, table, picture, top, bottom) => {
-    const [kept, tableMarked] = markedShares(
+    const [pictureWhitened, tableWhitened] = markedShares(
       (x, y) => (x >= 150 && x < 350 ? (y >= 467 ? picture(x, y) : PAPER) : table(x, y)),
       (x, y) => x >= 154 && x < 346 && y >= top && y < bottom,
       (x) => x < 140 || x >= 360,
     );
     // Where the band meets the table, its 2 px colour seam and the 3 px grow reach 5 px in.
-    expect(kept).toBeLessThan(0.01);
-    expect(tableMarked).toBeGreaterThan(0.95);
+    expect(pictureWhitened).toBeLessThan(0.01);
+    expect(tableWhitened).toBeGreaterThan(0.95);
+  });
+
+  it.each([
+    ["a page touching the photo's side, with a band 20 px deep round its corner, on checks", { place: 'touch', table: checks, band: ['corner', 20, NEAR_BLACK] }],
+    [
+      "a page within 2 px of the photo's side, with a green band 120 px deep down it and a green object right of it, on checks",
+      { place: 'near', table: checks, band: ['side', 120, DARK_GREEN], object: ['right', 120, DARK_GREEN] },
+    ],
+    [
+      "a page within 2 px of the photo's side, with a black picture at its foot and a black object between it and the side, on stripes",
+      { place: 'near', tilt: 2, stripes: true, picture: 'full', depth: 60, colour: NEAR_BLACK, object: ['left', 60, NEAR_BLACK] },
+    ],
+    [
+      "a page off the photo's corner, with a navy picture and a shadow 1.6 times darker down its side, on carpet",
+      { place: 'corner', picture: 'full', table: (x, y, u, v) => carpetAt(x, y).map((c) => (u > 200 && u <= 220 && v >= 0 ? Math.round(c / 1.6) : c)) },
+    ],
+    // Each stripe colour starts one surface on each side of the page, as the wood holds the photo's sides.
+    [
+      'a page running off both ends between wood down both sides, with a black picture at its foot, on red and blue stripes 20 px wide across',
+      { place: 'offBoth', picture: 'left', depth: 60, colour: NEAR_BLACK, table: (x, y) => stripes(20)(y, x), rim: [200, 140, 70] },
+    ],
+    // x 33 is a quarter of the way across the page at half its height.
+    [
+      "a tilted page off the photo's corner, with a black picture, on brown 1.6 times darker right of x 33",
+      { place: 'corner', tilt: -5, picture: 'full', colour: NEAR_BLACK, table: (x, y) => brownAt(x, y).map((c) => (x >= 33 ? Math.round(c / 1.6) : c)) },
+    ],
+  ] as [string, Bleed][])('whitens the table round %s', (_, scene) => {
+    const { picture, table, object } = bleedingPicture(scene);
+    if (scene.picture) expect(picture).toBeLessThan(0.1);
+    if (scene.object) expect(object).toBeGreaterThan(0.95);
+    expect(table).toBeGreaterThan(0.95);
   });
 });

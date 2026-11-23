@@ -649,7 +649,7 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
     }
     surfaces.push({ start, end: flooded.length, beside: false, turns: new Uint8Array(ANGLES), corner: false, table: false });
   }
-  // 1 + the index of the surface each flooded pixel belongs to.
+  // 1 + the index of the surface a pixel belongs to, or of one whose table colour it has; 0 for none.
   const owner = new Int32Array(n);
   surfaces.forEach(({ start, end }, k) => {
     for (let i = start; i < end; i++) owner[flooded[i]] = k + 1;
@@ -779,12 +779,10 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
     return 0;
   };
   // A picture in several colours fails in each alone, as its hull with the page takes in the others.
-  // So unsure surfaces beside the page a seam apart, none alike, are tried together.
-  // Table cut by a shadow or by a page across the photo holds the photo's corners, so such surfaces are left out.
-  // So are stubs of stripes, which are alike stripes found table, and table in two colours that lies round the page does not pass.
   const groupOf = surfaces.map((_, k) => k);
   const rootOf = (k: number): number => (groupOf[k] === k ? k : (groupOf[k] = rootOf(groupOf[k])));
   const tableSoFar = surfaces.filter((s) => s.table);
+  // Left out: table that a shadow or a page across the photo cuts, which holds a photo corner, and a stripe's stubs, alike stripes found table.
   const unsureBeside = unsure.filter((s) => s.beside && !s.corner && !tableSoFar.some((t) => alike(s, t)));
   const isUnsureBeside = new Uint8Array(surfaces.length + 1);
   for (const s of unsureBeside) isUnsureBeside[owner[flooded[s.start]]] = 1;
@@ -817,14 +815,11 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
     unsure = unsure.filter((s) => !group.includes(s));
   }
 
-  // A page across the photo cuts the table in two, and stripes into stubs, so alike parts lie round it together.
-  // A part that lies round the page alone is left out, as it would pass any part alike it.
+  // A page across the photo cuts table into alike parts that lie round it together; one that does so alone would pass any part alike it.
   const tableParts = surfaces.filter((s) => (s.corner || s.table) && !(s.beside && surround(s.turns)));
-  // Colours of parts that lie round the page with alike parts, as the ids of surfaces that started from them.
   const pairColours: number[] = [];
   const seedOf = (id: number) => flooded[surfaces[id - 1].start];
-  // Repeated until none is added, as a part found table counts for those judged before it.
-  // So stubs above a page as wide as the photo, whose photo corners wood holds, pass with those below.
+  // Repeated until none is added, as a part found table counts for those judged before it: stubs above a page as wide as the photo pass with those below.
   for (let added = true; added; ) {
     added = false;
     for (const a of [...kept, ...unsure]) {
@@ -871,7 +866,6 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
   };
   seams.forEach(makeTable);
   const beside: number[][] = [];
-  // Dark without a surface that failed pieces leave or that stays, judged by colour at the end.
   const loose = new Uint8Array(n);
   for (let r = 0; r < refused.length; r++) {
     const first = refused[r];
@@ -923,7 +917,7 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
       continue;
     }
     if (!surround(turns) && !juts(part) && completesPage(part)) {
-      // As stripes between the page and a floor across the photo's corners.
+      // Stripes between the page and a floor across the photo's corners start no surface, so they are judged by colour.
       for (const p of part) if (!owner[p]) loose[p] = 1;
       continue;
     }
@@ -940,15 +934,17 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
       refused.push(p);
     }
   }
-  // A table colour starts two table surfaces or more: a pattern's squares or stripes, or table that a shadow or the page cuts in parts.
-  // An object beside the page starts one, and a band on the page may share its colour.
+  // A pattern's colour starts two surfaces or more; an object beside the page starts one, and a band on the page may share its colour.
   const tableColours: { id: number; surfaces: number }[] = [];
-  surfaces.forEach((s, k) => {
-    if (!s.table) return;
-    const known = tableColours.find((c) => apart(seedOf(c.id), seedOf(k + 1)) !== FAR);
-    if (known) known.surfaces++;
-    else tableColours.push({ id: k + 1, surfaces: 1 });
-  });
+  for (const table of [true, false]) {
+    surfaces.forEach((s, k) => {
+      // Dark that does not touch the page is not judged; counted, its red stripes would make a table colour that a red picture's edge matches.
+      if (s.table !== table || (!table && state[flooded[s.start]] === TABLE)) return;
+      const known = tableColours.find((c) => apart(seedOf(c.id), seedOf(k + 1)) !== FAR);
+      if (known) known.surfaces++;
+      else if (table) tableColours.push({ id: k + 1, surfaces: 1 });
+    });
+  }
   const tableColour = (p: number) =>
     pairColours.find((k) => apart(p, seedOf(k)) !== FAR) ?? tableColours.find((c) => c.surfaces > 1 && apart(p, seedOf(c.id)) !== FAR)?.id;
   if (beside.length) {
@@ -962,7 +958,7 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
       return touches;
     };
     for (const part of beside) {
-      // As stripes that wood across the photo's top cuts off from its edge.
+      // Stripes that wood across the photo's top cuts off from its edge start no surface, so they are judged by colour.
       if (passes(part)) {
         for (const p of part) loose[p] = 1;
         continue;
@@ -972,8 +968,7 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
         part.forEach(makeTable);
         continue;
       }
-      // Its dark in a table colour is table, so are the seams beside it, and what is left is judged again:
-      // stripes too narrow to start a surface would tie a band across the page to the table.
+      // Stripes too narrow to start a surface would tie a band across the page to the table, so its dark in a table colour is taken out first.
       part.forEach((p, i) => {
         state[p] = 0;
         if (!colours[i]) return;
@@ -985,14 +980,18 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
         if (state[first]) continue;
         state[first] = NOT_TABLE;
         const one = [first];
+        let atEdge = false;
         for (let i = 0; i < one.length; i++) {
+          const x = one[i] % w;
+          atEdge ||= x === 0 || x === w - 1 || one[i] < w || one[i] >= n - w;
           eachBeside(one[i], w, n, (q) => {
             if (state[q]) return;
             state[q] = NOT_TABLE;
             one.push(q);
           });
         }
-        if (one.some(touchesPage) && (one.every(near) || passes(one))) for (const p of one) loose[p] = 1;
+        // A band, object or strip that reaches the photo's edge beside the page is tied to the table there, as the whole part was.
+        if (!atEdge && one.some(touchesPage) && (one.every(near) || passes(one))) for (const p of one) loose[p] = 1;
         else one.forEach(makeTable);
       }
     }
