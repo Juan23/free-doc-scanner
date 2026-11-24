@@ -497,6 +497,28 @@ function endsAtBand(q: Quad, rgba: Uint8Array, w: number, h: number): boolean {
   });
 }
 
+/** True when past some side, at an even depth, an edge runs along it that stops at the neighbouring sides' lines carried on: the far edge of a band flush with the page's end, in the surface's colour or near it, where the side is the band's near edge. */
+function endsAtBandEdge(q: Quad, gx: Int16Array, gy: Int16Array, rgba: Uint8Array, w: number, h: number): boolean {
+  const { at, sides, besideNeighbours } = framePaper(q, rgba, w, h);
+  return sides.some(({ nx, ny, points }, s) => {
+    const across = (o: number) => (o < 0 ? 0 : abs(gx[o / 4] * nx + gy[o / 4] * ny));
+    const depths: number[] = [];
+    for (const { x, y } of points) {
+      for (let d = MIN_BAND; d <= BAND_REACH; d++) {
+        if (across(at(x + nx * d, y + ny * d)) < MIN_EDGE) continue;
+        depths.push(d);
+        break;
+      }
+    }
+    const typical = depths.sort((a, b) => a - b)[depths.length >> 1];
+    // The whole even span lies past MIN_BAND, so a page's soft or curled edge right past the side is no band.
+    if (typical < MIN_BAND + BAND_EVEN || depths.filter((d) => abs(d - typical) <= BAND_EVEN).length < MIN_PAPER_BEYOND * points.length) return false;
+    const even = Array.from({ length: 2 * BAND_EVEN + 1 }, (_, i) => typical - BAND_EVEN + i);
+    // A wood grain or a table's edge runs on past the page's sides (DocUNet 47_2).
+    return [0, 1].every((j) => STRIP.every((e) => even.every((d) => across(besideNeighbours(s, d, e)[j]) < MIN_EDGE)));
+  });
+}
+
 // Sum of red, green and blue differences between neighbouring pixels that the surface round the page spreads across.
 const SURFACE_STEP = 30;
 // The same sum from the colour the surface brought along: it stops at a soft page edge, whose steps are small, while light falling off across a table carries that colour with it.
@@ -595,6 +617,8 @@ function unreachedPatch(rgba: Uint8Array, w: number, h: number) {
   return { inPatch: (p: number) => p >= 0 && patch[p] === best, size, runnerUp };
 }
 
+type Patch = ReturnType<typeof unreachedPatch>;
+
 /** The convex hull of the patch's pixels, going round in order. */
 function patchHull(inPatch: (p: number) => boolean, w: number, h: number): Point[] {
   const ends: Point[] = [];
@@ -647,18 +671,41 @@ function largestQuad(hull: Point[]): Quad | null {
   return quad;
 }
 
-function unlikeSurface(c: number[], d: number[]): boolean {
-  const [bc, bd] = [brightness(c), brightness(d)];
-  if (Math.min(bc, bd) < BAND_SHADE * Math.max(bc, bd)) return true;
+/** Sum of the differences in each channel's share of the colour: 0 for the same hue at any brightness. */
+function hueGap(c: number[], d: number[]): number {
   const [sc, sd] = [c[0] + c[1] + c[2] || 1, d[0] + d[1] + d[2] || 1];
-  return [0, 1, 2].reduce((sum, i) => sum + Math.abs(c[i] / sc - d[i] / sd), 0) > BAND_HUE;
+  return [0, 1, 2].reduce((sum, i) => sum + Math.abs(c[i] / sc - d[i] / sd), 0);
 }
 
-// shortcut: a band flush with the page's edge in or near the surface's colour is left outside the frame (#116), upgrade when a real photo shows one.
+function unlikeSurface(c: number[], d: number[]): boolean {
+  const [bc, bd] = [brightness(c), brightness(d)];
+  return Math.min(bc, bd) < BAND_SHADE * Math.max(bc, bd) || hueGap(c, d) > BAND_HUE;
+}
+
+// Share of the paper's brightness, and most hue gap from it, of the page's patch past a side that counts as its paper running on; a guitar's lit wood is too orange (DocUNet 63_1).
+const RUNS_ON_BRIGHT = 0.8;
+const RUNS_ON_HUE = 0.1;
+// Share of a side's points with paper on both sides that makes it run across the page: a page's edge never has.
+const MIN_ACROSS = 0.3;
+
+/** True when the page's patch runs on past some side in the paper's colour, along most of it, or along part of it with paper inside too: that side runs across the page. */
+function runsOnPast(q: Quad, inPatch: Patch['inPatch'], rgba: Uint8Array, w: number, h: number): boolean {
+  const { at, paper, sides } = framePaper(q, rgba, w, h);
+  const isPagePaper = (o: number) => {
+    const c = colourOf(rgba, o);
+    return inPatch(o / 4) && brightness(c) >= RUNS_ON_BRIGHT * brightness(paper) && hueGap(c, paper) <= RUNS_ON_HUE;
+  };
+  return sides.some(({ nx, ny, points }) => {
+    const paperAt = (x: number, y: number, dir: number) => RING.filter((d) => isPagePaper(at(x + dir * nx * d, y + dir * ny * d))).length > RING.length / 2;
+    const past = points.filter(({ x, y }) => paperAt(x, y, 1));
+    return past.length >= MIN_PAPER_BEYOND * points.length || past.filter(({ x, y }) => paperAt(x, y, -1)).length >= MIN_ACROSS * points.length;
+  });
+}
+
+// shortcut: a band flush with the page's end in exactly the surface's colour, with no edge where the page ends, is left outside the frame (#116), upgrade when a real photo shows one.
 /** The page as the largest patch the surface round it does not reach, framed by its largest quad, or null when that frame leaves part of the patch out, is not filled by it, or fails a frame check. */
-function patchCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
+function patchCorners({ inPatch, size, runnerUp }: Patch, gx: Int16Array, gy: Int16Array, rgba: Uint8Array, w: number, h: number): Quad | null {
   const minArea = 0.04 * w * h;
-  const { inPatch, size, runnerUp } = unreachedPatch(rgba, w, h);
   if (size < minArea || runnerUp > RUNNER_UP * size) return null;
   const raw = largestQuad(patchHull(inPatch, w, h));
   const q = raw && orderCorners(raw);
@@ -706,7 +753,7 @@ function patchCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
       const [inside, outside] = [beside(-1), beside(1)];
       return inside && outside && unlikeSurface(inside, outside);
     });
-  if (!edged || [0, 1, 2, 3].some(outlineCarriesOn) || endsAtBand(q, rgba, w, h) || liesAcrossPage(q, rgba, w, h)) return null;
+  if (!edged || [0, 1, 2, 3].some(outlineCarriesOn) || endsAtBandEdge(q, gx, gy, rgba, w, h) || endsAtBand(q, rgba, w, h) || liesAcrossPage(q, rgba, w, h)) return null;
   return [0, 1, 2, 3].some((s) => cutsPaper(q, s, rgba, w, h)) ? null : q;
 }
 
@@ -725,7 +772,8 @@ function refineFrame(q: Quad, gx: Int16Array, gy: Int16Array, w: number, h: numb
 function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
   const { gx, gy, nms } = edgeMap(rgba, w, h);
   // A page set apart from what is round it all the way along is found whatever its edges' shape; straight lines frame the rest.
-  const patch = patchCorners(rgba, w, h);
+  const flood = unreachedPatch(rgba, w, h);
+  const patch = patchCorners(flood, gx, gy, rgba, w, h);
   if (patch) return refineFrame(patch, gx, gy, w, h);
   const { lines, peaks } = houghLines(gx, gy, nms, w, h);
   if (lines.length < 4) return null;
@@ -819,7 +867,8 @@ function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
   }
 
   // A frame that ends at a band or lies across the page is turned away, never swapped for another: a cut page is worse than the whole photo.
-  if (endsAtBand(bestQuad, rgba, w, h) || liesAcrossPage(bestQuad, rgba, w, h)) return null;
+  // endsAtBandEdge is left out here: on the line search's frames it turned away loose frames (DocUNet 31_1, 57_2, 63_1) for no cut one.
+  if (endsAtBand(bestQuad, rgba, w, h) || liesAcrossPage(bestQuad, rgba, w, h) || runsOnPast(bestQuad, flood.inPatch, rgba, w, h)) return null;
   return refineFrame(bestQuad, gx, gy, w, h);
 }
 

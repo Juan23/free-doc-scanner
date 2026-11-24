@@ -254,6 +254,20 @@ function bandAcross(page: Quad, top: number, depth: number, left = 0, right = 1,
   };
 }
 
+// A band 15 per channel off the desk's colour, flush with the page's end, which the desk round the page spreads into (#116).
+it.each([
+  ['upright', upright, 0.53, 0],
+  ['tilted', tilted, 0.4, 0],
+  ['tilted', tilted, 0.53, 0.88],
+] as const)('gives a small %s page with a band near the desk\'s colour flush with its end the whole page or the whole photo', async (_, shape, k, top) => {
+  const small = shrunk(shape, k);
+  mockFiles.set('file:///cache/photo.jpg', photo(small, 'rgb(92,70,52)', undefined, undefined, bandAcross(small, top, 0.12, 0, 1, 'rgb(107,85,67)')));
+
+  const { corners } = await findPage('file:///cache/photo.jpg');
+
+  expect(Math.min(farthest(corners, small), farthest(corners, wholePhoto))).toBeLessThan(20);
+}, 30000);
+
 describe.each([
   ['upright', 'a brown desk', upright, 'rgb(92,70,52)'],
   ['tilted', 'a brown desk', tilted, 'rgb(92,70,52)'],
@@ -401,6 +415,33 @@ it('gives the whole photo, not a frame whose foot lies across the page with ligh
   mockFiles.set('file:///cache/photo.jpg', photo(upright, 'rgb(92,70,52)', undefined, whiteTable, shadow));
 
   expect((await findPage('file:///cache/photo.jpg')).corners).toEqual(wholePhoto);
+}, 30000);
+
+// DocUNet 19_1: a crease down the page is the only straight line on that side, as the paper past it lies on a pale table of another hue (#85).
+it('gives the whole page or the whole photo, not a frame whose side runs down a crease with the page past it', async () => {
+  const wide: Quad = [
+    { x: 100, y: 150 },
+    { x: 850, y: 150 },
+    { x: 850, y: 1050 },
+    { x: 100, y: 1050 },
+  ];
+  const paleTable = (canvas: SkCanvas) => {
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color('rgb(180,250,255)'));
+    canvas.drawRect(Skia.XYWHRect(0, 0, 240, H), paint);
+    paint.dispose();
+  };
+  const crease = (canvas: SkCanvas) => {
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color('rgb(120,118,112)'));
+    canvas.drawRect(Skia.XYWHRect(270, 0, 5, H), paint);
+    paint.dispose();
+  };
+  mockFiles.set('file:///cache/photo.jpg', photo(wide, 'rgb(92,70,52)', undefined, paleTable, crease));
+
+  const { corners } = await findPage('file:///cache/photo.jpg');
+
+  expect(Math.min(farthest(corners, wide), farthest(corners, wholePhoto))).toBeLessThan(20);
 }, 30000);
 
 it.each([
