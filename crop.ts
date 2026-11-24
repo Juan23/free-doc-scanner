@@ -1,8 +1,8 @@
-import { AlphaType, ColorType, FilterMode, ImageFormat, MipmapMode, Skia, TileMode } from '@shopify/react-native-skia';
+import { AlphaType, ColorType, ImageFormat, Skia, TileMode } from '@shopify/react-native-skia';
 import { File } from 'expo-file-system';
 
 import { shrunkCopy } from './clean';
-import { readPage } from './scans';
+import { decodePage, readPage } from './scans';
 
 export type Point = { x: number; y: number };
 /** Page corners in photo pixels: top-left, top-right, bottom-right, bottom-left. */
@@ -339,12 +339,26 @@ const PAST_BAND = [0, 1, 2];
 
 // Search-copy px past a side where paper means a line of text: past its edge's blur, closer than a band's MIN_BAND.
 const CUT_REACH = [3, 4, 5];
+// Search-copy px across a side where a line of text has ink; a page edge on a pale table has none.
+const INK_REACH = [-2, -1, 0, 1, 2];
+
+// Search-copy px either side of a side whose brightness is compared, past its edge's blur.
+const STRIP = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
+// Times brighter outside a side than inside that a pale table past a page's edge does not reach; paper past a fold, a line of text or a picture does.
+const BRIGHTER = 1.1;
+// Share of the paper's brightness under which what lies just inside a side is a gap of table or shadow, not page.
+const GAP_DARK = 0.5;
+// Share of a side's points brighter outside that makes the side cut the page.
+const MIN_BRIGHTER_PAST = 0.6;
 
 // Share of the way up the frame's colours where its paper is read.
 const PAPER_SHARE = 0.75;
+// Shares of the way from the frame's middle to a corner where its paper is read, close together so evenly spaced lines of text cannot fill every one.
+const PAPER_PATH = Array.from({ length: 71 }, (_, i) => 0.1 + i / 100);
 
 const brightness = (c: number[]) => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
 const sameColour = (c: number[], d: number[]) => Math.abs(c[0] - d[0]) + Math.abs(c[1] - d[1]) + Math.abs(c[2] - d[2]) < SAME_COLOUR;
+const colourOf = (rgba: Uint8Array, o: number) => [rgba[o], rgba[o + 1], rgba[o + 2]];
 
 /** The frame's paper colour and its sides, each with its outward normal and points along it, in a small RGBA copy. */
 function framePaper(q: Quad, rgba: Uint8Array, w: number, h: number) {
@@ -363,8 +377,8 @@ function framePaper(q: Quad, rgba: Uint8Array, w: number, h: number) {
   };
   const medianColour = (offsets: number[]) => colourAt(offsets, 0.5);
   // The frame's paper, on the lines from its middle to its corners; past the median, so text and a band crossing them do not darken it.
-  const paper = colourAt(q.flatMap((p) => [1, 2, 3, 4, 5, 6, 7, 8].map((k) => at(cx + ((p.x - cx) * k) / 10, cy + ((p.y - cy) * k) / 10))), PAPER_SHARE)!;
-  const isPaper = (o: number) => o >= 0 && sameColour([rgba[o], rgba[o + 1], rgba[o + 2]], paper);
+  const paper = colourAt(q.flatMap((p) => PAPER_PATH.map((k) => at(cx + (p.x - cx) * k, cy + (p.y - cy) * k))), PAPER_SHARE)!;
+  const isPaper = (o: number) => o >= 0 && sameColour(colourOf(rgba, o), paper);
 
   const steps = 32;
   const along = Array.from({ length: steps - 7 }, (_, j) => (j + 4) / steps);
@@ -378,40 +392,76 @@ function framePaper(q: Quad, rgba: Uint8Array, w: number, h: number) {
     // Points along the side; the ends are skipped, as they sit at corners.
     return { nx, ny, points: along.map((t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t })) };
   });
-  return { at, medianColour, paper, isPaper, sides };
-}
-
-/** True when most of side s has paper closer past it than a band leaves: the side is a line of text on the page, not its edge. */
-function cutsPaper(q: Quad, s: number, rgba: Uint8Array, w: number, h: number): boolean {
-  const { at, isPaper, sides } = framePaper(q, rgba, w, h);
-  const { nx, ny, points } = sides[s];
-  const cut = points.filter(({ x, y }) => CUT_REACH.some((d) => isPaper(at(x + nx * d, y + ny * d))));
-  return cut.length >= MIN_PAPER_BEYOND * points.length;
-}
-
-/** True when most of a side runs along a dark band of even depth with paper past it that shows just inside its neighbouring sides' lines carried on, not just outside, where another sheet would spill past them or stop short. */
-function endsAtBand(q: Quad, rgba: Uint8Array, w: number, h: number): boolean {
-  const { at, medianColour, paper, isPaper, sides } = framePaper(q, rgba, w, h);
-
-  // shortcut: a second sheet in line with both neighbouring sides, or past which they leave the photo (a page cut by three photo edges), gives the whole photo, upgrade when a real photo shows one.
-  const carriesOnPage = (s: number, from: number) =>
+  // Offsets e px outside (inside when e < 0) each neighbouring side's line, carried on `past` px beyond side s.
+  const besideNeighbours = (s: number, past: number, e: number) =>
     [
       { k: (s + 3) % 4, corner: q[s], far: q[(s + 3) % 4] },
       { k: (s + 1) % 4, corner: q[(s + 1) % 4], far: q[(s + 2) % 4] },
-    ].every(({ k, corner, far }) => {
+    ].map(({ k, corner, far }) => {
       const len = Math.hypot(corner.x - far.x, corner.y - far.y);
       const ux = (corner.x - far.x) / len;
       const uy = (corner.y - far.y) / len;
       // Px along the neighbouring side's line for each px away from side s.
       const stretch = 1 / (ux * sides[s].nx + uy * sides[s].ny);
+      return at(corner.x + ux * past * stretch + sides[k].nx * e, corner.y + uy * past * stretch + sides[k].ny * e);
+    });
+  return { at, medianColour, paper, isPaper, sides, besideNeighbours };
+}
+
+/** True when most of side s has ink across it and paper closer past it than a band leaves: the side is a line of text on the page, not its edge. */
+function cutsPaper(q: Quad, s: number, rgba: Uint8Array, w: number, h: number): boolean {
+  const { at, paper, isPaper, sides } = framePaper(q, rgba, w, h);
+  const { nx, ny, points } = sides[s];
+  const isInk = (o: number) => o >= 0 && !isPaper(o) && brightness(colourOf(rgba, o)) < brightness(paper);
+  const cut = points.filter(
+    ({ x, y }) => CUT_REACH.some((d) => isPaper(at(x + nx * d, y + ny * d))) && INK_REACH.some((d) => isInk(at(x + nx * d, y + ny * d))),
+  );
+  return cut.length >= MIN_PAPER_BEYOND * points.length;
+}
+
+/** True when most of some side, but not of every side, is brighter just outside it than just inside, and what lies past it is not the table beside the neighbouring sides: that side lies across the page, where a page on a paler table is brighter past every side. */
+function liesAcrossPage(q: Quad, rgba: Uint8Array, w: number, h: number): boolean {
+  const { at, medianColour, paper, sides, besideNeighbours } = framePaper(q, rgba, w, h);
+  const brighterPast = (s: number) => {
+    const { nx, ny, points } = sides[s];
+    // NaN when none is in the photo, so a side along the photo's edge is never brighter past.
+    const meanBrightness = (x: number, y: number, offsets: number[]) => {
+      const inPhoto = offsets.map((d) => at(x + nx * d, y + ny * d)).filter((o) => o >= 0);
+      return inPhoto.reduce((sum, o) => sum + brightness(colourOf(rgba, o)), 0) / inPhoto.length;
+    };
+    const brighter = points.filter(
+      ({ x, y }) =>
+        meanBrightness(x, y, STRIP) > BRIGHTER * meanBrightness(x, y, STRIP.map((d) => -d)) &&
+        meanBrightness(x, y, CUT_REACH.map((d) => -d)) >= GAP_DARK * brightness(paper),
+    );
+    if (brighter.length < MIN_BRIGHTER_PAST * points.length) return false;
+    // A table paler than a header band or a shaded part of the page runs on past the neighbouring sides too; paper past a shadow or a fold stops at them.
+    const past = medianColour(points.flatMap(({ x, y }) => STRIP.map((d) => at(x + nx * d, y + ny * d))));
+    return (
+      !past ||
+      ![0, 1].some((j) => {
+        const beside = medianColour(STRIP.flatMap((t) => BESIDE.map((e) => besideNeighbours(s, t, e)[j])));
+        return beside && sameColour(beside, past);
+      })
+    );
+  };
+  const brighterSides = [0, 1, 2, 3].filter(brighterPast).length;
+  return brighterSides > 0 && brighterSides < 4;
+}
+
+/** True when most of a side runs along a dark band of even depth with paper past it that shows just inside its neighbouring sides' lines carried on, not just outside, where another sheet would spill past them or stop short. */
+function endsAtBand(q: Quad, rgba: Uint8Array, w: number, h: number): boolean {
+  const { at, medianColour, paper, isPaper, sides, besideNeighbours } = framePaper(q, rgba, w, h);
+
+  // shortcut: a second sheet in line with both neighbouring sides, or past which they leave the photo (a page cut by three photo edges), gives the whole photo, upgrade when a real photo shows one.
+  const carriesOnPage = (s: number, from: number) =>
+    [0, 1].every((j) => {
       let inside = 0;
       let outside = 0;
       for (const t of PAST_BAND) {
-        const x = corner.x + ux * (from + t) * stretch;
-        const y = corner.y + uy * (from + t) * stretch;
         for (const e of BESIDE) {
-          if (isPaper(at(x - sides[k].nx * e, y - sides[k].ny * e))) inside++;
-          if (isPaper(at(x + sides[k].nx * e, y + sides[k].ny * e))) outside++;
+          if (isPaper(besideNeighbours(s, from + t, -e)[j])) inside++;
+          if (isPaper(besideNeighbours(s, from + t, e)[j])) outside++;
         }
       }
       const probes = PAST_BAND.length * BESIDE.length;
@@ -540,8 +590,8 @@ function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
     }
   }
 
-  // A frame that ends at a band is turned away, never swapped for another: a cut page is worse than the whole photo.
-  if (endsAtBand(bestQuad, rgba, w, h)) return null;
+  // A frame that ends at a band or lies across the page is turned away, never swapped for another: a cut page is worse than the whole photo.
+  if (endsAtBand(bestQuad, rgba, w, h) || liesAcrossPage(bestQuad, rgba, w, h)) return null;
   const refined = [0, 1, 2, 3].map((s) => refineLine(bestQuad[s], bestQuad[(s + 1) % 4], gx, gy, w, h));
   const allLines = (ls: (Line | null)[]): ls is Line[] => ls.every((l) => l !== null);
   if (allLines(refined)) {
@@ -603,15 +653,75 @@ function perspective(from: Quad, to: Quad): number[] {
   return [...rows.map((r, i) => r[8] / r[i]), 1];
 }
 
+// A phone's main camera has a focal length of about 0.72 of the photo's long side (24 to 28 mm equivalent);
+// a cropped photo keeps that side.
+const FOCAL_PER_LONG_SIDE = 0.72;
+// How far the focal length read from the corners may stray from that: it is noisy on a page seen nearly flat.
+const FOCAL_SPREAD = 1.25;
+
+type Vec = [number, number, number];
+const cross = (a: Vec, b: Vec): Vec => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const dot = (a: Vec, b: Vec) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+/**
+ * Width over height of the rectangle whose photo is `corners`, from the camera's perspective
+ * (Zhang and He, "Whiteboard scanning and image enhancement", 2007). NaN when the corners are in a line.
+ */
+export function pageAspect([tl, tr, br, bl]: Quad, width: number, height: number): number {
+  const [m1, m2, m3, m4] = [tl, tr, bl, br].map(({ x, y }): Vec => [x - width / 2, y - height / 2, 1]);
+  const k2 = dot(cross(m1, m4), m3) / dot(cross(m2, m4), m3);
+  const k3 = dot(cross(m1, m4), m2) / dot(cross(m3, m4), m2);
+  const n2 = m2.map((v, i) => k2 * v - m1[i]);
+  const n3 = m3.map((v, i) => k3 * v - m1[i]);
+  const prior = FOCAL_PER_LONG_SIDE * Math.max(width, height);
+  // Two sides that are parallel, or within 1% of it, leave the focal length unknown.
+  const parallel = Math.abs(k2 - 1) < 0.01 || Math.abs(k3 - 1) < 0.01;
+  const f2 = -(n2[0] * n3[0] + n2[1] * n3[1]) / (n2[2] * n3[2]);
+  const f = !parallel && f2 > 0 ? Math.min(prior * FOCAL_SPREAD, Math.max(prior / FOCAL_SPREAD, Math.sqrt(f2))) : prior;
+  return Math.sqrt(((n2[0] ** 2 + n2[1] ** 2) / f ** 2 + n2[2] ** 2) / ((n3[0] ** 2 + n3[1] ** 2) / f ** 2 + n3[2] ** 2));
+}
+
+/** The width and height of a JPEG with no EXIF block, else null: a PDF shows EXIF-turned pixels sideways. */
+function plainJpegSize(b: Uint8Array): { width: number; height: number } | null {
+  if (b[0] !== 0xff || b[1] !== 0xd8) return null;
+  for (let i = 2; i + 9 < b.length && b[i] === 0xff; i += 2 + ((b[i + 2] << 8) | b[i + 3])) {
+    const marker = b[i + 1];
+    if (marker === 0xe1) return null;
+    // Start-of-frame markers, all but DHT (c4), JPG (c8) and DAC (cc).
+    if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
+      return { width: (b[i + 7] << 8) | b[i + 8], height: (b[i + 5] << 8) | b[i + 6] };
+    }
+  }
+  return null;
+}
+
+const isWhole = (corners: Quad, width: number, height: number) =>
+  whole(width, height).every((p, i) => p.x === corners[i].x && p.y === corners[i].y);
+
 /** Cuts the page inside `corners` out of the photo, straightens it and writes it to `dest` as a JPEG. */
 export async function cropPage(uri: string, corners: Quad, dest: string): Promise<void> {
+  const photo = await new File(uri).bytes();
+  const plain = plainJpegSize(photo);
+  if (plain && isWhole(corners, plain.width, plain.height)) return new File(dest).write(photo);
+  const image = decodePage(photo);
+  if (isWhole(corners, image.width(), image.height())) {
+    const bytes = image.encodeToBytes(ImageFormat.JPEG, 90);
+    image.dispose();
+    return writeJpeg(dest, bytes);
+  }
   const [tl, tr, br, bl] = corners;
   const length = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
-  const w = Math.max(1, Math.round(Math.max(length(tl, tr), length(bl, br))));
-  const h = Math.max(1, Math.round(Math.max(length(tl, bl), length(tr, br))));
-  const image = await readPage(uri);
+  const across = Math.max(length(tl, tr), length(bl, br));
+  const down = Math.max(length(tl, bl), length(tr, br));
+  const found = pageAspect(corners, image.width(), image.height());
+  const aspect = found > 0 && Number.isFinite(found) ? found : across / down;
+  // Tall enough that neither side is shrunk, but no more pixels than the photo has.
+  const tall = Math.min(Math.max(down, across / aspect), Math.sqrt((image.width() * image.height()) / aspect));
+  const w = Math.max(1, Math.round(tall * aspect));
+  const h = Math.max(1, Math.round(tall));
   const matrix = Skia.Matrix(perspective(corners, whole(w, h)));
-  const shader = image.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, MipmapMode.None, matrix);
+  // Catmull-Rom: on pages enlarged from tilted photos it came 21% nearer the true print than bilinear (#101).
+  const shader = image.makeShaderCubic(TileMode.Clamp, TileMode.Clamp, 0, 1 / 2, matrix);
   const paint = Skia.Paint();
   paint.setShader(shader);
   const surface = Skia.Surface.Make(w, h)!;
@@ -619,6 +729,10 @@ export async function cropPage(uri: string, corners: Quad, dest: string): Promis
   const page = surface.makeImageSnapshot();
   const bytes = page.encodeToBytes(ImageFormat.JPEG, 90);
   for (const o of [image, matrix, shader, paint, surface, page]) o.dispose();
+  await writeJpeg(dest, bytes);
+}
+
+async function writeJpeg(dest: string, bytes: Uint8Array | null) {
   // Native Skia returns null when encoding fails, whatever the type says.
   if (!bytes?.length) throw new Error('could not encode page');
   await new File(dest).write(bytes);

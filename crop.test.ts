@@ -4,7 +4,7 @@
 /// <reference types="jest" />
 import { BlurStyle, ImageFormat, Skia, type SkCanvas, type SkPaint } from '@shopify/react-native-skia';
 
-import { cropPage, findPage, isConvex, type Quad } from './crop';
+import { cropPage, findPage, isConvex, pageAspect, type Quad } from './crop';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
 const mockFiles = new Map<string, Uint8Array>();
@@ -329,6 +329,57 @@ it('finds a page as wide as the photo on a near-white table with a shadow under 
   expectNear((await findPage('file:///cache/photo.jpg')).corners, wide, 20);
 }, 30000);
 
+// The faint top edge votes less than the first line of text below it (#112).
+it('finds a page on a near-white table, not a frame that starts on its first line of text', async () => {
+  mockFiles.set('file:///cache/photo.jpg', photo(upright, 'rgb(250,250,250)'));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, upright, 20);
+}, 30000);
+
+// DocUNet 35_1: a shadow across the page and a white table under its foot leave the shadow's edge as the frame's foot (#85).
+it('gives the whole photo, not a frame whose foot lies across the page with lighter paper past it', async () => {
+  const whiteTable = (canvas: SkCanvas) => {
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color('rgb(248,247,244)'));
+    canvas.drawRect(Skia.XYWHRect(0, 800, W, H - 800), paint);
+    paint.dispose();
+  };
+  const shadow = (canvas: SkCanvas) => {
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color('rgba(0,0,0,0.3)'));
+    canvas.drawRect(Skia.XYWHRect(0, 0, W, 600), paint);
+    paint.dispose();
+  };
+  mockFiles.set('file:///cache/photo.jpg', photo(upright, 'rgb(92,70,52)', undefined, whiteTable, shadow));
+
+  expect((await findPage('file:///cache/photo.jpg')).corners).toEqual(wholePhoto);
+}, 30000);
+
+it.each([
+  ['upright', upright],
+  ['tilted', tilted],
+])('finds a %s page a little greyer than the white table round it', async (_, page) => {
+  mockFiles.set('file:///cache/photo.jpg', photo(page, 'rgb(250,250,250)', 'rgb(210,206,196)'));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, page, 20);
+}, 30000);
+
+// A table brighter than a header is no lit paper past a shadow (#114).
+it.each([
+  ['upright', upright, 'grey', 'rgb(140,140,140)', 'wood', 'rgb(205,175,135)', 'rgb(238,234,222)', false],
+  ['tilted', tilted, 'grey', 'rgb(120,120,120)', 'light grey', 'rgb(215,215,215)', 'rgb(238,234,222)', true],
+  ['tilted', tilted, 'light blue', 'rgb(150,190,230)', 'light grey', 'rgb(215,215,215)', 'rgb(252,252,252)', false],
+  ['upright', upright, 'yellow', 'rgb(240,215,90)', 'white', 'rgb(248,248,248)', 'rgb(252,252,252)', true],
+] as const)('finds a %s page with a %s header on a %s table, with a footer: %s', async (_, page, _h, header, _t, table, paper, footer) => {
+  const bands = (canvas: SkCanvas) => {
+    bandAcross(page, 0, 0.12, 0, 1, header)(canvas);
+    if (footer) bandAcross(page, 0.88, 0.12, 0, 1, header)(canvas);
+  };
+  mockFiles.set('file:///cache/photo.jpg', photo(page, table, paper, undefined, bands));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, page, 20);
+}, 30000);
+
 it('falls back to the whole photo when there is no page to find', async () => {
   const surface = Skia.Surface.Make(W, H)!;
   surface.getCanvas().drawColor(Skia.Color('rgb(120,120,120)'));
@@ -393,7 +444,72 @@ function pixel(bytes: Uint8Array, x: number, y: number): number[] {
   return [...(image.readPixels(x, y, { width: 1, height: 1, colorType: 4, alphaType: 3 }) as Uint8Array).slice(0, 3)];
 }
 
-it('straightens the page inside the corners into an upright page as wide and tall as its longest sides', async () => {
+// Where a camera with focal length `f` px, centred on the photo, sees the corners of a page `ratio` times
+// as wide as tall, tipped back `pitch` and turned `yaw` radians.
+function seen(ratio: number, f: number, pitch: number, yaw: number): Quad {
+  return ([[-1, -1], [1, -1], [1, 1], [-1, 1]] as const).map(([sx, sy]) => {
+    const [x0, y0] = [(sx * ratio) / 2, sy / 2];
+    const [x1, z1] = [x0 * Math.cos(yaw), x0 * Math.sin(yaw)];
+    const [y, z] = [y0 * Math.cos(pitch) - z1 * Math.sin(pitch), y0 * Math.sin(pitch) + z1 * Math.cos(pitch) + 2];
+    return { x: W / 2 + (f * x1) / z, y: H / 2 + (f * y) / z };
+  }) as Quad;
+}
+
+it.each([
+  ['an A4 page tipped back and turned, its sides all converging', 210 / 297, 1000, 0.6, 0.3],
+  ['a landscape page tipped back, its top and bottom parallel', 297 / 210, 864, 0.55, 0],
+  ['a page turned, its left and right sides parallel', 0.75, 800, 0, 0.5],
+])('keeps the true shape of %s, without shrinking any side', async (_, ratio, f, pitch, yaw) => {
+  const corners = seen(ratio, f, pitch, yaw);
+  mockFiles.set('file:///cache/photo.jpg', photo(corners, 'rgb(92,70,52)'));
+
+  await cropPage('file:///cache/photo.jpg', corners, 'file:///cache/page.jpg');
+
+  const image = Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(mockFiles.get('file:///cache/page.jpg')!))!;
+  expect(Math.abs(image.width() / image.height() / ratio - 1)).toBeLessThan(0.02);
+  const [tl, tr, br, bl] = corners;
+  const length = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.hypot(a.x - b.x, a.y - b.y);
+  expect(image.width()).toBeGreaterThanOrEqual(Math.floor(Math.max(length(tl, tr), length(bl, br))));
+  expect(image.height()).toBeGreaterThanOrEqual(Math.floor(Math.max(length(tl, bl), length(tr, br))));
+}, 30000);
+
+it('keeps an A4 shape when 2 px of corner noise reads a much shorter focal length than the camera has', () => {
+  // Tipped back, the page's top and bottom stay parallel; the noise tilts them just past 1%.
+  const shift = [-2, 2, -2, 2];
+  const corners = seen(210 / 297, 0.72 * H, 0.4, 0).map((p, i) => ({ x: p.x + shift[i], y: p.y - shift[(i + 1) % 4] })) as Quad;
+
+  // Read unclamped, the focal length is under 0.4 of the camera's and the page 7% too wide.
+  expect(Math.abs(pageAspect(corners, W, H) / (210 / 297) - 1)).toBeLessThan(0.02);
+});
+
+it('keeps the photo file itself when the corners are the whole photo', async () => {
+  const bytes = photo(tilted, 'rgb(92,70,52)');
+  mockFiles.set('file:///cache/photo.jpg', bytes);
+
+  await cropPage('file:///cache/photo.jpg', wholePhoto, 'file:///cache/page.jpg');
+
+  expect(mockFiles.get('file:///cache/page.jpg')).toEqual(bytes);
+}, 30000);
+
+it('redraws a whole photo that carries EXIF, as a PDF would show its pixels sideways', async () => {
+  const plain = photo(tilted, 'rgb(92,70,52)');
+  // An EXIF block saying the pixels are turned a quarter (orientation 6).
+  const tiff = [0x4d, 0x4d, 0, 42, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0];
+  const app1 = [0xff, 0xe1, 0, 2 + 6 + tiff.length, ...[...'Exif'].map((c) => c.charCodeAt(0)), 0, 0, ...tiff];
+  const tagged = new Uint8Array([...plain.subarray(0, 2), ...app1, ...plain.subarray(2)]);
+  mockFiles.set('file:///cache/photo.jpg', tagged);
+  const source = Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(tagged))!;
+
+  const [w, h] = [source.width(), source.height()];
+  await cropPage('file:///cache/photo.jpg', [{ x: 0, y: 0 }, { x: w, y: 0 }, { x: w, y: h }, { x: 0, y: h }], 'file:///cache/page.jpg');
+
+  const page = mockFiles.get('file:///cache/page.jpg')!;
+  expect(page).not.toEqual(tagged);
+  const image = Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(page))!;
+  expect([image.width(), image.height()]).toEqual([w, h]);
+}, 30000);
+
+it('straightens the page inside the corners into an upright page', async () => {
   // A red mark by the page's top-left corner and a blue one by its bottom-right.
   const surface = Skia.Surface.Make(W, H)!;
   const canvas = surface.getCanvas();
@@ -411,10 +527,6 @@ it('straightens the page inside the corners into an upright page as wide and tal
 
   const page = mockFiles.get('file:///cache/page.jpg')!;
   const image = Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(page))!;
-  const bottom = Math.hypot(720 - 110, 1080 - 1010);
-  const right = Math.hypot(760 - 720, 200 - 1080);
-  expect(image.width()).toBe(Math.round(bottom));
-  expect(image.height()).toBe(Math.round(right));
   const [r1, g1, b1] = pixel(page, 50, 60);
   expect(r1).toBeGreaterThan(200);
   expect(g1 + b1).toBeLessThan(120);
