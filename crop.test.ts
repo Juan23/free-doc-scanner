@@ -254,6 +254,79 @@ function bandAcross(page: Quad, top: number, depth: number, left = 0, right = 1,
   };
 }
 
+// A band 15 per channel off the desk's colour, flush with the page's end, which the desk round the page spreads into (#116).
+it.each([
+  ['upright', upright, 0.53, 0],
+  ['tilted', tilted, 0.4, 0],
+  ['tilted', tilted, 0.53, 0.88],
+] as const)('gives a small %s page with a band near the desk\'s colour flush with its end the whole page or the whole photo', async (_, shape, k, top) => {
+  const small = shrunk(shape, k);
+  mockFiles.set('file:///cache/photo.jpg', photo(small, 'rgb(92,70,52)', undefined, undefined, bandAcross(small, top, 0.12, 0, 1, 'rgb(107,85,67)')));
+
+  const { corners } = await findPage('file:///cache/photo.jpg');
+
+  expect(Math.min(farthest(corners, small), farthest(corners, wholePhoto))).toBeLessThan(20);
+}, 30000);
+
+// The line search frames a large page whose band sets it apart from the desk too little for the patch's frame (#116).
+it.each([
+  ['upright', 0.9, 'head', 'rgb(92,70,52)', 'rgb(107,85,67)', upright],
+  ['tilted', 1, 'foot', 'rgb(92,70,52)', 'rgb(107,85,67)', tilted],
+  ['upright', 1, 'head', 'rgb(175,175,170)', 'rgb(150,150,150)', upright],
+  ['tilted', 0.9, 'foot', 'rgb(175,175,170)', 'rgb(150,150,150)', tilted],
+] as const)('gives a %s page at %s scale with a band flush with its %s on %s the whole page or the whole photo, not the paper beside the band', async (_, k, end, desk, band, shape) => {
+  const page = shrunk(shape, k);
+  mockFiles.set('file:///cache/photo.jpg', photo(page, desk, undefined, undefined, bandAcross(page, end === 'head' ? 0 : 0.88, 0.12, 0, 1, band)));
+
+  const { corners } = await findPage('file:///cache/photo.jpg');
+
+  expect(Math.min(farthest(corners, page), farthest(corners, wholePhoto))).toBeLessThan(20);
+}, 30000);
+
+// Lines of text along the page's own sides, in place of photo()'s level ones.
+function linesAlong(page: Quad) {
+  return (canvas: SkCanvas) => {
+    bandAcross(page, 0, 1, 0, 1, 'rgb(238,234,222)')(canvas);
+    for (let t = 0.12; t < 0.9; t += 0.045) bandAcross(page, t, 0.012, 0.12, 0.88, 'rgb(30,30,35)')(canvas);
+  };
+}
+
+// A strip on the desk along the page's foot, `gap` px past it, `thick` deep, from `from` to `to` of the foot's length.
+function stripPast(page: Quad, gap: number, thick: number, from: number, to: number, colour: string) {
+  const [, , br, bl] = page;
+  const len = Math.hypot(br.x - bl.x, br.y - bl.y);
+  const [ux, uy] = [(br.x - bl.x) / len, (br.y - bl.y) / len];
+  const p = (t: number, d: number) => ({ x: bl.x + ux * len * t - uy * d, y: bl.y + uy * len * t + ux * d });
+  return (canvas: SkCanvas) => {
+    const strip = Skia.Path.Polygon([p(from, gap), p(to, gap), p(to, gap + thick), p(from, gap + thick)], true);
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color(colour));
+    canvas.drawPath(strip, paint);
+    for (const o of [strip, paint]) o.dispose();
+  };
+}
+
+// An edge along the foot that stops short of the page's sides is no band's far edge, which runs corner to corner.
+it.each([
+  ['a cable', upright, 0.7, 'rgb(92,70,52)', 60, 8, 0.05, 0.95, 'rgb(20,20,20)'],
+  ['a cable', tilted, 0.95, 'rgb(50,50,55)', 110, 8, 0.05, 0.95, 'rgb(20,20,20)'],
+  ['a pencil', upright, 0.45, 'rgb(50,50,55)', 110, 10, 0.1, 0.9, 'rgb(220,180,40)'],
+  ['a ruler', tilted, 0.45, 'rgb(92,70,52)', 60, 60, 0.1, 0.95, 'rgb(200,200,195)'],
+] as const)('finds a page with %s on the desk along its foot', async (_, shape, k, desk, gap, thick, from, to, colour) => {
+  const page = shrunk(shape, k);
+  mockFiles.set('file:///cache/photo.jpg', photo(page, desk, undefined, stripPast(page, gap, thick, from, to, colour)));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, page, 20);
+}, 30000);
+
+// The desk-colour check keeps the frame of a small page with a cable on a pale desk along its foot.
+it('finds a small page with a cable on a pale desk along its foot', async () => {
+  const page = shrunk(upright, 0.45);
+  mockFiles.set('file:///cache/photo.jpg', photo(page, 'rgb(175,175,170)', undefined, stripPast(page, 60, 8, 0.05, 0.95, 'rgb(20,20,20)'), linesAlong(page)));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, page, 20);
+}, 30000);
+
 describe.each([
   ['upright', 'a brown desk', upright, 'rgb(92,70,52)'],
   ['tilted', 'a brown desk', tilted, 'rgb(92,70,52)'],
@@ -337,6 +410,21 @@ it.each([30, 60, 100])('finds a page on a dark desk with a second white sheet %i
   expectNear((await findPage('file:///cache/photo.jpg')).corners, tilted, GAP_SLACK);
 }, 30000);
 
+// Its paper runs on past the foot, as past a frame across the page, but in another white.
+it('finds a page with a second, whiter sheet sticking out from under its foot', async () => {
+  const page = shrunk(tilted, 0.7);
+  const below = shrunk(page, 0.8).map(({ x, y }) => ({ x, y: y + 0.3 * (page[3].y - page[0].y) })) as Quad;
+  const sheet = (canvas: SkCanvas) => {
+    const [path, paint] = [Skia.Path.Polygon(below, true), Skia.Paint()];
+    paint.setColor(Skia.Color('rgb(250,250,250)'));
+    canvas.drawPath(path, paint);
+    for (const o of [path, paint]) o.dispose();
+  };
+  mockFiles.set('file:///cache/photo.jpg', photo(page, 'rgb(92,70,52)', undefined, sheet, linesAlong(page)));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, page, 20);
+}, 30000);
+
 it('finds a page on a dark desk beside a white sheet with a 20 px shadow between them', async () => {
   mockFiles.set('file:///cache/photo.jpg', photo(upright, 'rgb(92,70,52)', undefined, sheetBeside(upright, 20, SHADOW)));
 
@@ -401,6 +489,33 @@ it('gives the whole photo, not a frame whose foot lies across the page with ligh
   mockFiles.set('file:///cache/photo.jpg', photo(upright, 'rgb(92,70,52)', undefined, whiteTable, shadow));
 
   expect((await findPage('file:///cache/photo.jpg')).corners).toEqual(wholePhoto);
+}, 30000);
+
+// DocUNet 19_1: a crease down the page is the only straight line on that side, as the paper past it lies on a pale table of another hue (#85).
+it('gives the whole page or the whole photo, not a frame whose side runs down a crease with the page past it', async () => {
+  const wide: Quad = [
+    { x: 100, y: 150 },
+    { x: 850, y: 150 },
+    { x: 850, y: 1050 },
+    { x: 100, y: 1050 },
+  ];
+  const paleTable = (canvas: SkCanvas) => {
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color('rgb(180,250,255)'));
+    canvas.drawRect(Skia.XYWHRect(0, 0, 240, H), paint);
+    paint.dispose();
+  };
+  const crease = (canvas: SkCanvas) => {
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color('rgb(120,118,112)'));
+    canvas.drawRect(Skia.XYWHRect(270, 0, 5, H), paint);
+    paint.dispose();
+  };
+  mockFiles.set('file:///cache/photo.jpg', photo(wide, 'rgb(92,70,52)', undefined, paleTable, crease));
+
+  const { corners } = await findPage('file:///cache/photo.jpg');
+
+  expect(Math.min(farthest(corners, wide), farthest(corners, wholePhoto))).toBeLessThan(20);
 }, 30000);
 
 it.each([
