@@ -6,7 +6,7 @@ import {
   AlphaType, BlurStyle, ColorType, ImageFormat, Skia, type SkImage,
 } from '@shopify/react-native-skia';
 
-import { cleanPages, defaultFilter, filterImage, filterPreviews, pageFilter, setDefaultFilter, sharedFilter, shrunkCopy, strengthPreview, type Filter } from './clean';
+import { cleanPages, defaultFilter, filterImage, filterPreviews, markDarkBackground, pageFilter, setDefaultFilter, sharedFilter, shrunkCopy, strengthPreview, type Filter } from './clean';
 import { rotatePage } from './upright';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
@@ -417,6 +417,20 @@ it('leaves a page it cannot read as it is, cleans the rest, and counts the failu
 
 function readPixels(image: SkImage): Uint8Array {
   return image.readPixels(0, 0, { width: image.width(), height: image.height(), colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul }) as Uint8Array;
+}
+
+// A fixed-seed random generator in [0, 1), so fixtures repeat.
+function seededRandom(seed: number): () => number {
+  return () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed / 2 ** 32;
+  };
+}
+
+// The mean of a pixel's colour channels in RGBA bytes W wide.
+function channelMean(px: Uint8Array, x: number, y: number): number {
+  const i = (y * W + x) * 4;
+  return (px[i] + px[i + 1] + px[i + 2]) / 3;
 }
 
 function decode(bytes: Uint8Array): SkImage {
@@ -1381,4 +1395,708 @@ describe('paper around text on a large photo', () => {
     photo.dispose();
     expect(shares.map((s) => s > WHITE_SHARE)).toEqual(LINES.map(() => true));
   }, 120000);
+});
+
+describe('dark background', () => {
+  type Rect = [number, number, number, number];
+  const DARK_TABLE: [number, number, number] = [56, 48, 44];
+  const PAGE_20_PERCENT: Rect = [380, 133, 180, 534];
+
+  // A noisy, slightly coloured table with dust, the page on it (rgb 235,232,224) with dark print, and
+  // optionally a dark picture on the page with print on it.
+  function pageOnTable(table: [number, number, number], page: Rect, picture?: Rect): SkImage {
+    const rgba = new Uint8Array(W * H * 4);
+    const rand = seededRandom(98765);
+    const byte = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
+    for (let i = 0; i < W * H * 4; i += 4) {
+      const grain = (rand() - 0.5) * 24;
+      const dust = rand() < 0.02 ? 45 : 0;
+      for (let c = 0; c < 3; c++) rgba[i + c] = byte(table[c] + grain + (rand() - 0.5) * 14 + dust);
+      rgba[i + 3] = 255;
+    }
+    const bg = Skia.Image.MakeImage(
+      { width: W, height: H, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul },
+      Skia.Data.fromBytes(rgba),
+      W * 4,
+    )!;
+    const surface = Skia.Surface.Make(W, H)!;
+    const canvas = surface.getCanvas();
+    canvas.drawImage(bg, 0, 0);
+    bg.dispose();
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color('rgb(235,232,224)'));
+    canvas.drawRect(Skia.XYWHRect(...page), paint);
+    paint.setColor(Skia.Color('rgb(35,35,40)'));
+    const [px, py, pw, ph] = page;
+    // Rows stop 160 px above the page's foot, where a picture may sit.
+    for (let y = py + 67; y < py + ph - 160; y += 60) canvas.drawRect(Skia.XYWHRect(px + 20, y, pw - 40, 12), paint);
+    if (picture) {
+      paint.setColor(Skia.Color('rgb(72,76,82)'));
+      canvas.drawRect(Skia.XYWHRect(...picture), paint);
+      paint.setColor(Skia.Color('rgb(20,22,26)'));
+      canvas.drawRect(Skia.XYWHRect(picture[0] + 10, picture[1] + 20, picture[2] - 20, 10), paint);
+      canvas.drawRect(Skia.XYWHRect(picture[0] + 10, picture[1] + 60, picture[2] - 20, 10), paint);
+    }
+    const bytes = surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 92);
+    paint.dispose();
+    surface.dispose();
+    return decode(bytes);
+  }
+
+  // Well-framed page with dark text, a dark picture (360 x 240 px, so 300 x 200 px on a 500 px copy)
+  // and a dark band with light text (60 px, 50 on a 500 px copy), and a dark picture bleeding off the
+  // top right corner that is 11.7% of the frame.
+  function pageWithDarkPicture(): SkImage {
+    const surface = Skia.Surface.Make(W, H)!;
+    const canvas = surface.getCanvas();
+    canvas.drawColor(Skia.Color('rgb(235,228,210)'));
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color('rgb(35,35,40)'));
+    for (const y of [80, 130]) canvas.drawRect(Skia.XYWHRect(60, y, 320, 12), paint);
+    for (const y of [620, 670]) canvas.drawRect(Skia.XYWHRect(60, y, 480, 12), paint);
+    paint.setColor(Skia.Color('rgb(60,64,70)'));
+    canvas.drawRect(Skia.XYWHRect(60, 520, 480, 60), paint);
+    paint.setColor(Skia.Color('rgb(235,228,210)'));
+    canvas.drawRect(Skia.XYWHRect(80, 544, 440, 12), paint);
+    paint.setColor(Skia.Color('rgb(72,76,82)'));
+    canvas.drawRect(Skia.XYWHRect(120, 300, 360, 200), paint);
+    canvas.drawRect(Skia.XYWHRect(400, 0, 200, 280), paint);
+    paint.setColor(Skia.Color('rgb(20,22,26)'));
+    for (let y = 325; y < 480; y += 26) canvas.drawRect(Skia.XYWHRect(140, y, 320, 10), paint);
+    for (let y = 40; y < 260; y += 50) canvas.drawRect(Skia.XYWHRect(420, y, 160, 10), paint);
+    const bytes = surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 95);
+    paint.dispose();
+    surface.dispose();
+    return decode(bytes);
+  }
+
+  // Filtered `photo` (which this frees); the table's share of white pixels and mean colour spread
+  // over x < `tableWidth`, and the output's pixels.
+  function cleanedTable(photo: SkImage, tableWidth: number, filter: Filter = { kind: 'clean', strength: 1 }) {
+    const out = filterImage(photo, filter);
+    const px = readPixels(out);
+    let white = 0;
+    let spreadSum = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < tableWidth; x++) {
+        const i = (y * W + x) * 4;
+        if (0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2] >= 245) white++;
+        spreadSum += Math.max(px[i], px[i + 1], px[i + 2]) - Math.min(px[i], px[i + 1], px[i + 2]);
+      }
+    }
+    out.dispose();
+    photo.dispose();
+    return { white: white / (H * tableWidth), spread: spreadSum / (H * tableWidth), px };
+  }
+
+  it('turns a dark, noisy, slightly coloured background near white with little colour spread and keeps print', () => {
+    const { white, spread, px } = cleanedTable(pageOnTable(DARK_TABLE, PAGE_20_PERCENT), 360);
+    expect(white).toBeGreaterThan(0.98);
+    expect(spread).toBeLessThan(2);
+    expect(channelMean(px, 470, 206)).toBeLessThan(60);
+    expect(channelMean(px, 470, 326)).toBeLessThan(60);
+    expect(channelMean(px, 470, 230)).toBeGreaterThan(245);
+  }, 30000);
+
+  it('whitens a dark background and keeps print at Light, Strong and Grayscale', () => {
+    for (const filter of [
+      { kind: 'clean', strength: 0 },
+      { kind: 'clean', strength: 2 },
+      { kind: 'gray', strength: 1 },
+    ] as Filter[]) {
+      const { white, spread, px } = cleanedTable(pageOnTable(DARK_TABLE, PAGE_20_PERCENT), 360, filter);
+      expect(white).toBeGreaterThan(0.98);
+      expect(spread).toBeLessThan(2);
+      expect(channelMean(px, 470, 206)).toBeLessThan(60);
+      expect(channelMean(px, 470, 230)).toBeGreaterThan(245);
+    }
+  }, 60000);
+
+  it('keeps print inside a dark picture on the page', () => {
+    const { px } = cleanedTable(pageOnTable(DARK_TABLE, PAGE_20_PERCENT, [400, 560, 140, 100]), 360);
+    expect(channelMean(px, 470, 585)).toBeLessThan(80);
+    expect(channelMean(px, 470, 625)).toBeLessThan(80);
+  }, 30000);
+
+  // A 180 px strip, deeper than a bent page edge can be.
+  it('whitens a background that covers 37% of the frame', () => {
+    const { white } = cleanedTable(pageOnTable(DARK_TABLE, [180, 20, 400, 760]), 150);
+    expect(white).toBeGreaterThan(0.98);
+  }, 30000);
+
+  // Like a receipt running off the photo's right edge, with the table above, below and to its left.
+  it('whitens the table round a page that runs off the frame\'s edge', () => {
+    const { white, spread, px } = cleanedTable(pageOnTable(DARK_TABLE, [300, 100, 300, 600]), 280);
+    expect(white).toBeGreaterThan(0.98);
+    expect(spread).toBeLessThan(2);
+    expect(channelMean(px, 450, 173)).toBeLessThan(60);
+    expect(channelMean(px, 450, 200)).toBeGreaterThan(245);
+  }, 30000);
+
+  // A page on the table with a dark green header, a navy band across it and a near-black footer, each
+  // holding a row of light text: printed colours, unlike the table's. Each band is probed beside the
+  // paper, where Clean keeps even a band it does not mark.
+  it('keeps a dark header, footer and band across the page, each with light text', () => {
+    const photo = pageOnTable(DARK_TABLE, [150, 100, 300, 600]);
+    const surface = Skia.Surface.Make(W, H)!;
+    const canvas = surface.getCanvas();
+    canvas.drawImage(photo, 0, 0);
+    photo.dispose();
+    const paint = Skia.Paint();
+    // Colour, top and the row beside the paper; the rows of print sit clear of each band.
+    const bands: [string, number, number][] = [['rgb(40,80,50)', 100, 132], ['rgb(30,40,90)', 303, 311], ['rgb(25,25,28)', 660, 668]];
+    for (const [colour, top] of bands) {
+      paint.setColor(Skia.Color(colour));
+      canvas.drawRect(Skia.XYWHRect(150, top, 300, 40), paint);
+      paint.setColor(Skia.Color('rgb(235,232,224)'));
+      canvas.drawRect(Skia.XYWHRect(180, top + 15, 240, 10), paint);
+    }
+    const banded = decode(surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 92));
+    paint.dispose();
+    surface.dispose();
+    const { white, px } = cleanedTable(banded, 130);
+    expect(white).toBeGreaterThan(0.98);
+    for (const [, top, beside] of bands) {
+      expect(channelMean(px, 300, beside)).toBeLessThan(110);
+      expect(channelMean(px, 300, top + 20) - channelMean(px, 300, beside)).toBeGreaterThan(60);
+    }
+  }, 30000);
+
+  // A magazine photo with light captions, deeper than print along a page's edge reaches (a quarter of the page's width).
+  it.each([
+    ['ends on the table', 600, [555, 655]],
+    ['runs off the photo', 700, [555, 755]],
+  ] as const)('keeps a dark picture bleeding off the foot of a page that %s, however deep', (_, pageHeight, captions) => {
+    const photo = pageOnTable(DARK_TABLE, [150, 100, 300, pageHeight]);
+    const surface = Skia.Surface.Make(W, H)!;
+    const canvas = surface.getCanvas();
+    canvas.drawImage(photo, 0, 0);
+    photo.dispose();
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color('rgb(30,40,90)'));
+    canvas.drawRect(Skia.XYWHRect(150, 540, 300, pageHeight - 440), paint);
+    paint.setColor(Skia.Color('rgb(235,232,224)'));
+    for (const top of captions) canvas.drawRect(Skia.XYWHRect(180, top, 240, 10), paint);
+    const pictured = decode(surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 92));
+    paint.dispose();
+    surface.dispose();
+    const { white, px } = cleanedTable(pictured, 130);
+    expect(white).toBeGreaterThan(0.98);
+    for (const top of captions) expect(channelMean(px, 300, top + 5) - channelMean(px, 300, top - 7)).toBeGreaterThan(60);
+  }, 30000);
+
+  it('whitens a table at 0.32 of the paper', () => {
+    expect(cleanedTable(pageOnTable([85, 73, 67], PAGE_20_PERCENT), 360).white).toBeGreaterThan(0.98);
+  }, 30000);
+
+  // Like a black book cover photographed on a white table: the table is the frame's paper.
+  it('keeps light text on a dark page that joins the border', () => {
+    const surface = Skia.Surface.Make(W, H)!;
+    const canvas = surface.getCanvas();
+    canvas.drawColor(Skia.Color('rgb(40,38,36)'));
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color('rgb(235,232,224)'));
+    canvas.drawRect(Skia.XYWHRect(0, 700, W, 100), paint);
+    paint.setColor(Skia.Color('rgb(200,190,150)'));
+    for (let y = 100; y < 650; y += 60) canvas.drawRect(Skia.XYWHRect(60, y, 480, 10), paint);
+    const photo = decode(surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 95));
+    paint.dispose();
+    surface.dispose();
+    const out = filterImage(photo, { kind: 'clean', strength: 1 });
+    const px = readPixels(out);
+    // Each text row still stands out from the page right beside it.
+    for (let y = 100; y < 650; y += 60) expect(channelMean(px, 300, y + 5) - channelMean(px, 300, y - 4)).toBeGreaterThan(60);
+    out.dispose();
+    photo.dispose();
+  }, 30000);
+
+  it('keeps a dark picture inside a well-framed page and one bleeding off its corner', () => {
+    const photo = pageWithDarkPicture();
+    const out = filterImage(photo, { kind: 'clean', strength: 1 });
+    const px = readPixels(out);
+    for (const y of [330, 382, 434]) expect(channelMean(px, 300, y)).toBeLessThan(80);
+    for (const y of [45, 95, 145, 195, 245]) expect(channelMean(px, 500, y)).toBeLessThan(80);
+    expect(channelMean(px, 300, 530)).toBeLessThan(80);
+    expect(channelMean(px, 300, 86)).toBeLessThan(60);
+    expect(channelMean(px, 300, 200)).toBeGreaterThan(245);
+    out.dispose();
+    photo.dispose();
+  }, 30000);
+
+  it('grows the background 3 px into a page edge', () => {
+    const w = 60;
+    const h = 20;
+    const fine = new Uint8Array(w * h * 4);
+    for (let i = 0; i < w * h; i++) {
+      const x = i % w;
+      const y = (i - x) / w;
+      const page = x < w - 1 && y > 0 && y < h - 1;
+      fine.fill(!page || x < 30 ? 30 : x < 34 ? 150 : 230, i * 4, i * 4 + 3);
+    }
+    const out = new Uint8Array(w * h);
+    markDarkBackground(out, fine, w, h);
+    expect([29, 30, 31, 32, 33].map((x) => out[10 * w + x])).toEqual([255, 255, 255, 255, 0]);
+  });
+
+  function rectMask(w: number, h: number, dark: (x: number, y: number) => boolean, level: number, light = 230) {
+    const fine = new Uint8Array(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        fine.fill(dark(x, y) ? level : light, (y * w + x) * 4, (y * w + x) * 4 + 3);
+      }
+    }
+    const out = new Uint8Array(w * h);
+    markDarkBackground(out, fine, w, h);
+    return out;
+  }
+
+  // Dark everywhere but a light page from column `left` to one short of the right border, a row in from top and bottom.
+  const besidePage = (w: number, h: number, left: number) => (x: number, y: number) => x < left || x === w - 1 || y === 0 || y === h - 1;
+
+  it('pins the half-paper brightness cutoff', () => {
+    expect(rectMask(40, 20, besidePage(40, 20, 20), 114)[10 * 40 + 10]).toBe(255);
+    expect(rectMask(40, 20, besidePage(40, 20, 20), 115)[10 * 40 + 10]).toBe(0);
+  });
+
+  // 2454 and 2552 of 10000 pixels outside the page.
+  it('pins the quarter-frame area gate', () => {
+    expect(Math.max(...rectMask(100, 100, besidePage(100, 100, 22), 30))).toBe(0);
+    expect(rectMask(100, 100, besidePage(100, 100, 23), 30)[50 * 100 + 10]).toBe(255);
+  });
+
+  it('marks nothing when the dark lies on one side of the light only', () => {
+    expect(Math.max(...rectMask(100, 100, (x) => x < 40, 30))).toBe(0);
+  });
+
+  // A dark band across the page's top joins the table, with light letters reaching down into the page.
+  it('keeps a dark band on the page inside the page outline', () => {
+    const inPage = (x: number, y: number) => x >= 30 && x < 70 && y >= 30 && y < 80;
+    const letter = (x: number, y: number) => y >= 34 && [35, 45, 55].some((l) => x >= l && x < l + 4);
+    const out = rectMask(100, 100, (x, y) => !inPage(x, y) || (y < 40 && !letter(x, y)), 30);
+    expect(out[38 * 100 + 41]).toBe(0);
+    expect(out[10 * 100 + 10]).toBe(255);
+  });
+
+  it('leaves a small page under 10% of the frame unchanged', () => {
+    // 9% bright paper leaves the 90th percentile on the dark background.
+    expect(Math.max(...rectMask(100, 100, (x, y) => !(x >= 35 && x < 65 && y >= 35 && y < 65), 30))).toBe(0);
+  });
+
+  type Place = 'inside' | 'off' | 'near' | 'touch' | 'corner' | 'offBoth';
+  type Bleed = {
+    tilt?: number;
+    widen?: number;
+    // Px each side flares out by 345 px below the page's top, growing with the square of the depth: a foot curling toward the camera.
+    curl?: number;
+    place: Place;
+    picture?: 'full' | 'left' | 'middle';
+    depth?: number;
+    colour?: number[];
+    carpet?: boolean;
+    // Red and blue stripes 20 px wide, upright.
+    stripes?: boolean;
+    // A second colour over part of the picture.
+    accent?: ['right' | 'frame' | 'band' | 'top' | 'inset' | 'strip', number[]];
+    // The table right of the page's middle is this many times darker.
+    step?: number;
+    // The table's colour at (x, y), u across and v down the page from its top left corner, in place of brown, carpet or stripes.
+    table?: (x: number, y: number, u: number, v: number) => number[];
+    // A band this deep along the page's left side, and for 'corner' along its top too.
+    band?: ['corner' | 'side', number, number[]];
+    // An object on the table against the page's left or right side, this long from 180 px down it.
+    object?: ['left' | 'right', number, number[]];
+    // This colour 20 px down both sides of the photo, as light wood, which is not scored.
+    rim?: number[];
+  };
+  const NAVY = [30, 40, 90];
+  const NEAR_BLACK = [20, 20, 22];
+  const DARK_GREEN = [40, 80, 50];
+  const DARK_RED = [100, 25, 25];
+  const RED_STRIPE = [90, 35, 35];
+  const BLUE_STRIPE = [35, 40, 95];
+
+  const grainAt = (x: number, y: number) => ((x * 7919 + y * 104729) % 23) - 11;
+  const brownAt = (x: number, y: number) => [70, 60, 55].map((c) => c + grainAt(x, y));
+  const stripes = (width: number, odd = RED_STRIPE, even = BLUE_STRIPE) => (x: number, y: number) =>
+    (Math.floor(x / width) % 2 ? odd : even).map((c) => c + grainAt(x, y));
+  const brownStripes = (x: number, y: number) => brownAt(x, y).map((c) => Math.round(Math.floor(x / 20) % 2 ? c / 1.6 : c));
+  const carpetAt = (x: number, y: number) => [60, 60, 63].map((c) => c + ((x * 7919 + y * 104729) % 41) - 20 + (((x >> 2) * 31 + (y >> 2) * 17) % 9) - 4);
+
+  // Picture, object and table are scored away from their edges (4, 4 and 10 px), where the 3 px grow and soft colour edges belong to neither.
+  function bleedingPicture(s: Bleed) {
+    const w = 500;
+    const h = 667;
+    const turn = ((s.tilt ?? 0) * Math.PI) / 180;
+    const [cos, sin] = [Math.cos(turn), Math.sin(turn)];
+    const widen = (v: number) => ((s.widen ?? 0) * v) / 547 + (s.curl ?? 0) * (v / 345) ** 2;
+    const top = s.place === 'offBoth' ? -300 : 0;
+    const end = s.place === 'inside' ? 430 : 900;
+    let middle = 250;
+    const toPage = (x: number, y: number) => [100 + (x - middle) * cos + (y - 120) * sin, (y - 120) * cos - (x - middle) * sin];
+    const onPage = ([u, v]: number[]) => v >= top && v <= end && u >= -widen(v) && u <= 200 + widen(v);
+    if (s.place === 'near' || s.place === 'touch' || s.place === 'corner') {
+      let left = w;
+      for (let y = 0; y < h; y++) for (let x = -400; x < left; x++) if (onPage(toPage(x, y))) left = x;
+      middle += { near: 2, touch: 0, corner: -40 }[s.place] - left;
+    }
+    const pictureTop = s.place === 'inside' ? end - (s.depth ?? 200) : (546 - (s.depth ?? 200)) / cos;
+    const fine = new Uint8Array(w * h * 4);
+    const role = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const [u, v] = toPage(x, y);
+        const page = onPage([u, v]);
+        const [a, b] = s.picture === 'left' ? [-widen(v), 100] : s.picture === 'middle' ? [67, 133] : [-widen(v), 200.5 + widen(v)];
+        const inPicture = page && !!s.picture && v >= pictureTop && u >= a && u < b;
+        const shade = s.step && x >= middle ? 1 / s.step : 1;
+        const tableColour = s.table ? s.table(x, y, u, v) : s.stripes ? stripes(20)(x, y) : s.carpet ? carpetAt(x, y) : brownAt(x, y);
+        const table = tableColour.map((c) => Math.round(c * shade));
+        const [bandKind, bandDepth = 0, bandColour] = s.band ?? [];
+        const inBand = page && !!s.band && (u < -widen(v) + bandDepth || (bandKind === 'corner' && v < top + bandDepth));
+        const [objectAt, objectLength = 0, objectColour] = s.object ?? [];
+        const inObject = (margin: number) =>
+          !!s.object && v >= 180 - margin && v < 180 + objectLength + margin && (objectAt === 'left' ? u < -widen(v) + margin : u > 200 + widen(v) - margin);
+        const [kind, accent] = s.accent ?? [];
+        const inAccent = {
+          right: u >= 100,
+          frame: v < pictureTop + 3 || u < a + 3 || u >= b - 3,
+          band: v < pictureTop + 10,
+          top: v < pictureTop + 60,
+          inset: Math.abs(u - 100) < 20 && Math.abs(v - pictureTop - 100) < 20,
+          strip: u >= b - 20,
+          none: false,
+        }[kind ?? 'none'];
+        const ink = inAccent ? accent! : (s.colour ?? NAVY);
+        const rimOut = (margin: number) => !!s.rim && (x < 20 + margin || x >= w - 20 - margin);
+        const off = rimOut(0) ? s.rim! : inObject(0) ? objectColour! : table;
+        fine.set([...(inBand ? bandColour! : inPicture ? ink : page ? [233, 230, 222] : off), 255], (y * w + x) * 4);
+        if (inPicture && v >= pictureTop + 4 && v <= end - 4 && u >= a + 4 && u < b - 4) role[y * w + x] = 1;
+        if (!page && !inObject(10) && !rimOut(10) && (v < top - 10 || v > end + 10 || u < -widen(v) - 10 || u > 210 + widen(v))) role[y * w + x] = 2;
+        if (!page && inObject(-4)) role[y * w + x] = 3;
+      }
+    }
+    const out = new Uint8Array(w * h);
+    markDarkBackground(out, fine, w, h);
+    const share = (r: number) => {
+      let all = 0;
+      let marked = 0;
+      role.forEach((v, i) => v === r && (all++, (marked += out[i] ? 1 : 0)));
+      return marked / all;
+    };
+    return { picture: s.picture ? share(1) : 0, table: share(2), object: s.object ? share(3) : 0 };
+  }
+
+  // Where the page reaches a corner of the photo the table may not show on two opposite sides, so only the picture is checked.
+  it.each([
+    [{ place: 'inside', picture: 'full', colour: NEAR_BLACK, carpet: true }],
+    [{ place: 'inside', tilt: 5, picture: 'left', depth: 100, colour: DARK_GREEN, carpet: true }],
+    [{ place: 'inside', widen: 8, picture: 'middle', depth: 100, colour: NEAR_BLACK }],
+    [{ place: 'off', picture: 'full', depth: 30 }],
+    [{ place: 'off', picture: 'left', depth: 100, colour: NEAR_BLACK, carpet: true }],
+    [{ place: 'off', tilt: 0.6, picture: 'full', depth: 100, colour: DARK_GREEN }],
+    [{ place: 'off', tilt: 2, picture: 'left' }],
+    [{ place: 'off', tilt: 5, picture: 'full', colour: NEAR_BLACK, carpet: true }],
+    [{ place: 'off', widen: 8, picture: 'full' }],
+    [{ place: 'off', picture: 'full', accent: ['right', DARK_GREEN] }],
+    [{ place: 'off', picture: 'full', curl: 16 }],
+    [{ place: 'off', picture: 'full', curl: 20 }],
+    [{ place: 'inside', picture: 'full', depth: 100, colour: NEAR_BLACK, stripes: true }],
+    [{ place: 'near', tilt: 0.6, picture: 'middle', carpet: true }],
+    [{ place: 'near', widen: 8, picture: 'left', colour: DARK_GREEN, carpet: true }],
+    [{ place: 'touch', tilt: 2, picture: 'full', colour: NEAR_BLACK }],
+    [{ place: 'touch', picture: 'full' }],
+    [{ place: 'corner', tilt: 5, picture: 'full', depth: 100 }],
+    [{ place: 'corner', widen: 8, picture: 'left', colour: DARK_GREEN }],
+    [{ place: 'offBoth', tilt: 2, picture: 'full', colour: DARK_GREEN }],
+    [{ place: 'offBoth', widen: 8, picture: 'left', depth: 100, colour: NEAR_BLACK, carpet: true }],
+    [{ place: 'inside', tilt: 5 }],
+    [{ place: 'off', tilt: 2, carpet: true }],
+    [{ place: 'near', widen: 8 }],
+    [{ place: 'offBoth', tilt: 0.6 }],
+  ] as [Bleed][])('keeps a dark picture bleeding off a page and whitens the table round it: %j', (scene) => {
+    const { picture, table } = bleedingPicture(scene);
+    if (scene.picture) expect(picture).toBeLessThan(0.1);
+    if (scene.place !== 'touch' && scene.place !== 'corner') expect(table).toBeGreaterThan(0.95);
+  });
+
+  it.each([
+    [{ place: 'off', picture: 'full', accent: ['frame', NEAR_BLACK] }],
+    [{ place: 'off', tilt: 2, picture: 'full', accent: ['band', DARK_GREEN] }],
+    [{ place: 'off', widen: 8, picture: 'full', colour: NEAR_BLACK, carpet: true, accent: ['top', DARK_GREEN] }],
+    [{ place: 'off', picture: 'full', accent: ['inset', DARK_RED] }],
+    [{ place: 'offBoth', tilt: -5, picture: 'full', depth: 100, colour: NEAR_BLACK, accent: ['strip', NAVY] }],
+    [{ place: 'inside', step: 2 }],
+    [{ place: 'off', step: 3, carpet: true }],
+    [{ place: 'near', widen: 8, step: 1.6 }],
+  ] as [Bleed][])('keeps every colour of a picture and whitens a table shaded through the page: %j', (scene) => {
+    const { picture, table } = bleedingPicture(scene);
+    if (scene.picture) expect(picture).toBeLessThan(0.02);
+    expect(table).toBeGreaterThan(0.95);
+  });
+
+  // A band 40 px deep round the page's top left corner, past the reach of print along one side.
+  it.each([
+    ['keeps a dark band round a corner of the page', brownAt, NAVY],
+    ['keeps a green band round a corner of the page on brown stripes, every other one 1.6 times darker', brownStripes, DARK_GREEN],
+    ['keeps a black band round a corner of the page on red and blue stripes 20 px wide', stripes(20), NEAR_BLACK],
+    ['keeps a green band round a corner of the page on red and blue stripes 20 px wide', stripes(20), DARK_GREEN],
+    ['keeps a black band round a corner of the page on red and blue stripes 40 px wide', stripes(40), NEAR_BLACK],
+    ['keeps a green band round a corner of the page on red and blue stripes 40 px wide', stripes(40), DARK_GREEN],
+    ['whitens a table of red and blue stripes 20 px wide', stripes(20), null],
+    ['whitens a table of brown stripes 20 px wide, every other one 1.6 times darker', brownStripes, null],
+    ['whitens a table of red and blue stripes 40 px wide', stripes(40), null],
+    ['whitens a table whose half beside the page is a checked cloth', (x: number, y: number) => (x < 250 ? brownAt(x, y) : ((x / 40) ^ (y / 40)) & 1 ? [90, 30, 30] : [30, 30, 70]), null],
+    // Blocks too uneven to start a surface, so the half is dark the table turns away.
+    ['whitens a table whose half beside the page is dark blocks of many colours', (x: number, y: number) => {
+      const k = (Math.floor(x / 5) * 7919 + Math.floor(y / 5) * 104729) % 97;
+      return x < 250 ? brownAt(x, y) : [30 + (k % 7) * 9, 25 + ((k >> 1) % 5) * 10, 30 + ((k >> 2) % 6) * 9];
+    }, null],
+  ] as const)('%s', (_, table, band) => {
+    const w = 500;
+    const h = 667;
+    const fine = new Uint8Array(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const page = x >= 150 && x < 350 && y >= 120 && y < 550;
+        const colour = page && band && (x < 190 || y < 160) ? band : page ? [233, 230, 222] : table(x, y);
+        fine.set([...colour, 255], (y * w + x) * 4);
+      }
+    }
+    const out = new Uint8Array(w * h);
+    markDarkBackground(out, fine, w, h);
+    // The band's left arm 4 px in from its edges, and the table 10 px from the page.
+    const share = (scored: (x: number, y: number) => boolean) => {
+      let marked = 0;
+      let all = 0;
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          if (!scored(x, y)) continue;
+          all++;
+          if (out[y * w + x]) marked++;
+        }
+      }
+      return marked / all;
+    };
+    if (band) expect(share((x, y) => x >= 154 && x < 186 && y >= 124 && y < 546)).toBe(0);
+    expect(share((x, y) => x < 140 || x >= 360 || y < 110 || y >= 560)).toBeGreaterThan(0.95);
+  });
+
+  it.each([
+    ['whitens the table above and below a page as wide as the photo', [70, 60, 55], 0.95],
+    ['keeps a picture bleeding off the foot of a page as wide as the photo', [30, 40, 90], 0],
+  ] as const)('%s', (_, below, least) => {
+    const w = 500;
+    const h = 667;
+    const fine = new Uint8Array(w * h * 4);
+    for (let p = 0; p < w * h; p++) {
+      const y = Math.floor(p / w);
+      const grain = ((p * 7919) % 23) - 11;
+      const colour = y < 120 ? [70 + grain, 60 + grain, 55 + grain] : y <= 466 ? [233, 230, 222] : below.map((c) => c + (below[0] === 70 ? grain : 0));
+      fine.set([...colour, 255], p * 4);
+    }
+    const out = new Uint8Array(w * h);
+    markDarkBackground(out, fine, w, h);
+    const marked = (top: number, bottom: number) => out.slice(top * w, bottom * w).filter(Boolean).length / ((bottom - top) * w);
+    expect(marked(0, 110)).toBeGreaterThanOrEqual(least);
+    if (least) expect(marked(477, h)).toBeGreaterThan(least);
+    else expect(marked(471, h)).toBe(0);
+  });
+
+  // As in DocUNet 22_1: light wood holds the photo's top corners, so the blanket above the page holds none.
+  const navy = (k: number) => [32, 40, 80].map((c) => Math.round(c * k));
+  it.each([
+    ['in one shade', () => navy(1), () => navy(1)],
+    ['lit unevenly, in two parts', (x: number) => navy(x < 250 ? 1 / Math.sqrt(1.7) : Math.sqrt(1.7)), () => navy(1)],
+    ['in red and blue stripes 20 px wide', stripes(20), stripes(20)],
+  ] as const)('whitens a blanket above and below a page as wide as the photo, with wood across the top: %s', (_, above, below) => {
+    const w = 500;
+    const h = 667;
+    const fine = new Uint8Array(w * h * 4);
+    for (let p = 0; p < w * h; p++) {
+      const x = p % w;
+      const y = (p - x) / w;
+      const colour = y < 20 ? [200, 140, 70] : y < 120 ? above(x, y) : y <= 466 ? [233, 230, 222] : below(x, y);
+      fine.set([...colour, 255], p * 4);
+    }
+    const out = new Uint8Array(w * h);
+    markDarkBackground(out, fine, w, h);
+    const marked = (top: number, bottom: number) => out.slice(top * w, bottom * w).filter(Boolean).length / ((bottom - top) * w);
+    expect(marked(30, 110)).toBeGreaterThan(0.95);
+    expect(marked(477, h)).toBeGreaterThan(0.95);
+  });
+
+  // The share of each region whitened in the 500 x 667 small copy `colourAt` paints.
+  function markedShares(colourAt: (x: number, y: number) => number[], ...regions: ((x: number, y: number) => boolean)[]) {
+    const w = 500;
+    const h = 667;
+    const fine = new Uint8Array(w * h * 4);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) fine.set([...colourAt(x, y), 255], (y * w + x) * 4);
+    const out = new Uint8Array(w * h);
+    markDarkBackground(out, fine, w, h);
+    return regions.map((inRegion) => {
+      let all = 0;
+      let marked = 0;
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          if (!inRegion(x, y)) continue;
+          all++;
+          if (out[y * w + x]) marked++;
+        }
+      }
+      return marked / all;
+    });
+  }
+  const PAPER = [233, 230, 222];
+  const checks = (x: number, y: number) => (((x / 40) ^ (y / 40)) & 1 ? [90, 30, 30] : [30, 30, 70]).map((c) => c + grainAt(x, y));
+
+  // The object touches the page and the photo's edge, or the page's foot, and the band reaches past the reach of print.
+  it.each([
+    [NEAR_BLACK, 60, 'left of', 'brown'],
+    [NAVY, 80, 'right of', 'brown'],
+    [DARK_GREEN, 120, 'below', 'brown'],
+    [NEAR_BLACK, 120, 'right of', 'brown'],
+    [NAVY, 60, 'below', 'brown'],
+    [DARK_GREEN, 80, 'left of', 'brown'],
+    [NEAR_BLACK, 80, 'left of', 'checks'],
+    [NEAR_BLACK, 80, 'left of', 'stripes'],
+  ] as const)('keeps a %j header band %i px deep beside an object of its colour %s the page on a %s table', (colour, depth, place, tableName) => {
+    const [x0, x1, y0, y1] = { 'left of': [0, 150, 300, 360], 'right of': [350, 500, 400, 440], below: [200, 260, 550, 667] }[place];
+    const tableAt = { brown: brownAt, checks, stripes: stripes(20) }[tableName];
+    const inObject = (x: number, y: number) => x >= x0 && x < x1 && y >= y0 && y < y1;
+    const [band, object, table] = markedShares(
+      (x, y) => (x >= 150 && x < 350 && y >= 120 && y < 550 ? (y < 120 + depth ? colour : PAPER) : inObject(x, y) ? colour : tableAt(x, y)),
+      (x, y) => x >= 154 && x < 346 && y >= 124 && y < 116 + depth,
+      (x, y) => x >= x0 + 4 && x < x1 - 4 && y >= y0 + 4 && y < y1 - 4,
+      (x, y) => (x < 140 || x >= 360 || y < 110 || y >= 560) && !(x >= x0 - 10 && x < x1 + 10 && y >= y0 - 10 && y < y1 + 10),
+    );
+    expect(band).toBe(0);
+    expect(object).toBeGreaterThan(0.95);
+    expect(table).toBeGreaterThan(0.95);
+  });
+
+  // The page (x 150 to 349) runs off the photo's top and foot; the picture starts 200 px above the foot.
+  it.each([
+    ['a black and green picture on red and navy checks', checks, (x: number) => (x < 250 ? NEAR_BLACK : DARK_GREEN), 471, 663],
+    // Navy on blue stripes is the table's own colour, so only the black band is checked.
+    ['a black band over a navy picture on red and blue stripes', stripes(20), (_: number, y: number) => (y < 487 ? NEAR_BLACK : NAVY), 470, 484],
+  ] as const)('keeps %s at the foot of a page running off both ends', (_, table, picture, top, bottom) => {
+    const [pictureWhitened, tableWhitened] = markedShares(
+      (x, y) => (x >= 150 && x < 350 ? (y >= 467 ? picture(x, y) : PAPER) : table(x, y)),
+      (x, y) => x >= 154 && x < 346 && y >= top && y < bottom,
+      (x) => x < 140 || x >= 360,
+    );
+    // Where the band meets the table, its 2 px colour seam and the 3 px grow reach 5 px in.
+    expect(pictureWhitened).toBeLessThan(0.01);
+    expect(tableWhitened).toBeGreaterThan(0.95);
+  });
+
+  const slanting = (x: number, y: number) => (Math.floor((x + y) / 28) % 2 ? RED_STRIPE : BLUE_STRIPE).map((c) => c + grainAt(x, y));
+  // A black bar at the photo's edge across a page (x 150 to 349) running off its foot from y 120, or both ends.
+  it.each([
+    // A footer within reach reaches the photo's foot as an object tied to the table does, but spans the paper's end.
+    ['a footer 30 px deep on a page running off the foot, on red and navy checks', checks, 120, [637, 667], [641, 667]],
+    // A footer just inside the reach of print (a quarter of the page's width) spans the paper's end too.
+    ['a footer 45 px deep on a page running off the foot, on red and navy checks', checks, 120, [622, 667], [626, 667]],
+    // A header within reach reaches the photo's top and spans the paper's end.
+    ['a header 40 px deep on a page running off both ends, on slanting red and blue stripes', slanting, 0, [0, 40], [0, 36]],
+  ] as const)('keeps %s', (_, table, pageTop, [barTop, barBottom], [scoredTop, scoredBottom]) => {
+    const [barWhitened, tableWhitened] = markedShares(
+      (x, y) => (x >= 150 && x < 350 && y >= pageTop ? (y >= barTop && y < barBottom ? NEAR_BLACK : PAPER) : table(x, y)),
+      (x, y) => x >= 154 && x < 346 && y >= scoredTop && y < scoredBottom,
+      (x, y) => x < 140 || x >= 360 || y < pageTop - 10,
+    );
+    expect(barWhitened).toBe(0);
+    expect(tableWhitened).toBeGreaterThan(0.95);
+  });
+
+  // A footer 30 px deep at the foot of a turned page curling toward the camera and running off the photo's foot.
+  it.each([
+    ['black', 'slanting red and blue stripes', { tilt: -5, curl: 20, colour: NEAR_BLACK, table: slanting }],
+    ['green', 'red and navy checks', { tilt: -4, curl: 18, colour: DARK_GREEN, table: checks }],
+  ] as const)('keeps a %s footer at the curled foot of a turned page on %s', (_, __, scene) => {
+    // The curl puts table in the footer's hull with the page, but the footer spans the page's whole end.
+    const { picture, table } = bleedingPicture({ place: 'off', picture: 'full', depth: 30, ...scene });
+    expect(picture).toBeLessThan(0.1);
+    expect(table).toBeGreaterThan(0.95);
+  });
+
+  const smallChecks = (x: number, y: number) => (((x / 20) ^ (y / 20)) & 1 ? [90, 30, 30] : [30, 30, 70]).map((c) => c + grainAt(x, y));
+  // A page turned about its middle, with a black object from the photo's side to just past the page's corner nearest it.
+  it.each([
+    ['across its lowest corner', 2, 'checks', checks, [150, 120, 349, 646], [315, 643, 365, 667]],
+    ['across its highest corner', 2, 'checks', checks, [150, 20, 349, 560], [134, 0, 184, 23]],
+    ['across its leftmost corner', 5, 'checks', checks, [40, 120, 239, 560], [0, 525, 27, 575]],
+    ['across its lowest corner', -10, 'checks 20 px wide', smallChecks, [150, 107, 350, 633], [172, 643, 222, 667]],
+    ['across its lowest corner', -15, 'red and blue stripes', stripes(20), [150, 113, 350, 639], [196, 653, 246, 667]],
+  ] as const)('whitens an object %s on a page turned %i degrees on %s', (_, tilt, __, colourAt, [left, top, right, bottom], [x0, y0, x1, y1]) => {
+    const turn = (tilt * Math.PI) / 180;
+    const [cx, cy] = [(left + right) / 2, (top + bottom) / 2];
+    const byPage = (x: number, y: number, margin: number) => {
+      const u = cx + (x - cx) * Math.cos(turn) + (y - cy) * Math.sin(turn);
+      const v = cy - (x - cx) * Math.sin(turn) + (y - cy) * Math.cos(turn);
+      return u >= left - margin && u <= right + margin && v >= top - margin && v <= bottom + margin;
+    };
+    const inObject = (x: number, y: number, margin: number) => x >= x0 - margin && x < x1 + margin && y >= y0 - margin && y < y1 + margin;
+    const [object, table] = markedShares(
+      (x, y) => (byPage(x, y, 0) ? PAPER : inObject(x, y, 0) ? NEAR_BLACK : colourAt(x, y)),
+      (x, y) => inObject(x, y, -4) && !byPage(x, y, 10),
+      (x, y) => !byPage(x, y, 10) && !inObject(x, y, 10),
+    );
+    // It spans the paper's nearest corner as a footer does, but not the rest of the page's end.
+    expect(object).toBeGreaterThan(0.95);
+    expect(table).toBeGreaterThan(0.95);
+  });
+
+  // The page (x 150 to 349) runs off the photo's foot from y 120; the header is 60 px deep and the picture 100 px.
+  it.each([
+    // A kept picture adds no surface to its colour, so the object's one surface makes no table colour that takes the header.
+    ['black header and picture beside a black object on a brown table', NEAR_BLACK, brownAt, [150, 250], [350, 500]],
+    // On carpet too, a navy picture across the foot and a navy object left of the page make no navy table colour.
+    ['navy header and picture beside a navy object on a carpet table', NAVY, carpetAt, [150, 350], [0, 150]],
+  ] as const)('keeps a %s', (_, colour, table, [pictureLeft, pictureRight], [objectLeft, objectRight]) => {
+    const inObject = (x: number, y: number) => x >= objectLeft && x < objectRight && y >= 300 && y < 420;
+    const [print, object, tableWhitened] = markedShares(
+      (x, y) => {
+        if (!(x >= 150 && x < 350 && y >= 120)) return inObject(x, y) ? colour : table(x, y);
+        return y < 180 || (y >= 567 && x >= pictureLeft && x < pictureRight) ? colour : PAPER;
+      },
+      (x, y) => (x >= 154 && x < 346 && y >= 124 && y < 176) || (x >= pictureLeft + 4 && x < pictureRight - 4 && y >= 571),
+      (x, y) => x >= objectLeft + 4 && x < objectRight - 4 && y >= 304 && y < 416,
+      (x, y) => (x < 140 || x >= 360 || y < 110) && !(x >= objectLeft - 10 && x < objectRight + 10 && y >= 290 && y < 430),
+    );
+    expect(print).toBe(0);
+    expect(object).toBeGreaterThan(0.95);
+    expect(tableWhitened).toBeGreaterThan(0.95);
+  });
+
+  it.each([
+    ["a page touching the photo's side, with a band 20 px deep round its corner, on checks", { place: 'touch', table: checks, band: ['corner', 20, NEAR_BLACK] }],
+    [
+      "a page within 2 px of the photo's side, with a green band 120 px deep down it and a green object right of it, on checks",
+      { place: 'near', table: checks, band: ['side', 120, DARK_GREEN], object: ['right', 120, DARK_GREEN] },
+    ],
+    [
+      "a page within 2 px of the photo's side, with a black picture at its foot and a black object between it and the side, on stripes",
+      { place: 'near', tilt: 2, stripes: true, picture: 'full', depth: 60, colour: NEAR_BLACK, object: ['left', 60, NEAR_BLACK] },
+    ],
+    [
+      "a page off the photo's corner, with a navy picture and a shadow 1.6 times darker down its side, on carpet",
+      { place: 'corner', picture: 'full', table: (x, y, u, v) => carpetAt(x, y).map((c) => (u > 200 && u <= 220 && v >= 0 ? Math.round(c / 1.6) : c)) },
+    ],
+    // Each stripe colour starts one surface on each side of the page, as the wood holds the photo's sides.
+    [
+      'a page running off both ends between wood down both sides, with a black picture at its foot, on red and blue stripes 20 px wide across',
+      { place: 'offBoth', picture: 'left', depth: 60, colour: NEAR_BLACK, table: (x, y) => stripes(20)(y, x), rim: [200, 140, 70] },
+    ],
+    // x 33 is a quarter of the way across the page at half its height.
+    [
+      "a tilted page off the photo's corner, with a black picture, on brown 1.6 times darker right of x 33",
+      { place: 'corner', tilt: -5, picture: 'full', colour: NEAR_BLACK, table: (x, y) => brownAt(x, y).map((c) => (x >= 33 ? Math.round(c / 1.6) : c)) },
+    ],
+  ] as [string, Bleed][])('whitens the table round %s', (_, scene) => {
+    const { picture, table, object } = bleedingPicture(scene);
+    if (scene.picture) expect(picture).toBeLessThan(0.1);
+    if (scene.object) expect(object).toBeGreaterThan(0.95);
+    expect(table).toBeGreaterThan(0.95);
+  });
 });
