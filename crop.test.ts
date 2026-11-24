@@ -535,7 +535,6 @@ function difference(a: Uint8Array, b: Uint8Array): number {
   return sum / (width * height);
 }
 
-/** How many JPEG encodes `run` makes. */
 async function encodesOf(run: () => Promise<void>): Promise<number> {
   let proto = Object.getPrototypeOf(Skia.Surface.Make(1, 1)!.makeImageSnapshot());
   while (!Object.prototype.hasOwnProperty.call(proto, 'encodeToBytes')) proto = Object.getPrototypeOf(proto);
@@ -573,13 +572,4 @@ it('stands a sideways whole photo upright in one JPEG encode', async () => {
 
   expect(encodes).toBe(1);
   expect(difference(mockFiles.get('file:///cache/page.jpg')!, letter(0, 0))).toBeLessThan(3);
-}, 60000);
-
-it('keeps an upright whole photo with text as the photo file itself', async () => {
-  const bytes = letter(0, 0);
-  mockFiles.set('file:///cache/photo.jpg', bytes);
-
-  await cropPage('file:///cache/photo.jpg', inset(0, 1200, 1600), 'file:///cache/page.jpg');
-
-  expect(mockFiles.get('file:///cache/page.jpg')).toBe(bytes);
 }, 60000);

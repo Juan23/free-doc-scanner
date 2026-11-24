@@ -668,7 +668,6 @@ export async function cropPage(uri: string, corners: Quad, dest: string): Promis
   await writeJpeg(dest, bytes);
 }
 
-/** The page inside `corners`, drawn straight. */
 function straightened(image: SkImage, corners: Quad): SkImage {
   const [tl, tr, br, bl] = corners;
   const length = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
