@@ -560,7 +560,7 @@ const dot = (a: Vec, b: Vec) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
  * Width over height of the rectangle whose photo is `corners`, from the camera's perspective
  * (Zhang and He, "Whiteboard scanning and image enhancement", 2007). NaN when the corners are in a line.
  */
-function pageAspect([tl, tr, br, bl]: Quad, width: number, height: number): number {
+export function pageAspect([tl, tr, br, bl]: Quad, width: number, height: number): number {
   const [m1, m2, m3, m4] = [tl, tr, bl, br].map(({ x, y }): Vec => [x - width / 2, y - height / 2, 1]);
   const k2 = dot(cross(m1, m4), m3) / dot(cross(m2, m4), m3);
   const k3 = dot(cross(m1, m4), m2) / dot(cross(m3, m4), m2);
@@ -596,7 +596,10 @@ export async function cropPage(uri: string, corners: Quad, dest: string): Promis
   const photo = await new File(uri).bytes();
   const plain = plainJpegSize(photo);
   if (plain && isWhole(corners, plain.width, plain.height)) return new File(dest).write(photo);
-  const image = await readPage(uri);
+  const data = Skia.Data.fromBytes(photo);
+  const image = Skia.Image.MakeImageFromEncoded(data);
+  data.dispose();
+  if (!image) throw new Error('unreadable page');
   if (isWhole(corners, image.width(), image.height())) {
     const bytes = image.encodeToBytes(ImageFormat.JPEG, 90);
     image.dispose();

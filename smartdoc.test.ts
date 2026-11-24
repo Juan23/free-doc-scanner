@@ -2,7 +2,7 @@
  * @jest-environment @shopify/react-native-skia/jestEnv.js
  */
 /// <reference types="jest" />
-import { findPage, type Point, type Quad } from './crop';
+import { findPage, pageAspect, type Point, type Quad } from './crop';
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const { execFileSync } = require('child_process') as {
@@ -38,6 +38,14 @@ jest.mock('expo-file-system', () => {
 
 const SMARTDOC_SAMPLE_DIR = process.env.SMARTDOC;
 const FRAME_STEP = 5;
+const VIDEOS = ['datasheet001', 'letter001', 'magazine001'];
+// SmartDoc's frames are 1920 x 1080 and its pages A4.
+const FRAME_WIDTH = 1920;
+const FRAME_HEIGHT = 1080;
+const A4_ASPECT = 210 / 297;
+
+/** How far `aspect` (width over height) is from A4, as a share of A4. */
+const a4Error = (aspect: number) => Math.abs(aspect - A4_ASPECT) / A4_ASPECT;
 
 function parseGt(xmlPath: string): Map<number, Quad> {
   const xml = fs.readFileSync(xmlPath, 'utf8');
@@ -94,7 +102,7 @@ afterAll(() => {
 });
 
 (SMARTDOC_SAMPLE_DIR ? it : it.skip)('measures findPage on SmartDoc background00 frames', async () => {
-  const videos = ['datasheet001', 'letter001', 'magazine001'];
+  const videos = VIDEOS;
   const vidDir = path.join(SMARTDOC_SAMPLE_DIR!, 'input_sample', 'background00');
   const gtDir = path.join(SMARTDOC_SAMPLE_DIR!, 'input_sample_groundtruth', 'background00_gt');
   framesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smartdoc-frames-'));
@@ -105,6 +113,8 @@ afterAll(() => {
   let totalWithin2 = 0;
   let totalWithin5 = 0;
   let totalMs = 0;
+  let aspectWithin5 = 0;
+  let aspectWithin8 = 0;
 
   for (const vid of videos) {
     execFileSync('ffmpeg', [
@@ -146,7 +156,12 @@ afterAll(() => {
       const err = worstCornerPct(res.corners, gtQuad, diag);
       errors.push(err);
       allErrors.push(err);
-      if (!isWhole(res.corners, res.width, res.height)) outlines++;
+      if (!isWhole(res.corners, res.width, res.height)) {
+        outlines++;
+        const off = a4Error(pageAspect(res.corners, res.width, res.height));
+        if (off <= 0.05) aspectWithin5++;
+        if (off <= 0.08) aspectWithin8++;
+      }
       if (err <= 2) within2++;
       if (err <= 5) within5++;
     }
@@ -165,5 +180,20 @@ afterAll(() => {
     `ALL: n=${totalFrames}, outline=${totalOutlines}/${totalFrames} (${((totalOutlines / totalFrames) * 100).toFixed(1)}%), median=${median(allErrors).toFixed(1)}%, <=2%=${totalWithin2}/${totalFrames} (${((totalWithin2 / totalFrames) * 100).toFixed(1)}%), <=5%=${totalWithin5}/${totalFrames} (${((totalWithin5 / totalFrames) * 100).toFixed(1)}%), avgMs=${(totalMs / totalFrames).toFixed(1)}ms`,
   );
 
+  console.log(`page shape on found outlines: <=5% of A4=${aspectWithin5}/${totalOutlines}, <=8%=${aspectWithin8}/${totalOutlines}`);
+
   expect(totalWithin5 / totalFrames).toBeGreaterThanOrEqual(0.95);
 }, 120000);
+
+(SMARTDOC_SAMPLE_DIR ? it : it.skip)('reads an A4 shape from the true corners of SmartDoc background00 frames', () => {
+  const gtDir = path.join(SMARTDOC_SAMPLE_DIR!, 'input_sample_groundtruth', 'background00_gt');
+  const quads = VIDEOS.flatMap((vid) => [...parseGt(path.join(gtDir, `${vid}.gt.xml`)).values()]);
+  const errors = quads.map((q) => a4Error(pageAspect(q, FRAME_WIDTH, FRAME_HEIGHT)));
+  const within2 = errors.filter((e) => e <= 0.02).length;
+  const within5 = errors.filter((e) => e <= 0.05).length;
+  console.log(`page shape on true corners: <=2% of A4=${within2}/${quads.length}, <=5%=${within5}/${quads.length}`);
+  expect(quads.length).toBe(588);
+  // Within 5% holds with any focal clamp from 1.1 times up; within 2% drops without the clamp (349) or at 1.4 times (350).
+  expect(within2).toBeGreaterThanOrEqual(367);
+  expect(within5).toBeGreaterThanOrEqual(561);
+});
