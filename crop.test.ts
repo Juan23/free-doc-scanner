@@ -197,18 +197,17 @@ function bandAcross(page: Quad, top: number, depth: number) {
   return (canvas: SkCanvas) => {
     const band = Skia.Path.Polygon([at(tl, bl, top), at(tr, br, top), at(tr, br, top + depth), at(tl, bl, top + depth)], true);
     const paint = Skia.Paint();
-    paint.setColor(Skia.Color('rgb(25,25,30)'));
+    paint.setColor(Skia.Color('rgb(45,50,60)'));
     canvas.drawPath(band, paint);
     for (const o of [band, paint]) o.dispose();
   };
 }
 
-// Before #84 the frame ended at the band's edge, cutting the rest of the page off.
 describe.each([
   ['upright', upright],
   ['tilted', tilted],
 ] as const)('a dark band across the %s page', (_, page) => {
-  it.each([0.2, 0.5, 0.85].flatMap((top) => [0.05, 0.08, 0.12].map((depth) => [top, depth])))(
+  it.each([0.2, 0.3, 0.5, 0.85].flatMap((top) => [0.05, 0.08, 0.12].map((depth) => [top, depth])))(
     'at %f down, %f of the page deep, gives the whole page or the whole photo',
     async (top, depth) => {
       mockFiles.set('file:///cache/photo.jpg', photo(page, 'rgb(92,70,52)', undefined, undefined, bandAcross(page, top, depth)));
@@ -221,6 +220,55 @@ describe.each([
     30000,
   );
 });
+
+// A white sheet `gap` px right of the page, from the page's top to its foot.
+function sheetBeside(page: Quad, gap: number, gapColour?: string) {
+  const [, tr, br] = page;
+  return (canvas: SkCanvas) => {
+    const paint = Skia.Paint();
+    const area = (g: number) => Skia.Path.Polygon([{ x: tr.x + g, y: tr.y - 50 }, { x: W, y: tr.y - 50 }, { x: W, y: br.y + 50 }, { x: br.x + g, y: br.y + 50 }], true);
+    const shadow = area(0);
+    const sheet = area(gap);
+    if (gapColour) {
+      paint.setColor(Skia.Color(gapColour));
+      canvas.drawPath(shadow, paint);
+    }
+    paint.setColor(Skia.Color('rgb(242,240,235)'));
+    canvas.drawPath(sheet, paint);
+    for (const o of [shadow, sheet, paint]) o.dispose();
+  };
+}
+
+const SHADOW = 'rgb(110,105,98)';
+// The frame may stop at the far edge of the gap or shadow beside the page, as on main; the whole photo is 110 px off or more.
+const GAP_SLACK = 40;
+
+it.each([30, 100])('finds a page on a dark desk with a second white sheet %i px beside it', async (gap) => {
+  mockFiles.set('file:///cache/photo.jpg', photo(tilted, 'rgb(92,70,52)', undefined, sheetBeside(tilted, gap)));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, tilted, GAP_SLACK);
+}, 30000);
+
+it('finds a page on a dark desk beside a white sheet with a 20 px shadow between them', async () => {
+  mockFiles.set('file:///cache/photo.jpg', photo(upright, 'rgb(92,70,52)', undefined, sheetBeside(upright, 20, SHADOW)));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, upright, GAP_SLACK);
+}, 30000);
+
+it.each([20, 28])('finds a page on a near-white table with a %i px shadow round it', async (depth) => {
+  const shadow = (canvas: SkCanvas) => {
+    const outline = Skia.Path.Polygon(upright, true);
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color(SHADOW));
+    paint.setStyle(1);
+    paint.setStrokeWidth(depth * 2);
+    canvas.drawPath(outline, paint);
+    for (const o of [outline, paint]) o.dispose();
+  };
+  mockFiles.set('file:///cache/photo.jpg', photo(upright, 'rgb(225,222,215)', undefined, shadow));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, upright, GAP_SLACK);
+}, 30000);
 
 it('falls back to the whole photo when there is no page to find', async () => {
   const surface = Skia.Surface.Make(W, H)!;

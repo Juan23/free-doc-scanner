@@ -318,12 +318,19 @@ const BAND_REACH = 40;
 const MIN_BAND = 6;
 // A band's far edge runs along the side, so the paper past it starts within this many px of the typical distance.
 const BAND_EVEN = 2;
-// Two colours are the same paper when their red, green and blue differences add up to less than this.
-const SAME_PAPER = 40;
+// Two colours are the same when their red, green and blue differences add up to less than this.
+const SAME_COLOUR = 40;
 // Share of a side's points with paper past a band that makes the side a band's edge, not the page's.
 const MIN_PAPER_BEYOND = 0.6;
+// A band is at most this share of the paper's brightness: black print is under it, a shadow on a pale table above it.
+const BAND_DARK = 0.4;
+// Search-copy px outside the frame's other sides where the surface round the page is read, past their edges' blur.
+const AROUND = [3, 4, 5, 6];
 
-/** True when most of one of the frame's sides runs along a band of even depth with paper like the frame's past it, as a dark band across the page would. */
+const brightness = (c: number[]) => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+const sameColour = (c: number[], d: number[]) => Math.abs(c[0] - d[0]) + Math.abs(c[1] - d[1]) + Math.abs(c[2] - d[2]) < SAME_COLOUR;
+
+/** True when most of a side runs along a dark band of even depth with paper past it, unlike the surface round the frame (a gap to another sheet). */
 function endsAtBand(q: Quad, rgba: Uint8Array, w: number, h: number): boolean {
   const cx = (q[0].x + q[1].x + q[2].x + q[3].x) / 4;
   const cy = (q[0].y + q[1].y + q[2].y + q[3].y) / 4;
@@ -332,48 +339,56 @@ function endsAtBand(q: Quad, rgba: Uint8Array, w: number, h: number): boolean {
     const iy = Math.round(y);
     return ix < 0 || iy < 0 || ix >= w || iy >= h ? -1 : (iy * w + ix) * 4;
   };
+  // Per-channel median of the pixels at these offsets, null when none is in the photo.
+  const medianColour = (offsets: number[]) => {
+    const inPhoto = offsets.filter((o) => o >= 0);
+    if (!inPhoto.length) return null;
+    return [0, 1, 2].map((c) => inPhoto.map((o) => rgba[o + c]).sort((m, n) => m - n)[inPhoto.length >> 1]);
+  };
   // The frame's paper: the median colour on the lines from its middle to its corners.
-  const channels: number[][] = [[], [], []];
-  for (const p of q) {
-    for (let k = 1; k < 9; k++) {
-      const o = at(cx + ((p.x - cx) * k) / 10, cy + ((p.y - cy) * k) / 10);
-      if (o >= 0) for (let c = 0; c < 3; c++) channels[c].push(rgba[o + c]);
-    }
-  }
-  const paper = channels.map((v) => v.sort((m, n) => m - n)[v.length >> 1]);
-  const isPaper = (o: number) =>
-    o >= 0 && Math.abs(rgba[o] - paper[0]) + Math.abs(rgba[o + 1] - paper[1]) + Math.abs(rgba[o + 2] - paper[2]) < SAME_PAPER;
+  const paper = medianColour(q.flatMap((p) => [1, 2, 3, 4, 5, 6, 7, 8].map((k) => at(cx + ((p.x - cx) * k) / 10, cy + ((p.y - cy) * k) / 10))))!;
+  const isPaper = (o: number) => o >= 0 && sameColour([rgba[o], rgba[o + 1], rgba[o + 2]], paper);
 
   const steps = 32;
-  return [0, 1, 2, 3].some((s) => {
+  const along = Array.from({ length: steps - 7 }, (_, j) => (j + 4) / steps);
+  const sides = [0, 1, 2, 3].map((s) => {
     const a = q[s];
     const b = q[(s + 1) % 4];
     const len = Math.hypot(b.x - a.x, b.y - a.y);
     let nx = (b.y - a.y) / len;
     let ny = -(b.x - a.x) / len;
     if (nx * ((a.x + b.x) / 2 - cx) + ny * ((a.y + b.y) / 2 - cy) < 0) [nx, ny] = [-nx, -ny];
+    // Points along the side; the ends are skipped, as they sit at corners.
+    return { nx, ny, points: along.map((t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t })) };
+  });
+
+  return sides.some(({ nx, ny, points }, s) => {
     // Px from (x, y) to the first paper outward (dir 1) or inward (dir -1), 0 when none is within reach.
     const paperFrom = (x: number, y: number, dir: number) => {
       for (let d = 3; d <= BAND_REACH; d++) if (isPaper(at(x + dir * nx * d, y + dir * ny * d))) return d;
       return 0;
     };
     // Paper past a band outside the side, or, when the side is the band's far edge, a band inside it and paper right outside.
-    // The ends are skipped, as they sit at corners.
-    const outside: number[] = [];
-    const inside: number[] = [];
-    for (let i = 4; i < steps - 3; i++) {
-      const sx = a.x + ((b.x - a.x) * i) / steps;
-      const sy = a.y + ((b.y - a.y) * i) / steps;
-      const out = paperFrom(sx, sy, 1);
-      if (out >= MIN_BAND) outside.push(out);
-      else if (out > 0) inside.push(paperFrom(sx, sy, -1));
+    type Mark = { x: number; y: number; d: number; dir: number };
+    const outside: Mark[] = [];
+    const inside: Mark[] = [];
+    for (const { x, y } of points) {
+      const out = paperFrom(x, y, 1);
+      if (out >= MIN_BAND) outside.push({ x, y, d: out, dir: 1 });
+      else if (out > 0) inside.push({ x, y, d: paperFrom(x, y, -1), dir: -1 });
     }
-    const even = (starts: number[]) => {
-      const band = starts.filter((d) => d >= MIN_BAND).sort((m, n) => m - n);
-      const typical = band[band.length >> 1];
-      return band.filter((d) => Math.abs(d - typical) <= BAND_EVEN).length >= MIN_PAPER_BEYOND * (steps - 7);
+    const isBand = (marks: Mark[]) => {
+      const band = marks.filter((m) => m.d >= MIN_BAND).sort((m, n) => m.d - n.d);
+      const typical = band[band.length >> 1]?.d;
+      const even = band.filter((m) => Math.abs(m.d - typical) <= BAND_EVEN);
+      if (even.length < MIN_PAPER_BEYOND * points.length) return false;
+      const colour = medianColour(even.map((m) => at(m.x + (m.dir * nx * m.d) / 2, m.y + (m.dir * ny * m.d) / 2)))!;
+      const around = medianColour(
+        sides.flatMap((o, k) => (k === s ? [] : o.points.flatMap((p) => AROUND.map((d) => at(p.x + o.nx * d, p.y + o.ny * d))))),
+      );
+      return brightness(colour) < BAND_DARK * brightness(paper) && !(around && sameColour(colour, around));
     };
-    return even(outside) || even(inside);
+    return isBand(outside) || isBand(inside);
   });
 }
 

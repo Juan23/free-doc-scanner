@@ -4,14 +4,7 @@
 /// <reference types="jest" />
 import { findPage, type Point } from './crop';
 
-// Runs findPage on DocUNet photos 1_1 to 65_2 (DOCUNET=<photo folder>) and compares each result with the frame
-// `main` gives for the photo (a frame, or the whole photo). A frame that cuts the page is worse than a loose
-// frame or the whole photo, so the page finder only rejects `main`'s frame and never picks another: it returns
-// the same frame or the whole photo.
-// 'right': `main`'s frame hugs the page, so it must not turn into the whole photo. 'other': loose or cut; it may
-//   turn into the whole photo.
-// A frame is `main`'s when each corner is within SAME_FRAME of it, or when it holds `main`'s frame and no corner
-// has moved further than MOVED_OUT (a side the fit would pull inside the page goes back out to the vote line).
+// Each DocUNet photo (DOCUNET=<photo folder>) must get its recorded frame or the whole photo, as a cut frame is worse than either.
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const path = require('path') as { join: (...parts: string[]) => string };
@@ -37,12 +30,15 @@ jest.mock('expo-file-system', () => {
 });
 
 const DOCUNET_DIR = process.env.DOCUNET;
+// Px each corner may move and still be the recorded frame.
 const SAME_FRAME = 1;
+// Share of the diagonal a corner may move out while the frame holds the recorded one: the fit can pull a side inside the page.
 const MOVED_OUT = 0.02;
 
-type MainFrame = 'whole' | ['right' | 'other', [number, number][]];
+// 'right' hugs the page, so it must stay; 'other' is loose or cut, so the whole photo may replace it.
+type RecordedFrame = 'whole' | ['right' | 'other', [number, number][]];
 
-const MAIN: Record<string, MainFrame> = {
+const RECORDED: Record<string, RecordedFrame> = {
   '1_1': ['other', [[1032, 556], [1889, 566], [2091, 2766], [989, 2795]]],
   '1_2': 'whole',
   '2_1': 'whole',
@@ -186,25 +182,25 @@ function outsideBy(found: Point[], p: [number, number]): number {
   );
 }
 
-(DOCUNET_DIR ? it : it.skip)('gives the frame of main or the whole photo on each DocUNet photo, never another frame', async () => {
+(DOCUNET_DIR ? it : it.skip)('gives the recorded frame or the whole photo on each DocUNet photo, never another frame', async () => {
   const files = new Map(fs.readdirSync(DOCUNET_DIR!).map((f) => [f.replace(/\.jpe?g$/i, ''), f]));
   const problems: string[] = [];
-  for (const [name, main] of Object.entries(MAIN)) {
+  for (const [name, recorded] of Object.entries(RECORDED)) {
     const { width, height, corners } = await findPage(path.join(DOCUNET_DIR!, files.get(name)!));
     const isWhole = corners[0].x < 1 && corners[0].y < 1 && corners[2].x > width - 1 && corners[2].y > height - 1;
-    if (main === 'whole') {
-      if (!isWhole) problems.push(`${name}: a frame where \`main\` gives the whole photo`);
+    if (recorded === 'whole') {
+      if (!isWhole) problems.push(`${name}: a frame where the whole photo is recorded`);
       continue;
     }
-    const [kind, listed] = main;
+    const [kind, listed] = recorded;
     if (isWhole) {
       if (kind === 'right') problems.push(`${name}: lost the right frame`);
       continue;
     }
     const moved = Math.max(...corners.map((p, i) => Math.hypot(p.x - listed[i][0], p.y - listed[i][1])));
-    const holdsMain = Math.max(...listed.map((p) => outsideBy(corners, p))) <= SAME_FRAME;
-    if (moved > SAME_FRAME && !(holdsMain && moved <= MOVED_OUT * Math.hypot(width, height))) {
-      problems.push(`${name}: a frame that is not \`main\`'s, off by ${Math.round(moved)} px`);
+    const holdsRecorded = Math.max(...listed.map((p) => outsideBy(corners, p))) <= SAME_FRAME;
+    if (moved > SAME_FRAME && !(holdsRecorded && moved <= MOVED_OUT * Math.hypot(width, height))) {
+      problems.push(`${name}: a frame that is not the recorded one, off by ${Math.round(moved)} px`);
     }
   }
   expect(problems).toEqual([]);
