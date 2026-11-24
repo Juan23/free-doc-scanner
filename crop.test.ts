@@ -5,6 +5,7 @@
 import { BlurStyle, ImageFormat, Skia, type SkCanvas, type SkPaint } from '@shopify/react-native-skia';
 
 import { cropPage, findPage, isConvex, pageAspect, type Quad } from './crop';
+import * as scansModule from './scans';
 import * as uprightModule from './upright';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
@@ -588,4 +589,30 @@ it('keeps a page unturned when its text cannot be read', async () => {
 
   const page = Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(mockFiles.get('file:///cache/page.jpg')!))!;
   expect([page.width(), page.height()]).toEqual([1600, 1200]);
+}, 60000);
+
+it('frees the photo before reading a cropped page, so no more than two full-size images are held', async () => {
+  mockFiles.set('file:///cache/photo.jpg', letter(1, 40));
+  const realDecode = scansModule.decodePage;
+  let photoFreed: jest.SpyInstance | undefined;
+  const decode = jest.spyOn(scansModule, 'decodePage').mockImplementation((bytes) => {
+    const image = realDecode(bytes);
+    photoFreed = jest.spyOn(image, 'dispose');
+    return image;
+  });
+  const realRead = uprightModule.readUpright;
+  let freedBeforeRead = false;
+  const read = jest.spyOn(uprightModule, 'readUpright').mockImplementation((page) => {
+    freedBeforeRead = photoFreed!.mock.calls.length > 0;
+    return realRead(page);
+  });
+  try {
+    await cropPage('file:///cache/photo.jpg', inset(40, 1680, 1280), 'file:///cache/page.jpg');
+  } finally {
+    decode.mockRestore();
+    read.mockRestore();
+  }
+
+  expect(freedBeforeRead).toBe(true);
+  expect(photoFreed!.mock.calls.length).toBe(1);
 }, 60000);

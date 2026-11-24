@@ -653,13 +653,19 @@ const isWhole = (corners: Quad, width: number, height: number) =>
  */
 export async function cropPage(uri: string, corners: Quad, dest: string): Promise<void> {
   const photo = await new File(uri).bytes();
-  const image = decodePage(photo);
+  let image: SkImage | undefined = decodePage(photo);
   let page: SkImage | undefined;
   let upright: SkImage | undefined;
   try {
-    page = isWhole(corners, image.width(), image.height()) ? image : straightened(image, corners);
+    const whole = isWhole(corners, image.width(), image.height());
+    page = whole ? image : straightened(image, corners);
+    if (!whole) {
+      // Freed before the turn, so no more than two full-size images are held at once.
+      image.dispose();
+      image = undefined;
+    }
     const turns = uprightTurns(page);
-    if (!turns && page === image && isPlainJpeg(photo)) return await new File(dest).write(photo);
+    if (!turns && whole && isPlainJpeg(photo)) return await new File(dest).write(photo);
     upright = turns ? turnedImage(page, turns) : page;
     await writeJpeg(dest, upright.encodeToBytes(ImageFormat.JPEG, 90));
   } finally {
