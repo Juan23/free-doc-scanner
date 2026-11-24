@@ -1067,6 +1067,8 @@ function Capture(props: { pagesBefore: number; onEnd: (pages: string[]) => void 
   const [pages, setPages] = useState<string[]>([]);
   const [photo, setPhoto] = useState<Photo | null>(null);
   const [working, setWorking] = useState(false);
+  const [torch, setTorch] = useState(false);
+  const [viewfinder, setViewfinder] = useState({ width: 0, height: 0 });
   // State updates are async, so a second tap in the same frame would still see working=false.
   const inFlight = useRef(false);
 
@@ -1183,10 +1185,21 @@ function Capture(props: { pagesBefore: number; onEnd: (pages: string[]) => void 
     );
   }
   const last = pages[pages.length - 1];
+  const photoWidth = Math.min(viewfinder.width, (viewfinder.height * 3) / 4);
   return (
     <View style={styles.capture}>
-      <View style={styles.flex}>
-        <CameraView ref={camera} style={styles.flex} facing="back" exposureCompensation={EXPOSURE_BIAS_EV} />
+      <View style={[styles.flex, styles.viewfinder]} onLayout={(e) => setViewfinder(e.nativeEvent.layout)}>
+        {/* Sized to the photo's 4:3 so the preview shows exactly what the shutter takes. */}
+        {photoWidth > 0 && (
+          <CameraView
+            ref={camera}
+            style={{ width: photoWidth, height: (photoWidth * 4) / 3 }}
+            facing="back"
+            ratio="4:3"
+            enableTorch={torch}
+            exposureCompensation={EXPOSURE_BIAS_EV}
+          />
+        )}
         <View style={[styles.captureTop, { top: insets.top + 8 }]} pointerEvents="none">
           <Text style={styles.captureChip} maxFontSizeMultiplier={1.5}>{pageLabel}</Text>
         </View>
@@ -1199,6 +1212,16 @@ function Capture(props: { pagesBefore: number; onEnd: (pages: string[]) => void 
           style={[styles.closeButton, { top: insets.top + 8 }, working && styles.disabled]}>
           <View style={[styles.closeBar, { transform: [{ rotate: '45deg' }] }]} />
           <View style={[styles.closeBar, { transform: [{ rotate: '-45deg' }] }]} />
+        </Pressable>
+        <Pressable
+          accessibilityRole="switch"
+          accessibilityLabel="Torch"
+          accessibilityState={{ checked: torch }}
+          onPress={() => setTorch(!torch)}
+          style={[styles.closeButton, styles.torchButton, { top: insets.top + 8 }, torch && styles.torchOn]}>
+          <Canvas style={styles.torchIcon} pointerEvents="none">
+            <Path path="M 11 1 L 3 12 L 9 12 L 7 21 L 15 9 L 9 9 Z" color={torch ? '#000' : '#fff'} />
+          </Canvas>
         </Pressable>
         <View style={styles.captureHold} pointerEvents="none">
           <Text style={styles.captureChip} maxFontSizeMultiplier={1.5}>Hold still</Text>
@@ -1701,6 +1724,10 @@ const styles = StyleSheet.create({
   captureHold: { position: 'absolute', left: 0, right: 0, bottom: 20, alignItems: 'center' },
   captureChip: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 14, overflow: 'hidden', backgroundColor: 'rgba(0,0,0,0.5)', fontSize: 13, color: '#fff' },
   closeButton: { position: 'absolute', left: 16, width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(0,0,0,0.45)', alignItems: 'center', justifyContent: 'center' },
+  torchButton: { left: undefined, right: 16 },
+  torchOn: { backgroundColor: '#FFD60A' },
+  torchIcon: { width: 18, height: 22 },
+  viewfinder: { alignItems: 'center', justifyContent: 'center' },
   closeBar: { position: 'absolute', width: 18, height: 2, borderRadius: 1, backgroundColor: '#fff' },
   captureBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 28, paddingTop: 16, backgroundColor: '#000' },
   captureSlot: { width: 96 },
