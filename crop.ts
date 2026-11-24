@@ -2,7 +2,7 @@ import { AlphaType, ColorType, ImageFormat, Skia, TileMode } from '@shopify/reac
 import { File } from 'expo-file-system';
 
 import { shrunkCopy } from './clean';
-import { readPage } from './scans';
+import { decodePage, readPage } from './scans';
 
 export type Point = { x: number; y: number };
 /** Page corners in photo pixels: top-left, top-right, bottom-right, bottom-left. */
@@ -596,10 +596,7 @@ export async function cropPage(uri: string, corners: Quad, dest: string): Promis
   const photo = await new File(uri).bytes();
   const plain = plainJpegSize(photo);
   if (plain && isWhole(corners, plain.width, plain.height)) return new File(dest).write(photo);
-  const data = Skia.Data.fromBytes(photo);
-  const image = Skia.Image.MakeImageFromEncoded(data);
-  data.dispose();
-  if (!image) throw new Error('unreadable page');
+  const image = decodePage(photo);
   if (isWhole(corners, image.width(), image.height())) {
     const bytes = image.encodeToBytes(ImageFormat.JPEG, 90);
     image.dispose();

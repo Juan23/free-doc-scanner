@@ -4,7 +4,7 @@
 /// <reference types="jest" />
 import { BlurStyle, ImageFormat, Skia, type SkCanvas, type SkPaint } from '@shopify/react-native-skia';
 
-import { cropPage, findPage, isConvex, type Quad } from './crop';
+import { cropPage, findPage, isConvex, pageAspect, type Quad } from './crop';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
 const mockFiles = new Map<string, Uint8Array>();
@@ -383,6 +383,15 @@ it.each([
   expect(image.width()).toBeGreaterThanOrEqual(Math.floor(Math.max(length(tl, tr), length(bl, br))));
   expect(image.height()).toBeGreaterThanOrEqual(Math.floor(Math.max(length(tl, bl), length(tr, br))));
 }, 30000);
+
+it('keeps an A4 shape when 2 px of corner noise reads a much shorter focal length than the camera has', () => {
+  // Tipped back, the page's top and bottom stay parallel; the noise tilts them just past 1%.
+  const shift = [-2, 2, -2, 2];
+  const corners = seen(210 / 297, 0.72 * H, 0.4, 0).map((p, i) => ({ x: p.x + shift[i], y: p.y - shift[(i + 1) % 4] })) as Quad;
+
+  // Read unclamped, the focal length is under 0.4 of the camera's and the page 7% too wide.
+  expect(Math.abs(pageAspect(corners, W, H) / (210 / 297) - 1)).toBeLessThan(0.02);
+});
 
 it('keeps the photo file itself when the corners are the whole photo', async () => {
   const bytes = photo(tilted, 'rgb(92,70,52)');

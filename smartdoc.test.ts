@@ -37,6 +37,7 @@ jest.mock('expo-file-system', () => {
 });
 
 const SMARTDOC_SAMPLE_DIR = process.env.SMARTDOC;
+const GT_DIR = path.join(SMARTDOC_SAMPLE_DIR ?? '', 'input_sample_groundtruth', 'background00_gt');
 const FRAME_STEP = 5;
 const VIDEOS = ['datasheet001', 'letter001', 'magazine001'];
 // SmartDoc's frames are 1920 x 1080 and its pages A4.
@@ -102,9 +103,7 @@ afterAll(() => {
 });
 
 (SMARTDOC_SAMPLE_DIR ? it : it.skip)('measures findPage on SmartDoc background00 frames', async () => {
-  const videos = VIDEOS;
   const vidDir = path.join(SMARTDOC_SAMPLE_DIR!, 'input_sample', 'background00');
-  const gtDir = path.join(SMARTDOC_SAMPLE_DIR!, 'input_sample_groundtruth', 'background00_gt');
   framesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smartdoc-frames-'));
 
   const allErrors: number[] = [];
@@ -116,7 +115,7 @@ afterAll(() => {
   let aspectWithin5 = 0;
   let aspectWithin8 = 0;
 
-  for (const vid of videos) {
+  for (const vid of VIDEOS) {
     execFileSync('ffmpeg', [
       '-y',
       '-loglevel',
@@ -132,7 +131,7 @@ afterAll(() => {
       path.join(framesDir, `${vid}_%04d.jpg`),
     ]);
 
-    const gt = parseGt(path.join(gtDir, `${vid}.gt.xml`));
+    const gt = parseGt(path.join(GT_DIR, `${vid}.gt.xml`));
     const files = fs
       .readdirSync(framesDir)
       .filter((f) => f.startsWith(`${vid}_`) && f.endsWith('.jpg'))
@@ -186,8 +185,7 @@ afterAll(() => {
 }, 120000);
 
 (SMARTDOC_SAMPLE_DIR ? it : it.skip)('reads an A4 shape from the true corners of SmartDoc background00 frames', () => {
-  const gtDir = path.join(SMARTDOC_SAMPLE_DIR!, 'input_sample_groundtruth', 'background00_gt');
-  const quads = VIDEOS.flatMap((vid) => [...parseGt(path.join(gtDir, `${vid}.gt.xml`)).values()]);
+  const quads = VIDEOS.flatMap((vid) => [...parseGt(path.join(GT_DIR, `${vid}.gt.xml`)).values()]);
   const errors = quads.map((q) => a4Error(pageAspect(q, FRAME_WIDTH, FRAME_HEIGHT)));
   const within2 = errors.filter((e) => e <= 0.02).length;
   const within5 = errors.filter((e) => e <= 0.05).length;
