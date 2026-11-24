@@ -167,11 +167,12 @@ const LUMA = [0.2126, 0.7152, 0.0722] as const;
 // runs on 4 and 8 px both ways. A crease 3 px or wider fails; at Strong the floor sits between a
 // 0.35 alpha crease and grey 130.
 // Normal's white point turns the pale flanks of thin print white, breaking blurred small text and
-// dotted leaders apart. So where a pixel is kept, at Normal and between Normal and Light, it is
-// drawn as Light draws it when it lies on a thin stroke across a row or a column: paper 2 px away on
-// both sides, and the stroke going on 1 px both ways along it. A lone speck has no stroke beside it;
-// a wide faint mark has no paper 2 px away. Strong keeps its own levels. The diagonals too kept 2%
-// more of 16 and 20 px pale print on a 680 px page and took the page 20% longer.
+// dotted leaders apart. So where a pixel is kept, from Light down to Normal, and fading out from
+// Normal to Strong, it is drawn as Light draws it when it lies on a thin stroke across a row or a
+// column: paper 2 px away on both sides, and the stroke going on 1 px both ways along it. A lone
+// speck has no stroke beside it; a wide faint mark has no paper 2 px away. Strong keeps its own
+// levels. The diagonals too kept 2% more of 16 and 20 px pale print on a 680 px page and took the
+// page 20% longer.
 const cleanEffect = Skia.RuntimeEffect.Make(`
 uniform shader page;
 uniform shader paper;
@@ -227,7 +228,7 @@ half ridge(float2 xy, half3 p, float2 across) {
   return smoothstep(lower, lower + width, here - 1.5 * beside) * smoothstep(lower, lower + width, runs) * (1 - smoothstep(limit + 0.01, limit + 0.11, here));
 }
 half strokeAt(float2 xy, half3 p, float2 across, half b) {
-  float2 along = float2(-across.y, across.x);
+  float2 along = across.yx;
   half side = max(paleAt(xy - 2 * across, p), paleAt(xy + 2 * across, p));
   half runs = min(paleAt(xy - along, p), paleAt(xy + along, p));
   return (1 - smoothstep(0.55, 0.85, side / b)) * smoothstep(0.3, 0.6, runs / b);
