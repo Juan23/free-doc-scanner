@@ -355,7 +355,63 @@ function pixel(bytes: Uint8Array, x: number, y: number): number[] {
   return [...(image.readPixels(x, y, { width: 1, height: 1, colorType: 4, alphaType: 3 }) as Uint8Array).slice(0, 3)];
 }
 
-it('straightens the page inside the corners into an upright page as wide and tall as its longest sides', async () => {
+// Where a camera with focal length `f` px, centred on the photo, sees the corners of a page `ratio` times
+// as wide as tall, tipped back `pitch` and turned `yaw` radians.
+function seen(ratio: number, f: number, pitch: number, yaw: number): Quad {
+  return ([[-1, -1], [1, -1], [1, 1], [-1, 1]] as const).map(([sx, sy]) => {
+    const [x0, y0] = [(sx * ratio) / 2, sy / 2];
+    const [x1, z1] = [x0 * Math.cos(yaw), x0 * Math.sin(yaw)];
+    const [y, z] = [y0 * Math.cos(pitch) - z1 * Math.sin(pitch), y0 * Math.sin(pitch) + z1 * Math.cos(pitch) + 2];
+    return { x: W / 2 + (f * x1) / z, y: H / 2 + (f * y) / z };
+  }) as Quad;
+}
+
+it.each([
+  ['an A4 page tipped back and turned, its sides all converging', 210 / 297, 1000, 0.6, 0.3],
+  ['a landscape page tipped back, its top and bottom parallel', 297 / 210, 864, 0.55, 0],
+  ['a page turned, its left and right sides parallel', 0.75, 800, 0, 0.5],
+])('keeps the true shape of %s, without shrinking any side', async (_, ratio, f, pitch, yaw) => {
+  const corners = seen(ratio, f, pitch, yaw);
+  mockFiles.set('file:///cache/photo.jpg', photo(corners, 'rgb(92,70,52)'));
+
+  await cropPage('file:///cache/photo.jpg', corners, 'file:///cache/page.jpg');
+
+  const image = Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(mockFiles.get('file:///cache/page.jpg')!))!;
+  expect(Math.abs(image.width() / image.height() / ratio - 1)).toBeLessThan(0.02);
+  const [tl, tr, br, bl] = corners;
+  const length = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.hypot(a.x - b.x, a.y - b.y);
+  expect(image.width()).toBeGreaterThanOrEqual(Math.floor(Math.max(length(tl, tr), length(bl, br))));
+  expect(image.height()).toBeGreaterThanOrEqual(Math.floor(Math.max(length(tl, bl), length(tr, br))));
+}, 30000);
+
+it('keeps the photo file itself when the corners are the whole photo', async () => {
+  const bytes = photo(tilted, 'rgb(92,70,52)');
+  mockFiles.set('file:///cache/photo.jpg', bytes);
+
+  await cropPage('file:///cache/photo.jpg', wholePhoto, 'file:///cache/page.jpg');
+
+  expect(mockFiles.get('file:///cache/page.jpg')).toEqual(bytes);
+}, 30000);
+
+it('redraws a whole photo that carries EXIF, as a PDF would show its pixels sideways', async () => {
+  const plain = photo(tilted, 'rgb(92,70,52)');
+  // An EXIF block saying the pixels are turned a quarter (orientation 6).
+  const tiff = [0x4d, 0x4d, 0, 42, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0];
+  const app1 = [0xff, 0xe1, 0, 2 + 6 + tiff.length, ...[...'Exif'].map((c) => c.charCodeAt(0)), 0, 0, ...tiff];
+  const tagged = new Uint8Array([...plain.subarray(0, 2), ...app1, ...plain.subarray(2)]);
+  mockFiles.set('file:///cache/photo.jpg', tagged);
+  const source = Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(tagged))!;
+
+  const [w, h] = [source.width(), source.height()];
+  await cropPage('file:///cache/photo.jpg', [{ x: 0, y: 0 }, { x: w, y: 0 }, { x: w, y: h }, { x: 0, y: h }], 'file:///cache/page.jpg');
+
+  const page = mockFiles.get('file:///cache/page.jpg')!;
+  expect(page).not.toEqual(tagged);
+  const image = Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(page))!;
+  expect([image.width(), image.height()]).toEqual([w, h]);
+}, 30000);
+
+it('straightens the page inside the corners into an upright page', async () => {
   // A red mark by the page's top-left corner and a blue one by its bottom-right.
   const surface = Skia.Surface.Make(W, H)!;
   const canvas = surface.getCanvas();
@@ -373,10 +429,6 @@ it('straightens the page inside the corners into an upright page as wide and tal
 
   const page = mockFiles.get('file:///cache/page.jpg')!;
   const image = Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(page))!;
-  const bottom = Math.hypot(720 - 110, 1080 - 1010);
-  const right = Math.hypot(760 - 720, 200 - 1080);
-  expect(image.width()).toBe(Math.round(bottom));
-  expect(image.height()).toBe(Math.round(right));
   const [r1, g1, b1] = pixel(page, 50, 60);
   expect(r1).toBeGreaterThan(200);
   expect(g1 + b1).toBeLessThan(120);
