@@ -88,6 +88,7 @@ jest.mock('expo-file-system', () => {
 });
 // buildPdf is covered with real pdf-lib in buildPdf.test.ts; here it only has to yield bytes.
 jest.mock('pdf-lib', () => ({
+  JpegEmbedder: { for: async () => ({ width: 1, height: 1 }) },
   PDFDocument: {
     create: async () => ({
       embedJpg: async () => ({ width: 1, height: 1 }),
@@ -96,6 +97,10 @@ jest.mock('pdf-lib', () => ({
     }),
   },
 }));
+// A 1 px page is never shrunk, so the Skia side of buildPdf never runs here.
+jest.mock('@shopify/react-native-skia', () => ({}));
+jest.mock('./clean', () => ({}));
+jest.mock('./scans', () => ({}));
 jest.mock('expo-media-library', () => ({
   Asset: { create: jest.fn() },
   Album: { create: jest.fn() },

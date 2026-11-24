@@ -1,7 +1,11 @@
-import { PDFDocument } from 'pdf-lib';
+import { ImageFormat } from '@shopify/react-native-skia';
+import { JpegEmbedder, PDFDocument } from 'pdf-lib';
 import { Directory, File, Paths } from 'expo-file-system';
 import { Album, Asset, requestPermissionsAsync } from 'expo-media-library';
 import { Platform } from 'react-native';
+
+import { shrunkCopy } from './clean';
+import { readPage } from './scans';
 
 const ALBUM = 'Free Doc Scanner';
 const pad = (n: number) => String(n).padStart(2, '0');
@@ -20,17 +24,44 @@ export const pagesToSave = (pages: string[], picked: string[]) =>
 export const pickOnLongPress = (picked: string[] | null, uri: string): string[] =>
   picked === null ? [uri] : picked.includes(uri) ? picked : [...picked, uri];
 
-/** One PDF page per page JPEG, in order, at A4 width with the image's aspect ratio. */
+const A4 = { short: 595.28, long: 841.89 };
+// Small print stays as sharp as the page's own pixels at 250 dpi; 150 softens Chinese strokes.
+const MAX_DPI = 250;
+
+/**
+ * One PDF page per page JPEG, in order: A4, portrait or landscape by the image's shape, the image
+ * centred with its aspect kept. An image over twice as tall as wide (a receipt) gets a page of A4
+ * width as tall as its shape instead, so its text is not shrunk to fit. A page finer than 250 dpi
+ * at its size on the PDF page is shrunk to 250 dpi; any other is embedded as it is.
+ */
 export async function buildPdf(pages: string[]): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
   // shortcut: holds every page in memory (~3x the scan size at peak), fine for typical scans; stream pages if 50+ page scans crash
   for (const uri of pages) {
-    const image = await doc.embedJpg(await new File(uri).bytes());
-    const width = 595.28;
-    const height = (width * image.height) / image.width;
-    doc.addPage([width, height]).drawImage(image, { x: 0, y: 0, width, height });
+    let bytes: Uint8Array = await new File(uri).bytes();
+    const { width: w, height: h } = await JpegEmbedder.for(bytes);
+    const size: [number, number] =
+      h > 2 * w ? [A4.short, (A4.short * h) / w] : h >= w ? [A4.short, A4.long] : [A4.long, A4.short];
+    const scale = Math.min(size[0] / w, size[1] / h);
+    const width = w * scale;
+    const height = h * scale;
+    const maxWidth = Math.round((width / 72) * MAX_DPI);
+    if (w > maxWidth) bytes = await shrunkJpeg(uri, maxWidth, Math.round((h * maxWidth) / w));
+    const image = await doc.embedJpg(bytes);
+    doc.addPage(size).drawImage(image, { x: (size[0] - width) / 2, y: (size[1] - height) / 2, width, height });
   }
   return doc.save();
+}
+
+async function shrunkJpeg(uri: string, w: number, h: number): Promise<Uint8Array> {
+  const image = await readPage(uri);
+  const small = shrunkCopy(image, w, h);
+  const bytes = small.encodeToBytes(ImageFormat.JPEG, 90);
+  image.dispose();
+  small.dispose();
+  // Native Skia returns null when encoding fails, whatever the type says.
+  if (!bytes?.length) throw new Error('could not encode page');
+  return bytes;
 }
 
 /** Asks the user for a folder and writes the pages there as `<name>.pdf`, never overwriting. */
