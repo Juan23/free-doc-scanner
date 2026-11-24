@@ -654,6 +654,7 @@ function unlikeSurface(c: number[], d: number[]): boolean {
   return [0, 1, 2].reduce((sum, i) => sum + Math.abs(c[i] / sc - d[i] / sd), 0) > BAND_HUE;
 }
 
+// shortcut: a band flush with the page's edge in or near the surface's colour is left outside the frame (#116), upgrade when a real photo shows one.
 /** The page as the largest patch the surface round it does not reach, framed by its largest quad, or null when that frame leaves part of the patch out, is not filled by it, or fails a frame check. */
 function patchCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
   const minArea = 0.04 * w * h;
