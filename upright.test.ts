@@ -4,7 +4,7 @@
 /// <reference types="jest" />
 import { ImageFormat, Skia, TileMode } from '@shopify/react-native-skia';
 
-import { rotatePage, uprightPages } from './upright';
+import { readUpright, rotatePage, uprightPages } from './upright';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
 const { existsSync, readFileSync } = jest.requireActual('fs');
@@ -457,21 +457,21 @@ it('rejects a page it cannot read, leaving it as it is', async () => {
   expect(mockFiles.get(PAGE)).toBe(broken);
 });
 
-// On the 1000 px copy, this type's letters are too small to read, as on most phone photos; a closer look at the page's middle reads them.
-it.each([18, 22])('turns a 3024 px letter in small %i px type upright at every quarter turn', async (fontSize) => {
-  const upright = largeLetter(0, fontSize);
-  for (const turns of [0, 1, 2, 3]) {
-    mockFiles.set(PAGE, largeLetter(turns, fontSize));
+// The closer look costs a second copy and pass, and could overrule a page the first reading is sure of.
+it('reads a page sure to be upright only once', () => {
+  const image = Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(largeLetter(0, 40)))!;
+  const copies = jest.spyOn(Skia.Surface, 'Make');
 
-    await uprightPages([PAGE]);
+  const reading = readUpright(image);
 
-    expect([fontSize, turns, difference(mockFiles.get(PAGE)!, upright) < 3]).toEqual([fontSize, turns, true]);
-  }
-}, 120000);
+  expect([reading.turns, reading.failedAsIs, copies.mock.calls.length]).toEqual([0, [], 1]);
+  copies.mockRestore();
+}, 30000);
 
-// Sizes 36, 38, 40 and 46 are where a comma's gap before is about a third of the space after it, so
-// those commas must not count against the page. No size may turn an upright page.
-it.each(Array.from({ length: 14 }, (_, i) => 26 + 2 * i))('turns a 3024 px letter in %i px type upright at every quarter turn', async (fontSize) => {
+// At 18 and 22 px the letters are too small to read on the 1000 px copy, as on most phone photos, so
+// the closer look reads them. Sizes 36, 38, 40 and 46 are where a comma's gap before is about a third
+// of the space after it, so those commas must not count against the page. No size may turn an upright page.
+it.each([18, 22, ...Array.from({ length: 14 }, (_, i) => 26 + 2 * i)])('turns a 3024 px letter in %i px type upright at every quarter turn', async (fontSize) => {
   const upright = largeLetter(0, fontSize);
   for (const turns of [0, 1, 2, 3]) {
     mockFiles.set(PAGE, largeLetter(turns, fontSize));
@@ -483,11 +483,10 @@ it.each(Array.from({ length: 14 }, (_, i) => 26 + 2 * i))('turns a 3024 px lette
 }, 120000);
 
 // Real typefaces draw differently from CanvasKit's default. Not committed: skipped without macOS's fonts.
-// Only Latin must turn; Cyrillic and Hebrew stay as they are. Courier New's Latin turns at 40 and 44 px,
-// and at 48 px at 1 and 2 quarter turns only, so 44 is tested: at 24 to 28 px its strokes are too thin to
-// find lines, at 32 px its marks look like another script's, at 36 px its balance and stops fail, at 52 px no
-// full stops count. The Hebrew rows only check that real Hebrew stays. Real Cyrillic and Hebrew stay at
-// 24 to 56 px (steps of 4) even with the marks and heavy-bottom rules off, so the made-up script above guards those two rules.
+// Only Latin must turn; Cyrillic and Hebrew stay as they are. Courier New's Latin turns at every quarter
+// turn only at 40 and 44 px, so 44 is tested. The Hebrew rows only check that real Hebrew stays. Real Cyrillic
+// and Hebrew stay at 12 to 56 px (steps of 4) even with the marks and heavy-bottom rules off, so the made-up
+// script above guards those two rules.
 const FONTS = '/System/Library/Fonts/Supplemental/';
 const REAL_RUSSIAN = RUSSIAN.split('\n').slice(0, 5);
 const REAL_HEBREW = [

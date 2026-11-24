@@ -9,6 +9,7 @@ const SMALL_LONG_SIDE = 1000;
 // text is too small on the first copy, and the middle holds the least table round a whole-photo crop.
 const CLOSE_LONG_SIDE = 2000;
 const CLOSE_PART = 0.5;
+const BILINEAR_MIN_SCALE = 0.4;
 // The paper's brightness is the brightest pixel in the 3 x 3 blocks of this size around a pixel.
 const BLOCK = 8;
 
@@ -27,7 +28,7 @@ function findInk(image: SkImage, long: number, part = 1): { ink: Uint8Array; w: 
   const matrix = Skia.Matrix().scale(scale, scale).translate((-width * (1 - part)) / 2, (-height * (1 - part)) / 2);
   const paint = Skia.Paint();
   // Bilinear alone skips pixels when shrinking over 2.5 times; one mipmap level costs a fifth of blending two.
-  const mip = scale < 0.4 ? MipmapMode.Nearest : MipmapMode.None;
+  const mip = scale < BILINEAR_MIN_SCALE ? MipmapMode.Nearest : MipmapMode.None;
   const shader = image.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, mip, matrix);
   paint.setShader(shader);
   surface.getCanvas().drawPaint(paint);
@@ -348,9 +349,12 @@ function failedGates(a: Reading, b: Reading): string[] {
 /** `turns` (clockwise quarter turns to stand the text upright) is 0 also when unsure: no clear text, or no clear up. */
 export function readUpright(image: SkImage) {
   const whole = readInk(findInk(image, SMALL_LONG_SIDE));
+  const sure = whole.turns || !whole.failedAsIs.length;
   // Held back by another script's marks alone, the page is not looked at again: its middle may hold too few of them.
-  const otherScript = [whole.failedAsIs, whole.failedTurned].some((failed) => failed.length === 1 && failed[0] === 'script');
-  return whole.turns || otherScript ? whole : readInk(findInk(image, CLOSE_LONG_SIDE, CLOSE_PART));
+  const heldByScriptOnly = [whole.failedAsIs, whole.failedTurned].some((failed) => failed.length === 1 && failed[0] === 'script');
+  // A page this small is read at full size already, so a closer look sees nothing new.
+  const fullSize = Math.max(image.width(), image.height()) <= SMALL_LONG_SIDE;
+  return sure || heldByScriptOnly || fullSize ? whole : readInk(findInk(image, CLOSE_LONG_SIDE, CLOSE_PART));
 }
 
 function readInk({ ink, w, h }: { ink: Uint8Array; w: number; h: number }) {
