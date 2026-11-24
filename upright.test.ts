@@ -321,15 +321,19 @@ it.each([0, 1, 2, 3])('never turns a page of Russian text the wrong way (%i)', a
  * gaps, as in a typewriter font, or with `gaps` [left, right], each yod has that many pixels of
  * space on its left and right. With `bars`, letters are a bar along the top on two stems, heavy
  * at the top as Hebrew's are, rather than solid blocks. With `copies`, each yod is drawn that many
- * times, 2 px apart.
+ * times, `copyGap` px apart.
  */
+// One surface per orientation, reused as in largeLetter: a new one per page exhausts the heap.
+const blockSurfaces: any[] = [];
+
 function blocks(
   turns: number,
-  { finalYodsEvery = 7, yodsEvery = 0, stopsEvery = 0, pointsEvery = 0, tallEvery = 13, spaced = false, bars = false, gaps = [0, 0], copies = 1 } = {},
+  { finalYodsEvery = 7, yodsEvery = 0, stopsEvery = 0, pointsEvery = 0, tallEvery = 13, spaced = false, bars = false, gaps = [0, 0], copies = 1, copyGap = 2 } = {},
 ): Uint8Array {
   const [w, h] = turns % 2 ? [H, W] : [W, H];
-  const surface = CanvasKit.MakeSurface(w, h);
+  const surface = (blockSurfaces[turns % 2] ??= CanvasKit.MakeSurface(w, h));
   const canvas = surface.getCanvas();
+  canvas.save();
   canvas.clear(CanvasKit.Color(236, 230, 214));
   canvas.translate(w / 2, h / 2);
   canvas.rotate(turns * 90, 0, 0);
@@ -338,9 +342,9 @@ function blocks(
   ink.setColor(CanvasKit.Color(30, 30, 40));
   const box = (x: number, y: number, width: number, height: number) => canvas.drawRect(CanvasKit.XYWHRect(x, y, width, height), ink);
   const [left, right] = spaced ? [9, 9] : gaps;
-  const yodWidth = 6 * copies - 2;
+  const yodWidth = (4 + copyGap) * copies - copyGap;
   const yod = (x: number, top: number) => {
-    for (let i = 0; i < copies; i++) box(x + 6 * i, top, 4, 6);
+    for (let i = 0; i < copies; i++) box(x + (4 + copyGap) * i, top, 4, 6);
   };
   let k = 0;
   let word = 0;
@@ -376,7 +380,11 @@ function blocks(
       }
     }
   }
-  return surface.makeImageSnapshot().encodeToBytes(CanvasKit.ImageFormat.JPEG, 92);
+  canvas.restore();
+  const snapshot = surface.makeImageSnapshot();
+  const bytes = snapshot.encodeToBytes(CanvasKit.ImageFormat.JPEG, 92);
+  for (const o of [snapshot, ink]) o.delete();
+  return bytes;
 }
 
 describe.each([
@@ -392,10 +400,10 @@ describe.each([
   ['with 3 yods ending words and 3 full stops', { finalYodsEvery: 200, stopsEvery: 150 }],
   ['with yods ending words, a few inside them, and full stops', { finalYodsEvery: 70, yodsEvery: 300, stopsEvery: 150 }],
   ['with nothing sticking up', { tallEvery: 0 }],
-  // Marks a row are no dot leader: a pair of yods,
+  // A script's marks in a row, evenly spaced, are no dot leader, however many there are.
   ['with each yod drawn twice', { copies: 2 }],
-  // Nor are three, evenly spaced.
   ['with each yod drawn three times', { copies: 3 }],
+  ...[4, 6].flatMap((copies) => [2, 3, 4, 5].map((copyGap): [string, object] => [`with each yod drawn ${copies} times, ${copyGap} px apart`, { copies, copyGap }])),
   ["with vowel points, its letters heavy at the top as Hebrew's are", { pointsEvery: 3, tallEvery: 5, bars: true }],
 ])('a page of a right-to-left script whose yods look like full stops upside down, %s,', (_, options) => {
   it.each([0, 1, 2, 3])('is never turned the wrong way (%i)', async (turns) => {
@@ -552,21 +560,4 @@ const haveFonts = existsSync(FONTS + 'Times New Roman.ttf');
     },
     120000,
   );
-
-  // Decimal points and dot leaders sit between digits or beside each other with no space after; counted as
-  // another script's marks, they would hold this Latin page back.
-  const PRICES = [
-    'Coffee, small ........................ 2.40    Tea with milk ............ 1.90',
-    'Croissant ............................ 3.15    Bagel, toasted ........... 2.75',
-    'Chapter 4. Results .................. 112    Appendix B ............. 3.1.2',
-    'Total 14.99 incl. tax 2.50; paid 20.00, change 5.01. Thank you.',
-    'Item 7.3.1 page 45 ... 47 ... 49 ... 51. See also 8.2 and 9.14.',
-  ];
-  it.each([1, 2])('turns an Arial price list turned %i quarter turns upright', async (turns) => {
-    mockFiles.set(PAGE, largeLetter(turns, 44, PRICES, FONTS + 'Arial.ttf'));
-
-    await keepWholePhoto();
-
-    expect(difference(mockFiles.get(PAGE)!, largeLetter(0, 44, PRICES, FONTS + 'Arial.ttf'))).toBeLessThan(3);
-  }, 60000);
 });

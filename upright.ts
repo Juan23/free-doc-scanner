@@ -128,11 +128,6 @@ const WIDER = 3;
 // From this many times up to WIDER, a mark with spaces on both sides tells nothing: a comma after a y
 // has a 4 px gap before it and 11 after, in 36 px type on a 3024 px photo, as another script's mark can.
 const NEUTRAL = 2;
-// A digit's column runs at least this share of the digit's height.
-const FULL_COLUMN = 0.75;
-// A dot leader runs on for at least this many evenly spaced marks, more than a script writes a row: a
-// right-to-left script with each yod tripled is turned the wrong way when 3 marks pass for a leader.
-const LEADER_MARKS = 4;
 
 function median(values: number[]): number {
   const sorted = values.sort((a, b) => a - b);
@@ -288,47 +283,6 @@ function strokes(ink: Uint8Array, w: number, h: number) {
           }
           return n;
         };
-        // The nearest inked run from x within the strip, stepping by `step`: where it starts and ends, its
-        // extent, and whether it sticks out past the line on the mark's near side.
-        const run = (x: number, step: number) => {
-          for (; x >= 0 && x < STRIP && tops[x] < 0; x += step);
-          const start = x;
-          let top = h;
-          let bottom = -1;
-          let sticksOut = false;
-          for (; x >= 0 && x < STRIP && tops[x] >= 0; x += step) {
-            sticksOut ||= isStop ? bottoms[x] > baseline(x) + reach : tops[x] < xLine(x) - reach;
-            top = Math.min(top, tops[x]);
-            bottom = Math.max(bottom, bottoms[x]);
-          }
-          return { start, end: x - step, width: Math.abs(x - start), top, bottom, sticksOut };
-        };
-        type Run = ReturnType<typeof run>;
-        const isMark = (r: Run) => r.width > 0 && r.width <= mark && r.bottom - r.top + 1 <= mark && Math.abs(r.top - markTop) <= near;
-        // A digit is taller than the x-height, sticks out on one side only, and most of its columns run
-        // most of its height; a letter that sticks out does so by a stem.
-        const isDigit = (r: Run) => {
-          const height = r.bottom - r.top + 1;
-          if (!r.width || r.sticksOut || height < xHeight + reach) return false;
-          let full = 0;
-          for (let x = Math.min(r.start, r.end); x <= Math.max(r.start, r.end); x++) if (bottoms[x] - tops[x] + 1 >= FULL_COLUMN * height) full++;
-          return full >= r.width / 2;
-        };
-        const gap = (from: number, r: Run) => Math.abs(r.start - from) - 1;
-        // The marks a row from this one, evenly spaced, starting from its nearest runs left and right.
-        const leaderMarks = (nearest: Run[]) => {
-          let marks = 1;
-          let spacing = -1;
-          [-1, 1].forEach((step, i) => {
-            for (let from = step < 0 ? a : b, r = nearest[i]; isMark(r); from = r.end, r = run(r.end + step, step)) {
-              const g = gap(from, r);
-              if (spacing < 0) spacing = g;
-              else if (Math.abs(g - spacing) > 1) break;
-              marks++;
-            }
-          });
-          return marks;
-        };
         const after = blank(left + b + 1, 1);
         const before = blank(left + a - 1, -1);
         const marks = isStop ? low : high;
@@ -336,13 +290,8 @@ function strokes(ink: Uint8Array, w: number, h: number) {
         const rtl = isStop ? before : after;
         if (ltr >= space && (rtl < space || ltr >= WIDER * rtl)) marks.ltr++;
         else if (rtl >= space && (ltr < space || rtl >= WIDER * ltr)) marks.rtl++;
-        else {
-          // A decimal point between digits or a dot leader's dot is no other script's mark, so it is not counted.
-          const nearest = [run(a - 1, -1), run(b + 1, 1)];
-          if (nearest.every(isDigit) || leaderMarks(nearest) >= LEADER_MARKS) continue;
-          if (ltr < space) marks.inWord++;
-          else if (ltr < NEUTRAL * rtl && rtl < NEUTRAL * ltr) marks.alone++;
-        }
+        else if (ltr < space) marks.inWord++;
+        else if (ltr < NEUTRAL * rtl && rtl < NEUTRAL * ltr) marks.alone++;
       }
     });
   }
