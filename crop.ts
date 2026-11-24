@@ -405,21 +405,25 @@ function cutsPaper(q: Quad, s: number, rgba: Uint8Array, w: number, h: number): 
   return cut.length >= MIN_PAPER_BEYOND * points.length;
 }
 
-/** True when most of side s is brighter just outside it than just inside: the page is the light patch, so the side lies across it. */
-function brighterPast(q: Quad, s: number, rgba: Uint8Array, w: number, h: number): boolean {
+/** True when most of some side, but not of every side, is brighter just outside it than just inside: that side lies across the page, where a page on a paler table is brighter past every side. */
+function liesAcrossPage(q: Quad, rgba: Uint8Array, w: number, h: number): boolean {
   const { at, paper, sides } = framePaper(q, rgba, w, h);
-  const { nx, ny, points } = sides[s];
-  // Mean brightness at these px from (x, y) along the outward normal, NaN when none is in the photo.
-  const meanBrightness = (x: number, y: number, offsets: number[]) => {
-    const inPhoto = offsets.map((d) => at(x + nx * d, y + ny * d)).filter((o) => o >= 0);
-    return inPhoto.reduce((sum, o) => sum + brightness([rgba[o], rgba[o + 1], rgba[o + 2]]), 0) / inPhoto.length;
+  const brighterPast = (s: number) => {
+    const { nx, ny, points } = sides[s];
+    // NaN when none is in the photo, so a side along the photo's edge is never brighter past.
+    const meanBrightness = (x: number, y: number, offsets: number[]) => {
+      const inPhoto = offsets.map((d) => at(x + nx * d, y + ny * d)).filter((o) => o >= 0);
+      return inPhoto.reduce((sum, o) => sum + brightness([rgba[o], rgba[o + 1], rgba[o + 2]]), 0) / inPhoto.length;
+    };
+    const brighter = points.filter(
+      ({ x, y }) =>
+        meanBrightness(x, y, STRIP) > BRIGHTER * meanBrightness(x, y, STRIP.map((d) => -d)) &&
+        meanBrightness(x, y, CUT_REACH.map((d) => -d)) >= GAP_DARK * brightness(paper),
+    );
+    return brighter.length >= MAX_BRIGHTER_PAST * points.length;
   };
-  const brighter = points.filter(
-    ({ x, y }) =>
-      meanBrightness(x, y, STRIP) > BRIGHTER * meanBrightness(x, y, STRIP.map((d) => -d)) &&
-      meanBrightness(x, y, CUT_REACH.map((d) => -d)) >= GAP_DARK * brightness(paper),
-  );
-  return brighter.length >= MAX_BRIGHTER_PAST * points.length;
+  const brighterSides = [0, 1, 2, 3].filter(brighterPast).length;
+  return brighterSides > 0 && brighterSides < 4;
 }
 
 /** True when most of a side runs along a dark band of even depth with paper past it that shows just inside its neighbouring sides' lines carried on, not just outside, where another sheet would spill past them or stop short. */
@@ -574,7 +578,7 @@ function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
   }
 
   // A frame that ends at a band or lies across the page is turned away, never swapped for another: a cut page is worse than the whole photo.
-  if (endsAtBand(bestQuad, rgba, w, h) || [0, 1, 2, 3].some((s) => brighterPast(bestQuad!, s, rgba, w, h))) return null;
+  if (endsAtBand(bestQuad, rgba, w, h) || liesAcrossPage(bestQuad, rgba, w, h)) return null;
   const refined = [0, 1, 2, 3].map((s) => refineLine(bestQuad[s], bestQuad[(s + 1) % 4], gx, gy, w, h));
   const allLines = (ls: (Line | null)[]): ls is Line[] => ls.every((l) => l !== null);
   if (allLines(refined)) {

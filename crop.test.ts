@@ -355,6 +355,15 @@ it('gives the whole photo, not a frame whose foot lies across the page with ligh
   expect((await findPage('file:///cache/photo.jpg')).corners).toEqual(wholePhoto);
 }, 30000);
 
+it.each([
+  ['upright', upright],
+  ['tilted', tilted],
+])('finds a %s page a little greyer than the white table round it', async (_, page) => {
+  mockFiles.set('file:///cache/photo.jpg', photo(page, 'rgb(250,250,250)', 'rgb(210,206,196)'));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, page, 20);
+}, 30000);
+
 it('falls back to the whole photo when there is no page to find', async () => {
   const surface = Skia.Surface.Make(W, H)!;
   surface.getCanvas().drawColor(Skia.Color('rgb(120,120,120)'));
