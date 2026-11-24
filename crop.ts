@@ -496,9 +496,213 @@ function endsAtBand(q: Quad, rgba: Uint8Array, w: number, h: number): boolean {
   });
 }
 
+// Sum of red, green and blue differences between neighbouring pixels that the surface round the page spreads across.
+const SURFACE_STEP = 30;
+// The same sum from the colour the surface brought along: it stops at a soft page edge, whose steps are small, while light falling off across a table carries that colour with it.
+const SURFACE_DRIFT = 60;
+// Share of the way the colour the surface brings along moves to each pixel it takes.
+const SURFACE_FOLLOW = 0.1;
+// Share of the patch a frame may leave out, as a curled corner does, and share of the frame the patch must fill.
+const PATCH_LEFT_OUT = 0.03;
+const PATCH_FILL = 0.9;
+// Search-copy px inside and outside a frame side where the page's edge and the surface are read.
+const RING = [2, 3, 4, 5, 6];
+// Share of a side's points that must have the page's edge inside and the surface outside.
+const RING_SHARE = 0.7;
+// Share of the paper's brightness a page's edge keeps; a box or clipboard round the page is darker.
+const EDGE_BRIGHT = 0.5;
+// Share of the paper's brightness from which what lies outside a side counts as more paper.
+const PAPER_BRIGHT = 0.9;
+
+// Math.abs is a slow call under Skia's Jest environment, where SmartDoc's timing is measured.
+const abs = (v: number) => (v < 0 ? -v : v);
+
+/** The surface that spreads in from the photo's edge, and the largest patch it does not reach, in a small RGBA copy. */
+function unreachedPatch(rgba: Uint8Array, w: number, h: number) {
+  const n = w * h;
+  const surface = new Uint8Array(n);
+  const brought = new Float32Array(n * 3);
+  const queue = new Int32Array(n);
+  let tail = 0;
+  for (let p = 0; p < n; p++) {
+    const x = p % w;
+    if (x > 0 && x < w - 1 && p >= w && p < n - w) continue;
+    surface[p] = 1;
+    queue[tail++] = p;
+    brought[p * 3] = rgba[p * 4];
+    brought[p * 3 + 1] = rgba[p * 4 + 1];
+    brought[p * 3 + 2] = rgba[p * 4 + 2];
+  }
+  for (let head = 0; head < tail; head++) {
+    const p = queue[head];
+    const x = p % w;
+    const r = rgba[p * 4];
+    const g = rgba[p * 4 + 1];
+    const b = rgba[p * 4 + 2];
+    const br = brought[p * 3];
+    const bg = brought[p * 3 + 1];
+    const bb = brought[p * 3 + 2];
+    for (let k = 0; k < 4; k++) {
+      const q = k === 0 ? (x > 0 ? p - 1 : -1) : k === 1 ? (x < w - 1 ? p + 1 : -1) : k === 2 ? p - w : p + w;
+      if (q < 0 || q >= n || surface[q]) continue;
+      const qr = rgba[q * 4];
+      const qg = rgba[q * 4 + 1];
+      const qb = rgba[q * 4 + 2];
+      if (abs(qr - r) + abs(qg - g) + abs(qb - b) > SURFACE_STEP) continue;
+      if (abs(qr - br) + abs(qg - bg) + abs(qb - bb) > SURFACE_DRIFT) continue;
+      brought[q * 3] = br + SURFACE_FOLLOW * (qr - br);
+      brought[q * 3 + 1] = bg + SURFACE_FOLLOW * (qg - bg);
+      brought[q * 3 + 2] = bb + SURFACE_FOLLOW * (qb - bb);
+      surface[q] = 1;
+      queue[tail++] = q;
+    }
+  }
+
+  const patch = new Int32Array(n);
+  let best = 0;
+  let size = 0;
+  for (let s = 0; s < n; s++) {
+    if (surface[s] || patch[s]) continue;
+    const id = s + 1;
+    tail = 0;
+    queue[tail++] = s;
+    patch[s] = id;
+    for (let head = 0; head < tail; head++) {
+      const p = queue[head];
+      const x = p % w;
+      for (let k = 0; k < 4; k++) {
+        const q = k === 0 ? (x > 0 ? p - 1 : -1) : k === 1 ? (x < w - 1 ? p + 1 : -1) : k === 2 ? p - w : p + w;
+        if (q < 0 || q >= n || surface[q] || patch[q]) continue;
+        patch[q] = id;
+        queue[tail++] = q;
+      }
+    }
+    if (tail > size) {
+      best = id;
+      size = tail;
+    }
+  }
+  return { inPatch: (p: number) => p >= 0 && patch[p] === best, size };
+}
+
+/** The convex hull of the patch's pixels, going round in order. */
+function patchHull(inPatch: (p: number) => boolean, w: number, h: number): Point[] {
+  const ends: Point[] = [];
+  for (let y = 0; y < h; y++) {
+    let lo = -1;
+    let hi = -1;
+    for (let x = 0; x < w; x++) {
+      if (!inPatch(y * w + x)) continue;
+      if (lo < 0) lo = x;
+      hi = x;
+    }
+    if (lo >= 0) ends.push({ x: lo, y }, { x: lo, y: y + 1 }, { x: hi + 1, y }, { x: hi + 1, y: y + 1 });
+  }
+  ends.sort((a, b) => a.x - b.x || a.y - b.y);
+  const turn = (o: Point, a: Point, b: Point) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const chain = (points: Point[]) => {
+    const out: Point[] = [];
+    for (const p of points) {
+      while (out.length >= 2 && turn(out[out.length - 2], out[out.length - 1], p) <= 0) out.pop();
+      out.push(p);
+    }
+    out.pop();
+    return out;
+  };
+  return [...chain(ends), ...chain([...ends].reverse())];
+}
+
+/** The four hull points that span the largest quad. */
+function largestQuad(hull: Point[]): Quad | null {
+  const n = hull.length;
+  if (n < 4) return null;
+  const at = (i: number) => hull[i % n];
+  const tri = (i: number, j: number, k: number) => {
+    const [a, b, c] = [at(i), at(j), at(k)];
+    return Math.abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x));
+  };
+  let best = 0;
+  let quad: Quad | null = null;
+  for (let i = 0; i < n; i++) {
+    // Round a convex hull, the best third point between two others moves on only as the second does.
+    let j = i + 1;
+    let l = i + 3;
+    for (let k = i + 2; k < i + n - 1; k++) {
+      while (j + 1 < k && tri(i, j + 1, k) >= tri(i, j, k)) j++;
+      if (l <= k) l = k + 1;
+      while (l + 1 < i + n && tri(i, k, l + 1) >= tri(i, k, l)) l++;
+      const a = tri(i, j, k) + tri(i, k, l);
+      if (a > best) [best, quad] = [a, [at(i), at(j), at(k), at(l)]];
+    }
+  }
+  return quad;
+}
+
+/** The page as the largest patch the surface round it does not reach, framed by its largest quad, or null when that frame leaves part of the patch out, is not filled by it, or fails a frame check. */
+function patchCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
+  const minArea = 0.04 * w * h;
+  const { inPatch, size } = unreachedPatch(rgba, w, h);
+  if (size < minArea) return null;
+  const raw = largestQuad(patchHull(inPatch, w, h));
+  const q = raw && orderCorners(raw);
+  if (!q || area(q) < minArea) return null;
+  const lengths = [0, 1, 2, 3].map((s) => Math.hypot(q[(s + 1) % 4].x - q[s].x, q[(s + 1) % 4].y - q[s].y));
+  if (Math.max(...lengths) > MAX_SIDE_RATIO * Math.min(...lengths)) return null;
+
+  const { at, paper, isPaper, sides } = framePaper(q, rgba, w, h);
+  let leftOut = 0;
+  let filled = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!inPatch(y * w + x)) continue;
+      let out = -Infinity;
+      for (let s = 0; s < 4; s++) {
+        const d = (x + 0.5 - q[s].x) * sides[s].nx + (y + 0.5 - q[s].y) * sides[s].ny;
+        if (d > out) out = d;
+      }
+      if (out > 1.5) leftOut++;
+      else if (out < 0) filled++;
+    }
+  }
+  if (leftOut > PATCH_LEFT_OUT * size || filled < PATCH_FILL * area(q)) return null;
+
+  const paperBrightness = brightness(paper);
+  const pageEdge = (x: number, y: number, nx: number, ny: number) => {
+    const inPhoto = RING.map((d) => at(x - nx * d, y - ny * d)).filter((o) => o >= 0);
+    return inPhoto.reduce((sum, o) => sum + brightness(colourOf(rgba, o)), 0) >= EDGE_BRIGHT * paperBrightness * inPhoto.length;
+  };
+  // Paper past a side, as a fold the surface took in, means the frame cuts the page.
+  const surfacePast = (x: number, y: number, nx: number, ny: number) =>
+    RING.filter((d) => {
+      const o = at(x + nx * d, y + ny * d);
+      return o < 0 || (!inPatch(o / 4) && !isPaper(o) && brightness(colourOf(rgba, o)) < PAPER_BRIGHT * paperBrightness);
+    }).length > RING.length / 2;
+  const edged = sides.every(
+    ({ nx, ny, points }) =>
+      points.filter(({ x, y }) => pageEdge(x, y, nx, ny)).length >= RING_SHARE * points.length &&
+      points.filter(({ x, y }) => surfacePast(x, y, nx, ny)).length >= RING_SHARE * points.length,
+  );
+  if (!edged || endsAtBand(q, rgba, w, h) || liesAcrossPage(q, rgba, w, h)) return null;
+  return [0, 1, 2, 3].some((s) => cutsPaper(q, s, rgba, w, h)) ? null : q;
+}
+
+/** The frame with each side fitted to the edge under it, or as it is when a side has too little edge or the fit makes no page. */
+function refineFrame(q: Quad, gx: Int16Array, gy: Int16Array, w: number, h: number): Quad {
+  const refined = [0, 1, 2, 3].map((s) => refineLine(q[s], q[(s + 1) % 4], gx, gy, w, h));
+  if (refined.some((l) => !l)) return q;
+  const [l0, l1, l2, l3] = refined as Line[];
+  const corners = [intersect(l3, l0), intersect(l0, l1), intersect(l1, l2), intersect(l2, l3)];
+  if (corners.some((p) => !p)) return q;
+  const rq = orderCorners(corners as Quad);
+  return rq && area(rq) >= 0.04 * w * h ? rq : q;
+}
+
 /** The page's corners in a small RGBA copy, or null when no page stands out from what is around it. */
 function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
   const { gx, gy, nms } = edgeMap(rgba, w, h);
+  // A page set apart from what is round it all the way along is found whatever its edges' shape; straight lines frame the rest.
+  const patch = patchCorners(rgba, w, h);
+  if (patch) return refineFrame(patch, gx, gy, w, h);
   const { lines, peaks } = houghLines(gx, gy, nms, w, h);
   if (lines.length < 4) return null;
 
@@ -592,19 +796,7 @@ function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
 
   // A frame that ends at a band or lies across the page is turned away, never swapped for another: a cut page is worse than the whole photo.
   if (endsAtBand(bestQuad, rgba, w, h) || liesAcrossPage(bestQuad, rgba, w, h)) return null;
-  const refined = [0, 1, 2, 3].map((s) => refineLine(bestQuad[s], bestQuad[(s + 1) % 4], gx, gy, w, h));
-  const allLines = (ls: (Line | null)[]): ls is Line[] => ls.every((l) => l !== null);
-  if (allLines(refined)) {
-    const r0 = intersect(refined[3], refined[0]);
-    const r1 = intersect(refined[0], refined[1]);
-    const r2 = intersect(refined[1], refined[2]);
-    const r3 = intersect(refined[2], refined[3]);
-    if (r0 && r1 && r2 && r3) {
-      const rq = orderCorners([r0, r1, r2, r3]);
-      if (rq && area(rq) >= minArea) return rq;
-    }
-  }
-  return bestQuad;
+  return refineFrame(bestQuad, gx, gy, w, h);
 }
 
 /** When no page stands out, the corners are the whole photo's. */

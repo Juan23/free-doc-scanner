@@ -153,6 +153,14 @@ it('finds a white page on a pale table when a bright glare patch touches the pag
   expectNear((await findPage('file:///cache/photo.jpg')).corners, tilted, 20);
 }, 30000);
 
+it('finds a small page on a dark desk, as a patch the desk round it does not reach', async () => {
+  // The tilted page shrunk to 40% about the photo's middle: its sides are too short on the search copy for the straight-line vote.
+  const small = tilted.map((p) => ({ x: 450 + (p.x - 450) * 0.4, y: 600 + (p.y - 600) * 0.4 })) as Quad;
+  mockFiles.set('file:///cache/photo.jpg', photo(small, 'rgb(92,70,52)'));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, small, 20);
+}, 30000);
+
 it('clamps found corners to the photo bounds when an intersection lies just outside', async () => {
   const clipped: Quad = [
     { x: 150, y: -15 },
