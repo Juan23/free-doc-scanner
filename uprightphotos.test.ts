@@ -49,7 +49,7 @@ jest.mock('expo-file-system', () => {
 const DOCUNET_DIR = process.env.DOCUNET;
 const FIRST = Number(process.env.FIRST ?? 1);
 const LAST = Number(process.env.LAST ?? 15);
-// The 90 turned copies of photos 1_1 to 15_2 gave 2 upright before the gates were eased, 4 after, and 9 with a second, closer look.
+// The 90 turned copies of photos 1_1 to 15_2 give 9 upright.
 const MIN_UPRIGHT = 9;
 
 (DOCUNET_DIR ? describe : describe.skip)('auto-upright on real photos', () => {

@@ -5,9 +5,8 @@ import { originalOf, readPage, replacePage } from './scans';
 
 // Text is looked for on a copy this long, where body text is still 5-10 px high.
 const SMALL_LONG_SIDE = 1000;
-// Unsure there, it looks again at this share of the page's width and height round its middle, on a
-// copy of the page this long: a phone photo's text is too small for the first copy, and the middle
-// holds the least table round a page cropped to the whole photo. It costs about as much as the first.
+// Unsure there, it reads this share of the page's middle again on a copy this long: a phone photo's
+// text is too small on the first copy, and the middle holds the least table round a whole-photo crop.
 const CLOSE_LONG_SIDE = 2000;
 const CLOSE_PART = 0.5;
 // The paper's brightness is the brightest pixel in the 3 x 3 blocks of this size around a pixel.
@@ -27,8 +26,7 @@ function findInk(image: SkImage, long: number, part = 1): { ink: Uint8Array; w: 
   if (!surface) throw new Error('no surface');
   const matrix = Skia.Matrix().scale(scale, scale).translate((-width * (1 - part)) / 2, (-height * (1 - part)) / 2);
   const paint = Skia.Paint();
-  // Bilinear sampling skips pixels when shrinking well over twice; at 2 it is sharper than the nearest mipmap level,
-  // which costs a fifth of blending two levels in Jest's CanvasKit.
+  // Bilinear alone skips pixels when shrinking over 2.5 times; one mipmap level costs a fifth of blending two.
   const mip = scale < 0.4 ? MipmapMode.Nearest : MipmapMode.None;
   const shader = image.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, mip, matrix);
   paint.setShader(shader);
