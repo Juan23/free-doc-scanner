@@ -7,6 +7,8 @@ const mockFs = { nodes: new Map<string, string>(), failMoveAt: 0, moves: 0, fail
 const DIR = '<dir>';
 
 jest.mock('@shopify/react-native-skia', () => ({}));
+// save.ts shrinks PDF pages with clean.ts, whose shaders need real Skia.
+jest.mock('./clean', () => ({}));
 
 jest.mock('expo-file-system', () => {
   const tick = () => new Promise<void>((r) => setTimeout(r, 0));
