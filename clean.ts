@@ -95,30 +95,53 @@ half4 main(float2 xy) {
 // Under each pixel of the small copy, from 8 x 8 samples of the photo across `span` round it: the
 // darkest sample where both the lightest row and the lightest column are much lighter than it, white
 // unless both are. Letters leave both gaps; a straight crease or blank paper leaves at most one.
+// Samples under a photo pixel apart (`span` under 8) cover every pixel between the first and last
+// row and column of them, often two to a pixel; a min or max needs each pixel once, so those are read.
 const lettersEffect = Skia.RuntimeEffect.Make(`
 uniform shader page;
 uniform float2 cell;
 uniform float2 span;
+uniform float2 size;
+void take(half4 c, inout half4 darkest, inout half lightest, inout half rowMin, inout half colMin) {
+  darkest = min(darkest, c);
+  half l = min(min(c.r, c.g), c.b);
+  lightest = max(lightest, l);
+  rowMin = min(rowMin, l);
+  colMin = min(colMin, l);
+}
 half4 main(float2 xy) {
+  float2 centre = (floor(xy) + 0.5) * cell;
   half colMin[8];
   for (int j = 0; j < 8; j++) colMin[j] = 1;
   half4 darkest = half4(1);
   half lightest = 0;
   half lightestRow = 0;
-  for (int i = 0; i < 8; i++) {
-    half rowMin = 1;
-    for (int j = 0; j < 8; j++) {
-      half4 c = page.eval((floor(xy) + 0.5) * cell + ((float2(j, i) + 0.5) / 8 - 0.5) * span);
-      darkest = min(darkest, c);
-      half l = min(min(c.r, c.g), c.b);
-      lightest = max(lightest, l);
-      rowMin = min(rowMin, l);
-      colMin[j] = min(colMin[j], l);
+  float2 last = float2(7);
+  if (span.x < 7.99 && span.y < 7.99) {
+    // Skia's nearest sample at x takes pixel ceil(x) - 1, so an exact integer x takes the pixel before it.
+    float2 first = clamp(ceil(centre + ((float2(0) + 0.5) / 8 - 0.5) * span) - 1, float2(0), size - 1);
+    last = clamp(ceil(centre + ((float2(7) + 0.5) / 8 - 0.5) * span) - 1, float2(0), size - 1) - first;
+    for (int i = 0; i < 8; i++) {
+      if (float(i) > last.y) break;
+      half rowMin = 1;
+      for (int j = 0; j < 8; j++) {
+        if (float(j) > last.x) break;
+        take(page.eval(first + float2(j, i) + 0.5), darkest, lightest, rowMin, colMin[j]);
+      }
+      lightestRow = max(lightestRow, rowMin);
     }
-    lightestRow = max(lightestRow, rowMin);
+  } else {
+    for (int i = 0; i < 8; i++) {
+      half rowMin = 1;
+      for (int j = 0; j < 8; j++) take(page.eval(centre + ((float2(j, i) + 0.5) / 8 - 0.5) * span), darkest, lightest, rowMin, colMin[j]);
+      lightestRow = max(lightestRow, rowMin);
+    }
   }
   half lightestCol = 0;
-  for (int j = 0; j < 8; j++) lightestCol = max(lightestCol, colMin[j]);
+  for (int j = 0; j < 8; j++) {
+    if (float(j) > last.x) break;
+    lightestCol = max(lightestCol, colMin[j]);
+  }
   half low = min(min(darkest.r, darkest.g), darkest.b);
   half gaps = (min(lightestRow, lightestCol) - low) / max(lightest, 0.05);
   return half4(mix(half3(1), darkest.rgb, smoothstep(0.08, 0.12, gaps)), 1);
@@ -1352,7 +1375,7 @@ function analysePage(image: SkImage): Analysis {
       const photoShader = own(clamp(image, FilterMode.Nearest));
       const findLetters = own(Skia.Paint());
       const span = [Math.max(w / sw, LETTER_SPAN), Math.max(h / sh, LETTER_SPAN)];
-      findLetters.setShader(own(lettersEffect.makeShaderWithChildren([w / sw, h / sh, ...span], [photoShader])));
+      findLetters.setShader(own(lettersEffect.makeShaderWithChildren([w / sw, h / sh, ...span, w, h], [photoShader])));
       canvas.drawRect(Skia.XYWHRect(0, 0, sw, sh), findLetters);
       const letters = result(surface.makeImageSnapshot());
 
