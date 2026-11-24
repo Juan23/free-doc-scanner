@@ -15,9 +15,10 @@ const BLOCK = 8;
 
 /**
  * Which pixels of a small copy of the page, `long` px on its long side, are ink: clearly darker than
- * the paper around them. Only the middle `part` of the page's width and height is copied.
+ * the paper around them. Only the middle `part` of the page's width and height is copied. With
+ * `negative`, light and dark are swapped first.
  */
-function findInk(image: SkImage, long: number, part = 1): { ink: Uint8Array; w: number; h: number } {
+function findInk(image: SkImage, long: number, part = 1, negative = false) {
   const width = image.width();
   const height = image.height();
   const scale = Math.min(1, long / Math.max(width, height));
@@ -44,14 +45,16 @@ function findInk(image: SkImage, long: number, part = 1): { ink: Uint8Array; w: 
   const column = new Int32Array(w);
   for (let x = 0; x < w; x++) column[x] = (x / BLOCK) | 0;
   const luma = new Uint8Array(w * h);
+  const counts = new Int32Array(256);
+  for (let i = 0; i < w * h; i++) {
+    const v = (rgba[i * 4] * 77 + rgba[i * 4 + 1] * 150 + rgba[i * 4 + 2] * 29) >> 8;
+    luma[i] = negative ? 255 - v : v;
+    counts[v]++;
+  }
   const brightest = new Uint8Array(bw * bh);
   for (let y = 0, i = 0; y < h; y++) {
     const row = ((y / BLOCK) | 0) * bw;
-    for (let x = 0; x < w; x++, i++) {
-      const v = (rgba[i * 4] * 77 + rgba[i * 4 + 1] * 150 + rgba[i * 4 + 2] * 29) >> 8;
-      luma[i] = v;
-      if (v > brightest[row + column[x]]) brightest[row + column[x]] = v;
-    }
+    for (let x = 0; x < w; x++, i++) if (luma[i] > brightest[row + column[x]]) brightest[row + column[x]] = luma[i];
   }
   // Ink is clearly darker than the paper p: below both 0.75 p and p - 25.
   const below = new Float32Array(bw * bh);
@@ -71,7 +74,19 @@ function findInk(image: SkImage, long: number, part = 1): { ink: Uint8Array; w: 
     const row = ((y / BLOCK) | 0) * bw;
     for (let x = 0; x < w; x++, i++) ink[i] = luma[i] < below[row + column[x]] ? 1 : 0;
   }
-  return { ink, w, h };
+  return { ink, w, h, lightOnDark: lightOnDark(counts, w * h) };
+}
+
+/** Whether most of the page (luma histogram `counts` of `n` pixels) is far darker than its light parts, as under light text on a dark card. */
+function lightOnDark(counts: Int32Array, n: number): boolean {
+  let median = -1;
+  let light = -1;
+  for (let v = 0, seen = 0; v < 256; v++) {
+    seen += counts[v];
+    if (median < 0 && seen >= n / 2) median = v;
+    if (light < 0 && seen >= 0.99 * n) light = v;
+  }
+  return median < light / 2;
 }
 
 /** `ink` (w × h) turned a quarter turn clockwise, so h × w. */
@@ -266,6 +281,21 @@ function strokes(ink: Uint8Array, w: number, h: number) {
           }
           return n;
         };
+        // The nearest run of inked columns from x on, stepping by `step` within the strip: one sticking out past the
+        // edge across the line from the mark (a digit by a decimal point), a mark as small (a dot leader's dot), or other.
+        const neighbour = (x: number, step: number) => {
+          for (; x >= 0 && x < STRIP && tops[x] < 0; x += step);
+          const start = x;
+          let runTop = h;
+          let runBottom = -1;
+          for (; x >= 0 && x < STRIP && tops[x] >= 0; x += step) {
+            if (isStop ? tops[x] < xLine(x) - reach : bottoms[x] > baseline(x) + reach) return 'tall';
+            runTop = Math.min(runTop, tops[x]);
+            runBottom = Math.max(runBottom, bottoms[x]);
+          }
+          const small = Math.abs(x - start) <= mark && runBottom - runTop + 1 <= mark;
+          return small && Math.abs(runTop - markTop) <= Math.max(1, ALIGNED * xHeight) ? 'mark' : 'other';
+        };
         const after = blank(left + b + 1, 1);
         const before = blank(left + a - 1, -1);
         const marks = isStop ? low : high;
@@ -273,8 +303,13 @@ function strokes(ink: Uint8Array, w: number, h: number) {
         const rtl = isStop ? before : after;
         if (ltr >= space && (rtl < space || ltr >= WIDER * rtl)) marks.ltr++;
         else if (rtl >= space && (ltr < space || rtl >= WIDER * ltr)) marks.rtl++;
-        else if (ltr < space) marks.inWord++;
-        else if (ltr < NEUTRAL * rtl && rtl < NEUTRAL * ltr) marks.alone++;
+        else {
+          // A decimal point or a dot leader's dot is no other script's mark, so it is not counted.
+          const sides = [neighbour(a - 1, -1), neighbour(b + 1, 1)];
+          if (sides.includes('mark') || sides.every((side) => side === 'tall')) continue;
+          if (ltr < space) marks.inWord++;
+          else if (ltr < NEUTRAL * rtl && rtl < NEUTRAL * ltr) marks.alone++;
+        }
       }
     });
   }
@@ -348,13 +383,18 @@ function failedGates(a: Reading, b: Reading): string[] {
 
 /** `turns` (clockwise quarter turns to stand the text upright) is 0 also when unsure: no clear text, or no clear up. */
 export function readUpright(image: SkImage) {
-  const whole = readInk(findInk(image, SMALL_LONG_SIDE));
+  const first = findInk(image, SMALL_LONG_SIDE);
+  const whole = readInk(first);
   const sure = whole.turns || !whole.failedAsIs.length;
   // Held back by another script's marks alone, the page is not looked at again: its middle may hold too few of them.
   const heldByScriptOnly = [whole.failedAsIs, whole.failedTurned].some((failed) => failed.length === 1 && failed[0] === 'script');
   // A page this small is read at full size already, so a closer look sees nothing new.
   const fullSize = Math.max(image.width(), image.height()) <= SMALL_LONG_SIDE;
-  return sure || heldByScriptOnly || fullSize ? whole : readInk(findInk(image, CLOSE_LONG_SIDE, CLOSE_PART));
+  const read = sure || heldByScriptOnly || fullSize ? whole : readInk(findInk(image, CLOSE_LONG_SIDE, CLOSE_PART));
+  // Light text on a dark card is gaps in the ink, so an unsure page that is mostly dark is read again as its negative.
+  if (read.turns || !read.failedAsIs.length || !first.lightOnDark) return read;
+  const negative = readInk(findInk(image, SMALL_LONG_SIDE, 1, true));
+  return negative.turns ? negative : read;
 }
 
 function readInk({ ink, w, h }: { ink: Uint8Array; w: number; h: number }) {

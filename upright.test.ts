@@ -270,6 +270,27 @@ it.each([0, 1, 2, 3])('leaves a list in capitals as it is, however it is turned 
   expect(untouched(page)).toBe(true);
 }, 30000);
 
+/** `bytes` with light and dark swapped, as light text printed on a dark card. */
+function negative(bytes: Uint8Array): Uint8Array {
+  const image = decode(bytes);
+  const surface = Skia.Surface.Make(image.width(), image.height())!;
+  const paint = Skia.Paint();
+  paint.setColorFilter(Skia.ColorFilter.MakeMatrix([-1, 0, 0, 0, 1, 0, -1, 0, 0, 1, 0, 0, -1, 0, 1, 0, 0, 0, 1, 0]));
+  surface.getCanvas().drawImage(image, 0, 0, paint);
+  image.dispose();
+  return surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 92);
+}
+
+it.each([0, 1, 2, 3])('stands light text on a dark card upright (%i)', async (turns) => {
+  const page = negative(letter(turns));
+  mockFiles.set(PAGE, page);
+
+  await keepWholePhoto();
+
+  if (turns === 0) expect(untouched(page)).toBe(true);
+  else expect(difference(mockFiles.get(PAGE)!, negative(letter()))).toBeLessThan(3);
+}, 30000);
+
 // Upright Russian has more descenders (р у д ц щ ф) than ascenders, so it leans the way upside-down
 // Latin does. CanvasKit's default typeface has Cyrillic.
 const RUSSIAN = Array.from({ length: 38 }, (_, i) => [
