@@ -329,6 +329,57 @@ it('finds a page as wide as the photo on a near-white table with a shadow under 
   expectNear((await findPage('file:///cache/photo.jpg')).corners, wide, 20);
 }, 30000);
 
+// The faint top edge votes less than the first line of text below it (#112).
+it('finds a page on a near-white table, not a frame that starts on its first line of text', async () => {
+  mockFiles.set('file:///cache/photo.jpg', photo(upright, 'rgb(250,250,250)'));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, upright, 20);
+}, 30000);
+
+// DocUNet 35_1: a shadow across the page and a white table under its foot leave the shadow's edge as the frame's foot (#85).
+it('gives the whole photo, not a frame whose foot lies across the page with lighter paper past it', async () => {
+  const whiteTable = (canvas: SkCanvas) => {
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color('rgb(248,247,244)'));
+    canvas.drawRect(Skia.XYWHRect(0, 800, W, H - 800), paint);
+    paint.dispose();
+  };
+  const shadow = (canvas: SkCanvas) => {
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color('rgba(0,0,0,0.3)'));
+    canvas.drawRect(Skia.XYWHRect(0, 0, W, 600), paint);
+    paint.dispose();
+  };
+  mockFiles.set('file:///cache/photo.jpg', photo(upright, 'rgb(92,70,52)', undefined, whiteTable, shadow));
+
+  expect((await findPage('file:///cache/photo.jpg')).corners).toEqual(wholePhoto);
+}, 30000);
+
+it.each([
+  ['upright', upright],
+  ['tilted', tilted],
+])('finds a %s page a little greyer than the white table round it', async (_, page) => {
+  mockFiles.set('file:///cache/photo.jpg', photo(page, 'rgb(250,250,250)', 'rgb(210,206,196)'));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, page, 20);
+}, 30000);
+
+// A table brighter than a header is no lit paper past a shadow (#114).
+it.each([
+  ['upright', upright, 'grey', 'rgb(140,140,140)', 'wood', 'rgb(205,175,135)', 'rgb(238,234,222)', false],
+  ['tilted', tilted, 'grey', 'rgb(120,120,120)', 'light grey', 'rgb(215,215,215)', 'rgb(238,234,222)', true],
+  ['tilted', tilted, 'light blue', 'rgb(150,190,230)', 'light grey', 'rgb(215,215,215)', 'rgb(252,252,252)', false],
+  ['upright', upright, 'yellow', 'rgb(240,215,90)', 'white', 'rgb(248,248,248)', 'rgb(252,252,252)', true],
+] as const)('finds a %s page with a %s header on a %s table, with a footer: %s', async (_, page, _h, header, _t, table, paper, footer) => {
+  const bands = (canvas: SkCanvas) => {
+    bandAcross(page, 0, 0.12, 0, 1, header)(canvas);
+    if (footer) bandAcross(page, 0.88, 0.12, 0, 1, header)(canvas);
+  };
+  mockFiles.set('file:///cache/photo.jpg', photo(page, table, paper, undefined, bands));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, page, 20);
+}, 30000);
+
 it('falls back to the whole photo when there is no page to find', async () => {
   const surface = Skia.Surface.Make(W, H)!;
   surface.getCanvas().drawColor(Skia.Color('rgb(120,120,120)'));
