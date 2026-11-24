@@ -414,22 +414,3 @@ export async function rotatePage(uri: string, quarterTurns: number): Promise<voi
     image.dispose();
   }
 }
-
-/**
- * Turns stored page JPEGs whose text is sideways or upside down upright, replacing each such page.
- * Pages without clear text, and pages that can't be read, stay as they were.
- */
-export async function uprightPages(pageUris: string[]): Promise<void> {
-  // One page at a time: each holds a full-size bitmap in memory.
-  for (const uri of pageUris) {
-    try {
-      const image = await readPage(uri);
-      try {
-        const { turns } = readUpright(image);
-        if (turns) await storeTurned(image, turns, uri);
-      } finally {
-        image.dispose();
-      }
-    } catch {}
-  }
-}

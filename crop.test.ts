@@ -5,6 +5,8 @@
 import { BlurStyle, ImageFormat, Skia, type SkCanvas, type SkPaint } from '@shopify/react-native-skia';
 
 import { cropPage, findPage, isConvex, pageAspect, type Quad } from './crop';
+import * as scansModule from './scans';
+import * as uprightModule from './upright';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
 const mockFiles = new Map<string, Uint8Array>();
@@ -550,3 +552,118 @@ it('tells a page outline from corners dragged past each other', () => {
   expect(isConvex([tilted[1], tilted[0], tilted[2], tilted[3]])).toBe(false);
   expect(isConvex([tilted[0], tilted[1], { x: 300, y: 300 }, tilted[3]])).toBe(false);
 });
+
+const LINE = 'Thank you for your letter. It came on the third, with the copies of the lease.';
+
+// A letter photographed `turns` quarter turns clockwise, on a desk `margin` px wide all round.
+function letter(turns: number, margin: number): Uint8Array {
+  const CanvasKit = (globalThis as any).CanvasKit;
+  const [w, h] = turns % 2 ? [1600, 1200] : [1200, 1600];
+  const surface = CanvasKit.MakeSurface(w + 2 * margin, h + 2 * margin);
+  const canvas = surface.getCanvas();
+  canvas.clear(CanvasKit.Color(60, 40, 30));
+  canvas.translate(margin + w / 2, margin + h / 2);
+  canvas.rotate(turns * 90, 0, 0);
+  canvas.translate(-600, -800);
+  const paper = new CanvasKit.Paint();
+  paper.setColor(CanvasKit.Color(236, 230, 214));
+  canvas.drawRect(CanvasKit.XYWHRect(0, 0, 1200, 1600), paper);
+  const ink = new CanvasKit.Paint();
+  ink.setColor(CanvasKit.Color(30, 30, 40));
+  ink.setAntiAlias(true);
+  // The wrapped Skia API has no font in Jest, but CanvasKit's own default typeface draws real text.
+  const font = new CanvasKit.Font(CanvasKit.Typeface.GetDefault(), 22);
+  for (let i = 0; i < 30; i++) canvas.drawText(LINE, 110, 160 + i * 36, ink, font);
+  return surface.makeImageSnapshot().encodeToBytes(CanvasKit.ImageFormat.JPEG, 92);
+}
+
+/** Mean brightness difference per pixel between two JPEGs of the same size. */
+function difference(a: Uint8Array, b: Uint8Array): number {
+  const [ia, ib] = [a, b].map((bytes) => Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(bytes))!);
+  const [width, height] = [ia.width(), ia.height()];
+  expect([ib.width(), ib.height()]).toEqual([width, height]);
+  const [pa, pb] = [ia, ib].map((i) => i.readPixels(0, 0, { width, height, colorType: 4, alphaType: 3 }) as Uint8Array);
+  let sum = 0;
+  for (let i = 0; i < pa.length; i += 4) sum += Math.abs(pa[i] + pa[i + 1] + pa[i + 2] - pb[i] - pb[i + 1] - pb[i + 2]) / 3;
+  return sum / (width * height);
+}
+
+async function encodesOf(run: () => Promise<void>): Promise<number> {
+  let proto = Object.getPrototypeOf(Skia.Surface.Make(1, 1)!.makeImageSnapshot());
+  while (!Object.prototype.hasOwnProperty.call(proto, 'encodeToBytes')) proto = Object.getPrototypeOf(proto);
+  const spy = jest.spyOn(proto, 'encodeToBytes');
+  try {
+    await run();
+    return spy.mock.calls.length;
+  } finally {
+    spy.mockRestore();
+  }
+}
+
+const inset = (margin: number, w: number, h: number): Quad => [
+  { x: margin, y: margin },
+  { x: w - margin, y: margin },
+  { x: w - margin, y: h - margin },
+  { x: margin, y: h - margin },
+];
+
+it('stands a sideways page upright as it crops it, in one JPEG encode', async () => {
+  mockFiles.set('file:///cache/upright.jpg', letter(0, 40));
+  await cropPage('file:///cache/upright.jpg', inset(40, 1280, 1680), 'file:///cache/expected.jpg');
+  mockFiles.set('file:///cache/photo.jpg', letter(1, 40));
+
+  const encodes = await encodesOf(() => cropPage('file:///cache/photo.jpg', inset(40, 1680, 1280), 'file:///cache/page.jpg'));
+
+  expect(encodes).toBe(1);
+  expect(difference(mockFiles.get('file:///cache/page.jpg')!, mockFiles.get('file:///cache/expected.jpg')!)).toBeLessThan(3);
+}, 60000);
+
+it('stands a sideways whole photo upright in one JPEG encode', async () => {
+  mockFiles.set('file:///cache/photo.jpg', letter(3, 0));
+
+  const encodes = await encodesOf(() => cropPage('file:///cache/photo.jpg', inset(0, 1600, 1200), 'file:///cache/page.jpg'));
+
+  expect(encodes).toBe(1);
+  expect(difference(mockFiles.get('file:///cache/page.jpg')!, letter(0, 0))).toBeLessThan(3);
+}, 60000);
+
+it('keeps a page unturned when its text cannot be read', async () => {
+  mockFiles.set('file:///cache/photo.jpg', letter(1, 40));
+  const read = jest.spyOn(uprightModule, 'readUpright').mockImplementation(() => {
+    throw new Error('unreadable page');
+  });
+  try {
+    await cropPage('file:///cache/photo.jpg', inset(40, 1680, 1280), 'file:///cache/page.jpg');
+  } finally {
+    read.mockRestore();
+  }
+
+  const page = Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(mockFiles.get('file:///cache/page.jpg')!))!;
+  expect([page.width(), page.height()]).toEqual([1600, 1200]);
+}, 60000);
+
+it('frees the photo once, before reading the cropped page', async () => {
+  mockFiles.set('file:///cache/photo.jpg', letter(1, 40));
+  const realDecode = scansModule.decodePage;
+  let photoFreed: jest.SpyInstance | undefined;
+  const decode = jest.spyOn(scansModule, 'decodePage').mockImplementation((bytes) => {
+    const image = realDecode(bytes);
+    photoFreed = jest.spyOn(image, 'dispose');
+    return image;
+  });
+  const realRead = uprightModule.readUpright;
+  let freedBeforeRead = false;
+  const read = jest.spyOn(uprightModule, 'readUpright').mockImplementation((page) => {
+    freedBeforeRead = photoFreed!.mock.calls.length > 0;
+    return realRead(page);
+  });
+  try {
+    await cropPage('file:///cache/photo.jpg', inset(40, 1680, 1280), 'file:///cache/page.jpg');
+  } finally {
+    decode.mockRestore();
+    read.mockRestore();
+  }
+
+  expect(freedBeforeRead).toBe(true);
+  expect(photoFreed!.mock.calls.length).toBe(1);
+}, 60000);

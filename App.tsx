@@ -30,7 +30,7 @@ import { cleanPages, defaultFilter, filterPreviews, setDefaultFilter, sharedFilt
 import { cropPage, findPage, isConvex, type FoundPage, type Point, type Quad } from './crop';
 import { clearScannerCache, pagesToSave, pickOnLongPress, saveJpegs, savePdf } from './save';
 import { addPages, createScan, deleteScan, heldPhoto, listScans, type Scan } from './scans';
-import { rotatePage, uprightPages } from './upright';
+import { rotatePage } from './upright';
 import { disposeNextFrame } from './liveImages';
 import { useStrengthPreview } from './useStrengthPreview';
 
@@ -155,9 +155,7 @@ function Root() {
 
   // Runs once the pages are stored, so a crash mid-way can't lose them. New pages are the scan's last.
   async function finishNewest(scan: Scan, count: number) {
-    const pages = scan.pages.slice(-count);
-    await uprightPages(pages);
-    await cleanPages(pages, defaultFilter());
+    await cleanPages(scan.pages.slice(-count), defaultFilter());
   }
 
   const scanNew = () =>
@@ -165,7 +163,7 @@ function Root() {
       setMessage('');
       const scan = await createScan(pages);
       await finishNewest(scan, pages.length);
-      // Opened only after turning and cleaning: Image would keep showing a page it already loaded from the same URI.
+      // Opened only after cleaning: Image would keep showing a page it already loaded from the same URI.
       setOpen(scan);
     });
 
