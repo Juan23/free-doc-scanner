@@ -1,8 +1,9 @@
-import { AlphaType, ColorType, ImageFormat, Skia, TileMode } from '@shopify/react-native-skia';
+import { AlphaType, ColorType, ImageFormat, Skia, TileMode, type SkImage } from '@shopify/react-native-skia';
 import { File } from 'expo-file-system';
 
 import { shrunkCopy } from './clean';
 import { decodePage, readPage } from './scans';
+import { readUpright, turnedImage } from './upright';
 
 export type Point = { x: number; y: number };
 /** Page corners in photo pixels: top-left, top-right, bottom-right, bottom-left. */
@@ -631,34 +632,44 @@ export function pageAspect([tl, tr, br, bl]: Quad, width: number, height: number
   return Math.sqrt(((n2[0] ** 2 + n2[1] ** 2) / f ** 2 + n2[2] ** 2) / ((n3[0] ** 2 + n3[1] ** 2) / f ** 2 + n3[2] ** 2));
 }
 
-/** The width and height of a JPEG with no EXIF block, else null: a PDF shows EXIF-turned pixels sideways. */
-function plainJpegSize(b: Uint8Array): { width: number; height: number } | null {
-  if (b[0] !== 0xff || b[1] !== 0xd8) return null;
+/** Whether a JPEG has no EXIF block: a PDF shows EXIF-turned pixels sideways. */
+function isPlainJpeg(b: Uint8Array): boolean {
+  if (b[0] !== 0xff || b[1] !== 0xd8) return false;
   for (let i = 2; i + 9 < b.length && b[i] === 0xff; i += 2 + ((b[i + 2] << 8) | b[i + 3])) {
     const marker = b[i + 1];
-    if (marker === 0xe1) return null;
+    if (marker === 0xe1) return false;
     // Start-of-frame markers, all but DHT (c4), JPG (c8) and DAC (cc).
-    if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
-      return { width: (b[i + 7] << 8) | b[i + 8], height: (b[i + 5] << 8) | b[i + 6] };
-    }
+    if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) return true;
   }
-  return null;
+  return false;
 }
 
 const isWhole = (corners: Quad, width: number, height: number) =>
   whole(width, height).every((p, i) => p.x === corners[i].x && p.y === corners[i].y);
 
-/** Cuts the page inside `corners` out of the photo, straightens it and writes it to `dest` as a JPEG. */
+/**
+ * Cuts the page inside `corners` out of the photo, straightens it, stands its text upright and writes
+ * it to `dest` as a JPEG: one encode in all, none for an upright whole photo with no EXIF block.
+ */
 export async function cropPage(uri: string, corners: Quad, dest: string): Promise<void> {
   const photo = await new File(uri).bytes();
-  const plain = plainJpegSize(photo);
-  if (plain && isWhole(corners, plain.width, plain.height)) return new File(dest).write(photo);
   const image = decodePage(photo);
-  if (isWhole(corners, image.width(), image.height())) {
-    const bytes = image.encodeToBytes(ImageFormat.JPEG, 90);
-    image.dispose();
-    return writeJpeg(dest, bytes);
+  const page = isWhole(corners, image.width(), image.height()) ? image : straightened(image, corners);
+  if (page !== image) image.dispose();
+  const { turns } = readUpright(page);
+  if (!turns && page === image && isPlainJpeg(photo)) {
+    page.dispose();
+    return new File(dest).write(photo);
   }
+  const upright = turns ? turnedImage(page, turns) : page;
+  const bytes = upright.encodeToBytes(ImageFormat.JPEG, 90);
+  if (upright !== page) upright.dispose();
+  page.dispose();
+  await writeJpeg(dest, bytes);
+}
+
+/** The page inside `corners`, drawn straight. */
+function straightened(image: SkImage, corners: Quad): SkImage {
   const [tl, tr, br, bl] = corners;
   const length = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
   const across = Math.max(length(tl, tr), length(bl, br));
@@ -677,9 +688,8 @@ export async function cropPage(uri: string, corners: Quad, dest: string): Promis
   const surface = Skia.Surface.Make(w, h)!;
   surface.getCanvas().drawPaint(paint);
   const page = surface.makeImageSnapshot();
-  const bytes = page.encodeToBytes(ImageFormat.JPEG, 90);
-  for (const o of [image, matrix, shader, paint, surface, page]) o.dispose();
-  await writeJpeg(dest, bytes);
+  for (const o of [matrix, shader, paint, surface]) o.dispose();
+  return page;
 }
 
 async function writeJpeg(dest: string, bytes: Uint8Array | null) {
