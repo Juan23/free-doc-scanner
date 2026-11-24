@@ -534,12 +534,13 @@ function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
       moved[(s + 1) % 4] = b;
       const found = frame(moved);
       if (!found || cutsPaper(moved, s, rgba, w, h)) continue;
-      bestQuad = found.q;
+      // Keeps the corner order the later sides' indices rely on.
+      bestQuad = moved;
       break;
     }
   }
 
-  // A frame that cuts the page is worse than the whole photo, so it is turned away, never swapped for another.
+  // A frame that ends at a band is turned away, never swapped for another: a cut page is worse than the whole photo.
   if (endsAtBand(bestQuad, rgba, w, h)) return null;
   const refined = [0, 1, 2, 3].map((s) => refineLine(bestQuad[s], bestQuad[(s + 1) % 4], gx, gy, w, h));
   const allLines = (ls: (Line | null)[]): ls is Line[] => ls.every((l) => l !== null);

@@ -83,6 +83,8 @@ const wholePhoto: Quad = [
   { x: 0, y: H },
 ];
 
+const farthest = (found: Quad, truth: Quad) => Math.max(...found.map((p, i) => Math.hypot(p.x - truth[i].x, p.y - truth[i].y)));
+
 function expectNear(found: Quad, truth: Quad, tolerance: number) {
   found.forEach((p, i) => {
     expect(Math.abs(p.x - truth[i].x)).toBeLessThan(tolerance);
@@ -217,8 +219,7 @@ describe.each([
 
       const { corners } = await findPage('file:///cache/photo.jpg');
 
-      const off = (truth: Quad) => Math.max(...corners.map((p, i) => Math.hypot(p.x - truth[i].x, p.y - truth[i].y)));
-      expect(Math.min(off(page), off(wholePhoto))).toBeLessThan(20);
+      expect(Math.min(farthest(corners, page), farthest(corners, wholePhoto))).toBeLessThan(20);
     },
     30000,
   );
@@ -257,8 +258,7 @@ it.each([
 
   const { corners } = await findPage('file:///cache/photo.jpg');
 
-  const off = (truth: Quad) => Math.max(...corners.map((p, i) => Math.hypot(p.x - truth[i].x, p.y - truth[i].y)));
-  expect(Math.min(off(tilted), off(wholePhoto))).toBeLessThan(20);
+  expect(Math.min(farthest(corners, tilted), farthest(corners, wholePhoto))).toBeLessThan(20);
 }, 30000);
 
 // A white sheet `gap` px right of the page, from the page's top to its foot.
