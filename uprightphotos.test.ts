@@ -2,16 +2,16 @@
  * @jest-environment @shopify/react-native-skia/jestEnv.js
  */
 /// <reference types="jest" />
-import { Skia } from '@shopify/react-native-skia';
 import { cropPage, findPage } from './crop';
-import { readUpright, turnedImage } from './upright';
+import * as uprightModule from './upright';
+import { turnedImage, type readUpright } from './upright';
 
-// Scores auto-upright on real photos, cropped as the app does and turned by 0, 90, 180 and 270 degrees
+// Scores auto-upright on real photos, cropped as the app does, unturned, and turned by 0, 90, 180 and 270 degrees
 // (DOCUNET=<photo folder> [FIRST=1 LAST=15] [OUT=<file>]). One tab-separated line per photo and turn:
 // file, turn, result (upright, left, wrong), the gates the right reading fails, then that reading's
 // lean, deviations, strokes per line, balance, stops and script flag. It fails when an upright page is
-// turned or a turned page is put the wrong way up, and on photos 1 to 15 when fewer than MIN_UPRIGHT
-// of the turned copies come back upright.
+// turned or a turned page is put the wrong way up, and on photos 1 to 15 or 16 to 65 when fewer than
+// MIN_UPRIGHT of the turned copies come back upright.
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const fs = require('fs') as {
@@ -49,8 +49,8 @@ jest.mock('expo-file-system', () => {
 const DOCUNET_DIR = process.env.DOCUNET;
 const FIRST = Number(process.env.FIRST ?? 1);
 const LAST = Number(process.env.LAST ?? 15);
-// The 90 turned copies of photos 1_1 to 15_2 give 9 upright.
-const MIN_UPRIGHT = 9;
+// Upright copies of the 90 turned copies of photos 1_1 to 15_2, and of the 300 of 16_1 to 65_2.
+const MIN_UPRIGHT: Record<string, number> = { '1-15': 13, '16-65': 91 };
 
 (DOCUNET_DIR ? describe : describe.skip)('auto-upright on real photos', () => {
   it('turns no upright page and puts no turned page the wrong way up', async () => {
@@ -58,6 +58,7 @@ const MIN_UPRIGHT = 9;
     let upright = 0;
     let left = 0;
     const wrong: string[] = [];
+    const realRead = uprightModule.readUpright;
 
     for (let n = FIRST; n <= LAST; n++) {
       for (const side of [1, 2]) {
@@ -65,18 +66,22 @@ const MIN_UPRIGHT = 9;
         const filePath = path.join(DOCUNET_DIR!, file);
         if (!fs.existsSync(filePath)) continue;
         const found = await findPage(filePath);
-        const memKey = `mem://${file}`;
-        await cropPage(filePath, found.corners, memKey);
-        const bytes = mockFiles.get(memKey)!;
-        mockFiles.delete(memKey);
-        const data = Skia.Data.fromBytes(bytes);
-        const page = Skia.Image.MakeImageFromEncoded(data)!;
-        data.dispose();
+        const readings: ReturnType<typeof readUpright>[] = [];
+        // Reads the page cropPage hands to readUpright, before its encode, at each turn.
+        const spy = jest.spyOn(uprightModule, 'readUpright').mockImplementationOnce((page) => {
+          for (const turn of [0, 1, 2, 3]) {
+            const copy = turn ? turnedImage(page, turn) : page;
+            readings.push(realRead(copy));
+            if (turn) copy.dispose();
+          }
+          return readings[0];
+        });
+        await cropPage(filePath, found.corners, `mem://${file}`);
+        spy.mockRestore();
+        expect(readings).toHaveLength(4);
+        mockFiles.delete(`mem://${file}`);
 
-        for (const turn of [0, 1, 2, 3]) {
-          const copy = turn ? turnedImage(page, turn) : page;
-          const read = readUpright(copy);
-          if (turn) copy.dispose();
+        readings.forEach((read, turn) => {
           // Turned by `turn`, the page needs 4 - turn more; text runs along the as-is reading when that is even.
           const needed = (4 - turn) % 4;
           const reading = needed % 2 ? 'turned' : 'asIs';
@@ -92,12 +97,12 @@ const MIN_UPRIGHT = 9;
               [file, turn * 90, result, failed.join(',') || '-', m.lean.toFixed(2), m.deviations.toFixed(1), m.perLine.toFixed(2), m.balance.toFixed(2), m.stops.toFixed(1), m.script].join('\t') + '\n',
             );
           }
-        }
-        page.dispose();
+        });
       }
     }
     if (outPath) fs.appendFileSync(outPath, `# upright ${upright}, left ${left}, wrong ${wrong.length}\n`);
     expect(wrong).toEqual([]);
-    if (FIRST === 1 && LAST === 15) expect(upright).toBeGreaterThanOrEqual(MIN_UPRIGHT);
+    const floor = MIN_UPRIGHT[`${FIRST}-${LAST}`];
+    if (floor !== undefined) expect(upright).toBeGreaterThanOrEqual(floor);
   }, 1_800_000);
 });
