@@ -1,8 +1,8 @@
-import { AlphaType, ColorType, FilterMode, ImageFormat, MipmapMode, Skia, TileMode } from '@shopify/react-native-skia';
+import { AlphaType, ColorType, ImageFormat, Skia, TileMode } from '@shopify/react-native-skia';
 import { File } from 'expo-file-system';
 
 import { shrunkCopy } from './clean';
-import { readPage } from './scans';
+import { decodePage, readPage } from './scans';
 
 export type Point = { x: number; y: number };
 /** Page corners in photo pixels: top-left, top-right, bottom-right, bottom-left. */
@@ -603,15 +603,75 @@ function perspective(from: Quad, to: Quad): number[] {
   return [...rows.map((r, i) => r[8] / r[i]), 1];
 }
 
+// A phone's main camera has a focal length of about 0.72 of the photo's long side (24 to 28 mm equivalent);
+// a cropped photo keeps that side.
+const FOCAL_PER_LONG_SIDE = 0.72;
+// How far the focal length read from the corners may stray from that: it is noisy on a page seen nearly flat.
+const FOCAL_SPREAD = 1.25;
+
+type Vec = [number, number, number];
+const cross = (a: Vec, b: Vec): Vec => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const dot = (a: Vec, b: Vec) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+/**
+ * Width over height of the rectangle whose photo is `corners`, from the camera's perspective
+ * (Zhang and He, "Whiteboard scanning and image enhancement", 2007). NaN when the corners are in a line.
+ */
+export function pageAspect([tl, tr, br, bl]: Quad, width: number, height: number): number {
+  const [m1, m2, m3, m4] = [tl, tr, bl, br].map(({ x, y }): Vec => [x - width / 2, y - height / 2, 1]);
+  const k2 = dot(cross(m1, m4), m3) / dot(cross(m2, m4), m3);
+  const k3 = dot(cross(m1, m4), m2) / dot(cross(m3, m4), m2);
+  const n2 = m2.map((v, i) => k2 * v - m1[i]);
+  const n3 = m3.map((v, i) => k3 * v - m1[i]);
+  const prior = FOCAL_PER_LONG_SIDE * Math.max(width, height);
+  // Two sides that are parallel, or within 1% of it, leave the focal length unknown.
+  const parallel = Math.abs(k2 - 1) < 0.01 || Math.abs(k3 - 1) < 0.01;
+  const f2 = -(n2[0] * n3[0] + n2[1] * n3[1]) / (n2[2] * n3[2]);
+  const f = !parallel && f2 > 0 ? Math.min(prior * FOCAL_SPREAD, Math.max(prior / FOCAL_SPREAD, Math.sqrt(f2))) : prior;
+  return Math.sqrt(((n2[0] ** 2 + n2[1] ** 2) / f ** 2 + n2[2] ** 2) / ((n3[0] ** 2 + n3[1] ** 2) / f ** 2 + n3[2] ** 2));
+}
+
+/** The width and height of a JPEG with no EXIF block, else null: a PDF shows EXIF-turned pixels sideways. */
+function plainJpegSize(b: Uint8Array): { width: number; height: number } | null {
+  if (b[0] !== 0xff || b[1] !== 0xd8) return null;
+  for (let i = 2; i + 9 < b.length && b[i] === 0xff; i += 2 + ((b[i + 2] << 8) | b[i + 3])) {
+    const marker = b[i + 1];
+    if (marker === 0xe1) return null;
+    // Start-of-frame markers, all but DHT (c4), JPG (c8) and DAC (cc).
+    if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
+      return { width: (b[i + 7] << 8) | b[i + 8], height: (b[i + 5] << 8) | b[i + 6] };
+    }
+  }
+  return null;
+}
+
+const isWhole = (corners: Quad, width: number, height: number) =>
+  whole(width, height).every((p, i) => p.x === corners[i].x && p.y === corners[i].y);
+
 /** Cuts the page inside `corners` out of the photo, straightens it and writes it to `dest` as a JPEG. */
 export async function cropPage(uri: string, corners: Quad, dest: string): Promise<void> {
+  const photo = await new File(uri).bytes();
+  const plain = plainJpegSize(photo);
+  if (plain && isWhole(corners, plain.width, plain.height)) return new File(dest).write(photo);
+  const image = decodePage(photo);
+  if (isWhole(corners, image.width(), image.height())) {
+    const bytes = image.encodeToBytes(ImageFormat.JPEG, 90);
+    image.dispose();
+    return writeJpeg(dest, bytes);
+  }
   const [tl, tr, br, bl] = corners;
   const length = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
-  const w = Math.max(1, Math.round(Math.max(length(tl, tr), length(bl, br))));
-  const h = Math.max(1, Math.round(Math.max(length(tl, bl), length(tr, br))));
-  const image = await readPage(uri);
+  const across = Math.max(length(tl, tr), length(bl, br));
+  const down = Math.max(length(tl, bl), length(tr, br));
+  const found = pageAspect(corners, image.width(), image.height());
+  const aspect = found > 0 && Number.isFinite(found) ? found : across / down;
+  // Tall enough that neither side is shrunk, but no more pixels than the photo has.
+  const tall = Math.min(Math.max(down, across / aspect), Math.sqrt((image.width() * image.height()) / aspect));
+  const w = Math.max(1, Math.round(tall * aspect));
+  const h = Math.max(1, Math.round(tall));
   const matrix = Skia.Matrix(perspective(corners, whole(w, h)));
-  const shader = image.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, MipmapMode.None, matrix);
+  // Catmull-Rom: on pages enlarged from tilted photos it came 21% nearer the true print than bilinear (#101).
+  const shader = image.makeShaderCubic(TileMode.Clamp, TileMode.Clamp, 0, 1 / 2, matrix);
   const paint = Skia.Paint();
   paint.setShader(shader);
   const surface = Skia.Surface.Make(w, h)!;
@@ -619,6 +679,10 @@ export async function cropPage(uri: string, corners: Quad, dest: string): Promis
   const page = surface.makeImageSnapshot();
   const bytes = page.encodeToBytes(ImageFormat.JPEG, 90);
   for (const o of [image, matrix, shader, paint, surface, page]) o.dispose();
+  await writeJpeg(dest, bytes);
+}
+
+async function writeJpeg(dest: string, bytes: Uint8Array | null) {
   // Native Skia returns null when encoding fails, whatever the type says.
   if (!bytes?.length) throw new Error('could not encode page');
   await new File(dest).write(bytes);

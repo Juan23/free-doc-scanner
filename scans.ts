@@ -22,7 +22,12 @@ const PART = /^o\d+\.jpg\.part$/;
 
 /** The page's image. Throws when the file is not a readable image. */
 export async function readPage(uri: string): Promise<SkImage> {
-  const data = Skia.Data.fromBytes(await new File(uri).bytes());
+  return decodePage(await new File(uri).bytes());
+}
+
+/** The image encoded in `bytes`. Throws when they are not a readable image. */
+export function decodePage(bytes: Uint8Array): SkImage {
+  const data = Skia.Data.fromBytes(bytes);
   const image = Skia.Image.MakeImageFromEncoded(data);
   data.dispose();
   if (!image) throw new Error('unreadable page');
