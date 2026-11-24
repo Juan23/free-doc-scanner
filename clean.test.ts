@@ -625,8 +625,9 @@ it('stops previewing when cancelled, makes no further image and writes no file',
 
 it('previews Original, Clean and Grayscale Normal from the untouched photo, writing no file', async () => {
   const photo = photographedPage();
-  mockFiles.set(PAGE1, photo);
-  await cleanPages([PAGE1], { kind: 'gray', strength: 2 });
+  // The page differs from its photo, so previews made from the page fail the comparisons below.
+  mockFiles.set('file:///doc/scans/1/o1.jpg', photo);
+  mockFiles.set(PAGE1, sharplyShadowedPage());
   const files = new Map(mockFiles);
   const source = decode(photo);
 
@@ -649,7 +650,8 @@ it('previews Original, Clean and Grayscale Normal from the untouched photo, writ
     source.dispose();
     for (const p of Object.values(previews)) p.dispose();
   }
-}, 30000);
+  // Three paper and ink analyses (the previews and the two direct filters): 23 s at load 31.
+}, 60000);
 
 it('measures the paper and ink once for the Clean and Grayscale previews of a page', async () => {
   mockFiles.set(PAGE1, photographedPage());
@@ -1191,6 +1193,42 @@ describe('table lines', () => {
     // Skia's own changes, or a change to the filter, can move them: re-measure then.
     expect(got).toEqual([3552159371, 3128944410, 1287771065]);
   }, 120000);
+});
+
+describe('letters on photos of any width', () => {
+  const CanvasKit = (globalThis as any).CanvasKit;
+  const hash = (image: SkImage) => readPixels(image).reduce((h, v) => Math.imul(h ^ v, 16777619) >>> 0, 2166136261);
+
+  // Pale thin print on paper, the print the letters pass finds and the average misses.
+  function palePrint(width: number): SkImage {
+    const height = Math.round(width * 0.75);
+    const surface = CanvasKit.MakeSurface(width, height);
+    const canvas = surface.getCanvas();
+    canvas.clear(CanvasKit.Color(225, 222, 212));
+    const ink = new CanvasKit.Paint();
+    ink.setAntiAlias(true);
+    ink.setColor(CanvasKit.Color(160, 160, 160));
+    const font = new CanvasKit.Font(CanvasKit.Typeface.GetDefault(), width / 50);
+    for (let y = width / 20; y < height; y += width / 30) canvas.drawText('pale thin print, the letters pass keeps it', width / 20, y, ink, font);
+    const bytes = surface.makeImageSnapshot().encodeToBytes(CanvasKit.ImageFormat.JPEG, 92);
+    font.delete();
+    ink.delete();
+    surface.delete();
+    return decode(bytes);
+  }
+
+  // 1600 px puts several samples on one photo pixel; past 4000 px no two share one.
+  it.each([
+    [680, 854837914], [1600, 3141551381], [4200, 1177205643],
+  ])('finds the letters a %i px wide photo had at its 500 px analysis', (width, expected) => {
+    const photo = palePrint(width);
+    const out = filterImage(photo, { kind: 'clean', strength: 1 }, 500);
+    const got = hash(out);
+    out.dispose();
+    photo.dispose();
+    // Taken from the pass that read all 64 samples; re-pin only for a deliberate change to the filter's output.
+    expect(got).toBe(expected);
+  }, 60000);
 });
 
 describe('text in a small preview', () => {
