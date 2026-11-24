@@ -283,6 +283,50 @@ it.each([
   expect(Math.min(farthest(corners, page), farthest(corners, wholePhoto))).toBeLessThan(20);
 }, 30000);
 
+// Lines of text along the page's own sides, in place of photo()'s level ones.
+function linesAlong(page: Quad) {
+  return (canvas: SkCanvas) => {
+    bandAcross(page, 0, 1, 0, 1, 'rgb(238,234,222)')(canvas);
+    for (let t = 0.12; t < 0.9; t += 0.045) bandAcross(page, t, 0.012, 0.12, 0.88, 'rgb(30,30,35)')(canvas);
+  };
+}
+
+// A strip on the desk along the page's foot, `gap` px past it, `thick` deep, from `from` to `to` of the foot's length.
+function stripPast(page: Quad, gap: number, thick: number, from: number, to: number, colour: string) {
+  const [, , br, bl] = page;
+  const len = Math.hypot(br.x - bl.x, br.y - bl.y);
+  const [ux, uy] = [(br.x - bl.x) / len, (br.y - bl.y) / len];
+  const p = (t: number, d: number) => ({ x: bl.x + ux * len * t - uy * d, y: bl.y + uy * len * t + ux * d });
+  return (canvas: SkCanvas) => {
+    const strip = Skia.Path.Polygon([p(from, gap), p(to, gap), p(to, gap + thick), p(from, gap + thick)], true);
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color(colour));
+    canvas.drawPath(strip, paint);
+    for (const o of [strip, paint]) o.dispose();
+  };
+}
+
+// An edge along the foot that stops short of the page's sides is no band's far edge, which runs corner to corner.
+it.each([
+  ['a cable', upright, 0.7, 'rgb(92,70,52)', 60, 8, 0.05, 0.95, 'rgb(20,20,20)'],
+  ['a cable', tilted, 0.95, 'rgb(50,50,55)', 110, 8, 0.05, 0.95, 'rgb(20,20,20)'],
+  ['a pencil', upright, 0.45, 'rgb(50,50,55)', 110, 10, 0.1, 0.9, 'rgb(220,180,40)'],
+  ['a ruler', tilted, 0.45, 'rgb(92,70,52)', 60, 60, 0.1, 0.95, 'rgb(200,200,195)'],
+] as const)('finds a page with %s on the desk along its foot', async (_, shape, k, desk, gap, thick, from, to, colour) => {
+  const page = shrunk(shape, k);
+  mockFiles.set('file:///cache/photo.jpg', photo(page, desk, undefined, stripPast(page, gap, thick, from, to, colour)));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, page, 20);
+}, 30000);
+
+// The desk-colour check keeps the frame of a small page with a cable on a pale desk along its foot.
+it('finds a small page with a cable on a pale desk along its foot', async () => {
+  const page = shrunk(upright, 0.45);
+  mockFiles.set('file:///cache/photo.jpg', photo(page, 'rgb(175,175,170)', undefined, stripPast(page, 60, 8, 0.05, 0.95, 'rgb(20,20,20)'), linesAlong(page)));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, page, 20);
+}, 30000);
+
 describe.each([
   ['upright', 'a brown desk', upright, 'rgb(92,70,52)'],
   ['tilted', 'a brown desk', tilted, 'rgb(92,70,52)'],
@@ -364,6 +408,21 @@ it.each([30, 60, 100])('finds a page on a dark desk with a second white sheet %i
   mockFiles.set('file:///cache/photo.jpg', photo(tilted, 'rgb(92,70,52)', undefined, sheetBeside(tilted, gap)));
 
   expectNear((await findPage('file:///cache/photo.jpg')).corners, tilted, GAP_SLACK);
+}, 30000);
+
+// Its paper runs on past the foot, as past a frame across the page, but in another white.
+it('finds a page with a second, whiter sheet sticking out from under its foot', async () => {
+  const page = shrunk(tilted, 0.7);
+  const below = shrunk(page, 0.8).map(({ x, y }) => ({ x, y: y + 0.3 * (page[3].y - page[0].y) })) as Quad;
+  const sheet = (canvas: SkCanvas) => {
+    const [path, paint] = [Skia.Path.Polygon(below, true), Skia.Paint()];
+    paint.setColor(Skia.Color('rgb(250,250,250)'));
+    canvas.drawPath(path, paint);
+    for (const o of [path, paint]) o.dispose();
+  };
+  mockFiles.set('file:///cache/photo.jpg', photo(page, 'rgb(92,70,52)', undefined, sheet, linesAlong(page)));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, page, 20);
 }, 30000);
 
 it('finds a page on a dark desk beside a white sheet with a 20 px shadow between them', async () => {
