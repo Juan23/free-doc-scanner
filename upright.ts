@@ -1,22 +1,40 @@
-import { AlphaType, ColorType, Skia, type SkImage } from '@shopify/react-native-skia';
+import { AlphaType, ColorType, FilterMode, MipmapMode, Skia, TileMode, type SkImage } from '@shopify/react-native-skia';
 import { File } from 'expo-file-system';
 
-import { shrunkCopy } from './clean';
 import { originalOf, readPage, replacePage } from './scans';
 
 // Text is looked for on a copy this long, where body text is still 5-10 px high.
 const SMALL_LONG_SIDE = 1000;
+// Unsure there, it looks again at this share of the page's width and height round its middle, on a
+// copy of the page this long: a phone photo's text is too small for the first copy, and the middle
+// holds the least table round a page cropped to the whole photo. It costs about as much as the first.
+const CLOSE_LONG_SIDE = 2000;
+const CLOSE_PART = 0.5;
 // The paper's brightness is the brightest pixel in the 3 x 3 blocks of this size around a pixel.
 const BLOCK = 8;
 
-/** Which pixels of a small copy of the page are ink: clearly darker than the paper around them. */
-function findInk(image: SkImage): { ink: Uint8Array; w: number; h: number } {
+/**
+ * Which pixels of a small copy of the page, `long` px on its long side, are ink: clearly darker than
+ * the paper around them. Only the middle `part` of the page's width and height is copied.
+ */
+function findInk(image: SkImage, long: number, part = 1): { ink: Uint8Array; w: number; h: number } {
   const width = image.width();
   const height = image.height();
-  const scale = Math.min(1, SMALL_LONG_SIDE / Math.max(width, height));
-  const w = Math.max(1, Math.round(width * scale));
-  const h = Math.max(1, Math.round(height * scale));
-  const small = shrunkCopy(image, w, h);
+  const scale = Math.min(1, long / Math.max(width, height));
+  const w = Math.max(1, Math.round(width * scale * part));
+  const h = Math.max(1, Math.round(height * scale * part));
+  const surface = Skia.Surface.Make(w, h);
+  if (!surface) throw new Error('no surface');
+  const matrix = Skia.Matrix().scale(scale, scale).translate((-width * (1 - part)) / 2, (-height * (1 - part)) / 2);
+  const paint = Skia.Paint();
+  // Bilinear sampling skips pixels when shrinking well over twice; at 2 it is sharper than the nearest mipmap level,
+  // which costs a fifth of blending two levels in Jest's CanvasKit.
+  const mip = scale < 0.4 ? MipmapMode.Nearest : MipmapMode.None;
+  const shader = image.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, mip, matrix);
+  paint.setShader(shader);
+  surface.getCanvas().drawPaint(paint);
+  const small = surface.makeImageSnapshot();
+  for (const o of [surface, paint, shader, matrix]) o.dispose();
   const rgba = small.readPixels(0, 0, { width: w, height: h, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul }) as Uint8Array | null;
   small.dispose();
   if (!rgba) throw new Error('unreadable page');
@@ -331,7 +349,13 @@ function failedGates(a: Reading, b: Reading): string[] {
 
 /** `turns` (clockwise quarter turns to stand the text upright) is 0 also when unsure: no clear text, or no clear up. */
 export function readUpright(image: SkImage) {
-  const { ink, w, h } = findInk(image);
+  const whole = readInk(findInk(image, SMALL_LONG_SIDE));
+  // Held back by another script's marks alone, the page is not looked at again: its middle may hold too few of them.
+  const otherScript = [whole.failedAsIs, whole.failedTurned].some((failed) => failed.length === 1 && failed[0] === 'script');
+  return whole.turns || otherScript ? whole : readInk(findInk(image, CLOSE_LONG_SIDE, CLOSE_PART));
+}
+
+function readInk({ ink, w, h }: { ink: Uint8Array; w: number; h: number }) {
   const asIs = lean(strokes(ink, w, h));
   const turned = lean(strokes(turnClockwise(ink, w, h), h, w));
   const failedAsIs = failedGates(asIs, turned);

@@ -457,6 +457,18 @@ it('rejects a page it cannot read, leaving it as it is', async () => {
   expect(mockFiles.get(PAGE)).toBe(broken);
 });
 
+// On the 1000 px copy, this type's letters are too small to read, as on most phone photos; a closer look at the page's middle reads them.
+it.each([18, 22])('turns a 3024 px letter in small %i px type upright at every quarter turn', async (fontSize) => {
+  const upright = largeLetter(0, fontSize);
+  for (const turns of [0, 1, 2, 3]) {
+    mockFiles.set(PAGE, largeLetter(turns, fontSize));
+
+    await uprightPages([PAGE]);
+
+    expect([fontSize, turns, difference(mockFiles.get(PAGE)!, upright) < 3]).toEqual([fontSize, turns, true]);
+  }
+}, 120000);
+
 // Sizes 36, 38, 40 and 46 are where a comma's gap before is about a third of the space after it, so
 // those commas must not count against the page. No size may turn an upright page.
 it.each(Array.from({ length: 14 }, (_, i) => 26 + 2 * i))('turns a 3024 px letter in %i px type upright at every quarter turn', async (fontSize) => {
