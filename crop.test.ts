@@ -268,6 +268,21 @@ it.each([
   expect(Math.min(farthest(corners, small), farthest(corners, wholePhoto))).toBeLessThan(20);
 }, 30000);
 
+// The line search frames a large page whose band sets it apart from the desk too little for the patch's frame (#116).
+it.each([
+  ['upright', 0.9, 'head', 'rgb(92,70,52)', 'rgb(107,85,67)', upright],
+  ['tilted', 1, 'foot', 'rgb(92,70,52)', 'rgb(107,85,67)', tilted],
+  ['upright', 1, 'head', 'rgb(175,175,170)', 'rgb(150,150,150)', upright],
+  ['tilted', 0.9, 'foot', 'rgb(175,175,170)', 'rgb(150,150,150)', tilted],
+] as const)('gives a %s page at %s scale with a band flush with its %s on %s the whole page or the whole photo, not the paper beside the band', async (_, k, end, desk, band, shape) => {
+  const page = shrunk(shape, k);
+  mockFiles.set('file:///cache/photo.jpg', photo(page, desk, undefined, undefined, bandAcross(page, end === 'head' ? 0 : 0.88, 0.12, 0, 1, band)));
+
+  const { corners } = await findPage('file:///cache/photo.jpg');
+
+  expect(Math.min(farthest(corners, page), farthest(corners, wholePhoto))).toBeLessThan(20);
+}, 30000);
+
 describe.each([
   ['upright', 'a brown desk', upright, 'rgb(92,70,52)'],
   ['tilted', 'a brown desk', tilted, 'rgb(92,70,52)'],

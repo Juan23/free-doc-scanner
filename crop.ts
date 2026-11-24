@@ -497,9 +497,12 @@ function endsAtBand(q: Quad, rgba: Uint8Array, w: number, h: number): boolean {
   });
 }
 
-/** True when past some side, at an even depth, an edge runs along it that stops at the neighbouring sides' lines carried on: the far edge of a band flush with the page's end, in the surface's colour or near it, where the side is the band's near edge. */
-function endsAtBandEdge(q: Quad, gx: Int16Array, gy: Int16Array, rgba: Uint8Array, w: number, h: number): boolean {
-  const { at, sides, besideNeighbours } = framePaper(q, rgba, w, h);
+// Px past a band's far edge where what lies beyond the band is read.
+const PAST_EDGE = 4;
+
+/** True when past some side, at an even depth, an edge runs along it that stops at the neighbouring sides' lines carried on: the far edge of a band flush with the page's end, in the surface's colour or near it, where the side is the band's near edge. With `deskPast`, what lies past that edge must also be the desk beside the band, so a notebook's edge past a line-search frame is none (DocUNet 57_2); the patch's frame does without, as a band near its end has paper there. */
+function endsAtBandEdge(q: Quad, gx: Int16Array, gy: Int16Array, rgba: Uint8Array, w: number, h: number, deskPast = false): boolean {
+  const { at, medianColour, sides, besideNeighbours } = framePaper(q, rgba, w, h);
   return sides.some(({ nx, ny, points }, s) => {
     const across = (o: number) => (o < 0 ? 0 : abs(gx[o / 4] * nx + gy[o / 4] * ny));
     const depths: number[] = [];
@@ -513,6 +516,11 @@ function endsAtBandEdge(q: Quad, gx: Int16Array, gy: Int16Array, rgba: Uint8Arra
     const typical = depths.sort((a, b) => a - b)[depths.length >> 1];
     // The whole even span lies past MIN_BAND, so a page's soft or curled edge right past the side is no band.
     if (typical < MIN_BAND + BAND_EVEN || depths.filter((d) => abs(d - typical) <= BAND_EVEN).length < MIN_PAPER_BEYOND * points.length) return false;
+    if (deskPast) {
+      const past = medianColour(points.map(({ x, y }) => at(x + nx * (typical + PAST_EDGE), y + ny * (typical + PAST_EDGE))));
+      const beside = medianColour(STRIP.flatMap((e) => [0, 1].map((j) => besideNeighbours(s, typical >> 1, e)[j])));
+      if (!past || !beside || !sameColour(past, beside)) return false;
+    }
     const even = Array.from({ length: 2 * BAND_EVEN + 1 }, (_, i) => typical - BAND_EVEN + i);
     // A wood grain or a table's edge runs on past the page's sides (DocUNet 47_2).
     return [0, 1].every((j) => STRIP.every((e) => even.every((d) => across(besideNeighbours(s, d, e)[j]) < MIN_EDGE)));
@@ -867,8 +875,7 @@ function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
   }
 
   // A frame that ends at a band or lies across the page is turned away, never swapped for another: a cut page is worse than the whole photo.
-  // endsAtBandEdge is left out here: on the line search's frames it turned away loose frames (DocUNet 31_1, 57_2, 63_1) for no cut one.
-  if (endsAtBand(bestQuad, rgba, w, h) || liesAcrossPage(bestQuad, rgba, w, h) || runsOnPast(bestQuad, flood.inPatch, rgba, w, h)) return null;
+  if (endsAtBand(bestQuad, rgba, w, h) || liesAcrossPage(bestQuad, rgba, w, h) || runsOnPast(bestQuad, flood.inPatch, rgba, w, h) || endsAtBandEdge(bestQuad, gx, gy, rgba, w, h, true)) return null;
   return refineFrame(bestQuad, gx, gy, w, h);
 }
 
