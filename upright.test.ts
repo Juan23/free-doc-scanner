@@ -320,12 +320,12 @@ it.each([0, 1, 2, 3])('never turns a page of Russian text the wrong way (%i)', a
  * sets how often a letter sticks up (0: never). With `spaced`, each yod stands alone between wide
  * gaps, as in a typewriter font, or with `gaps` [left, right], each yod has that many pixels of
  * space on its left and right. With `bars`, letters are a bar along the top on two stems, heavy
- * at the top as Hebrew's are, rather than solid blocks. With `pairs`, each yod is drawn twice, 2 px
- * apart.
+ * at the top as Hebrew's are, rather than solid blocks. With `copies`, each yod is drawn that many
+ * times, 2 px apart.
  */
 function blocks(
   turns: number,
-  { finalYodsEvery = 7, yodsEvery = 0, stopsEvery = 0, pointsEvery = 0, tallEvery = 13, spaced = false, bars = false, gaps = [0, 0], pairs = false } = {},
+  { finalYodsEvery = 7, yodsEvery = 0, stopsEvery = 0, pointsEvery = 0, tallEvery = 13, spaced = false, bars = false, gaps = [0, 0], copies = 1 } = {},
 ): Uint8Array {
   const [w, h] = turns % 2 ? [H, W] : [W, H];
   const surface = CanvasKit.MakeSurface(w, h);
@@ -338,10 +338,9 @@ function blocks(
   ink.setColor(CanvasKit.Color(30, 30, 40));
   const box = (x: number, y: number, width: number, height: number) => canvas.drawRect(CanvasKit.XYWHRect(x, y, width, height), ink);
   const [left, right] = spaced ? [9, 9] : gaps;
-  const yodWidth = pairs ? 10 : 4;
+  const yodWidth = 6 * copies - 2;
   const yod = (x: number, top: number) => {
-    box(x, top, 4, 6);
-    if (pairs) box(x + 6, top, 4, 6);
+    for (let i = 0; i < copies; i++) box(x + 6 * i, top, 4, 6);
   };
   let k = 0;
   let word = 0;
@@ -393,8 +392,10 @@ describe.each([
   ['with 3 yods ending words and 3 full stops', { finalYodsEvery: 200, stopsEvery: 150 }],
   ['with yods ending words, a few inside them, and full stops', { finalYodsEvery: 70, yodsEvery: 300, stopsEvery: 150 }],
   ['with nothing sticking up', { tallEvery: 0 }],
-  // A pair of yods is no dot leader.
-  ['with each yod drawn twice', { pairs: true }],
+  // Marks a row are no dot leader: a pair of yods,
+  ['with each yod drawn twice', { copies: 2 }],
+  // Nor are three, evenly spaced.
+  ['with each yod drawn three times', { copies: 3 }],
   ["with vowel points, its letters heavy at the top as Hebrew's are", { pointsEvery: 3, tallEvery: 5, bars: true }],
 ])('a page of a right-to-left script whose yods look like full stops upside down, %s,', (_, options) => {
   it.each([0, 1, 2, 3])('is never turned the wrong way (%i)', async (turns) => {
@@ -509,10 +510,8 @@ it.each([18, 22, ...Array.from({ length: 14 }, (_, i) => 26 + 2 * i)])('turns a 
 }, 120000);
 
 // Real typefaces draw differently from CanvasKit's default. Not committed: skipped without macOS's fonts.
-// Only Latin must turn; Cyrillic and Hebrew stay as they are. Courier New's Latin turns at every quarter
-// turn only at 20, 40 and 44 px, so 44 is tested. The Hebrew rows only check that real Hebrew stays. Real Cyrillic
-// and Hebrew stay at 12 to 56 px (steps of 4) even with the marks and heavy-bottom rules off, so the made-up
-// script above guards those two rules.
+// Only Latin must turn; Cyrillic and Hebrew stay as they are. Real Cyrillic and Hebrew stay even with the
+// marks and heavy-bottom rules off, so the made-up script above guards those two rules.
 const FONTS = '/System/Library/Fonts/Supplemental/';
 const REAL_RUSSIAN = RUSSIAN.split('\n').slice(0, 5);
 const REAL_HEBREW = [

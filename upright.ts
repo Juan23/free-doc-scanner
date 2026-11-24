@@ -79,8 +79,8 @@ function inkOf(luma: Uint8Array, w: number, h: number): Uint8Array {
 /** Whether most of the page (`luma`) is far darker than its light parts, as under light text on a dark card. */
 function lightOnDark(luma: Uint8Array): boolean {
   const counts = new Int32Array(256);
-  for (let i = 0; i < luma.length; i++) counts[luma[i]]++;
   const n = luma.length;
+  for (let i = 0; i < n; i++) counts[luma[i]]++;
   let median = -1;
   let light = -1;
   for (let v = 0, seen = 0; v < 256; v++) {
@@ -130,6 +130,9 @@ const WIDER = 3;
 const NEUTRAL = 2;
 // A digit's column runs at least this share of the digit's height.
 const FULL_COLUMN = 0.75;
+// A dot leader runs on for at least this many evenly spaced marks, more than a script writes a row: a
+// right-to-left script with each yod tripled is turned the wrong way when 3 marks pass for a leader.
+const LEADER_MARKS = 4;
 
 function median(values: number[]): number {
   const sorted = values.sort((a, b) => a - b);
@@ -292,38 +295,39 @@ function strokes(ink: Uint8Array, w: number, h: number) {
           const start = x;
           let top = h;
           let bottom = -1;
-          let near = false;
+          let sticksOut = false;
           for (; x >= 0 && x < STRIP && tops[x] >= 0; x += step) {
-            near ||= isStop ? bottoms[x] > baseline(x) + reach : tops[x] < xLine(x) - reach;
+            sticksOut ||= isStop ? bottoms[x] > baseline(x) + reach : tops[x] < xLine(x) - reach;
             top = Math.min(top, tops[x]);
             bottom = Math.max(bottom, bottoms[x]);
           }
-          return { start, end: x - step, width: Math.abs(x - start), top, bottom, near };
+          return { start, end: x - step, width: Math.abs(x - start), top, bottom, sticksOut };
         };
         type Run = ReturnType<typeof run>;
-        const isMark = (r: Run) => r.width > 0 && r.width <= mark && r.bottom - r.top + 1 <= mark && Math.abs(r.top - markTop) <= Math.max(1, ALIGNED * xHeight);
+        const isMark = (r: Run) => r.width > 0 && r.width <= mark && r.bottom - r.top + 1 <= mark && Math.abs(r.top - markTop) <= near;
         // A digit is taller than the x-height, sticks out on one side only, and most of its columns run
         // most of its height; a letter that sticks out does so by a stem.
         const isDigit = (r: Run) => {
           const height = r.bottom - r.top + 1;
-          if (!r.width || r.near || height < xHeight + reach) return false;
+          if (!r.width || r.sticksOut || height < xHeight + reach) return false;
           let full = 0;
           for (let x = Math.min(r.start, r.end); x <= Math.max(r.start, r.end); x++) if (bottoms[x] - tops[x] + 1 >= FULL_COLUMN * height) full++;
           return full >= r.width / 2;
         };
         const gap = (from: number, r: Run) => Math.abs(r.start - from) - 1;
-        // A dot leader is 3 or more marks a row, evenly spaced; a pair of marks is not one.
-        const inLeader = () => {
-          const left1 = run(a - 1, -1);
-          const right1 = run(b + 1, 1);
-          const gapLeft = gap(a, left1);
-          const gapRight = gap(b, right1);
-          if (isMark(left1) && isMark(right1)) return Math.abs(gapLeft - gapRight) <= 1;
-          const left2 = run(left1.end - 1, -1);
-          const right2 = run(right1.end + 1, 1);
-          if (isMark(left1) && isMark(left2)) return Math.abs(gap(left1.end, left2) - gapLeft) <= 1;
-          if (isMark(right1) && isMark(right2)) return Math.abs(gap(right1.end, right2) - gapRight) <= 1;
-          return false;
+        // The marks a row from this one, evenly spaced, starting from its nearest runs left and right.
+        const leaderMarks = (nearest: Run[]) => {
+          let marks = 1;
+          let spacing = -1;
+          [-1, 1].forEach((step, i) => {
+            for (let from = step < 0 ? a : b, r = nearest[i]; isMark(r); from = r.end, r = run(r.end + step, step)) {
+              const g = gap(from, r);
+              if (spacing < 0) spacing = g;
+              else if (Math.abs(g - spacing) > 1) break;
+              marks++;
+            }
+          });
+          return marks;
         };
         const after = blank(left + b + 1, 1);
         const before = blank(left + a - 1, -1);
@@ -334,7 +338,8 @@ function strokes(ink: Uint8Array, w: number, h: number) {
         else if (rtl >= space && (ltr < space || rtl >= WIDER * ltr)) marks.rtl++;
         else {
           // A decimal point between digits or a dot leader's dot is no other script's mark, so it is not counted.
-          if ((isDigit(run(a - 1, -1)) && isDigit(run(b + 1, 1))) || inLeader()) continue;
+          const nearest = [run(a - 1, -1), run(b + 1, 1)];
+          if (nearest.every(isDigit) || leaderMarks(nearest) >= LEADER_MARKS) continue;
           if (ltr < space) marks.inWord++;
           else if (ltr < NEUTRAL * rtl && rtl < NEUTRAL * ltr) marks.alone++;
         }
@@ -414,18 +419,23 @@ export function readUpright(image: SkImage) {
   const first = findInk(image, SMALL_LONG_SIDE);
   const whole = readInk(first);
   const sure = whole.turns || !whole.failedAsIs.length;
-  // Held back by another script's marks alone, the page is not looked at again: its middle may hold too few of them.
-  const heldByScriptOnly = [whole.failedAsIs, whole.failedTurned].some((failed) => failed.length === 1 && failed[0] === 'script');
   // A page this small is read at full size already, so a closer look sees nothing new.
   const fullSize = Math.max(image.width(), image.height()) <= SMALL_LONG_SIDE;
-  const read = sure || heldByScriptOnly || fullSize ? whole : readInk(findInk(image, CLOSE_LONG_SIDE, CLOSE_PART));
+  // Held back by another script's marks alone, the page is not looked at again: its middle may hold too few of them.
+  const read = sure || heldByScriptOnly(whole) || fullSize ? whole : readInk(findInk(image, CLOSE_LONG_SIDE, CLOSE_PART));
   // Light text on a dark card is gaps in the ink, so an unsure page that is mostly dark is read again as its
   // negative; not one held back by another script's marks, which the negative cannot see.
-  if (read.turns || !read.failedAsIs.length || heldByScriptOnly || !lightOnDark(first.luma)) return read;
-  const flipped = new Uint8Array(first.luma.length);
-  for (let i = 0; i < flipped.length; i++) flipped[i] = 255 - first.luma[i];
+  const { luma } = first;
+  if (read.turns || !read.failedAsIs.length || heldByScriptOnly(read) || !lightOnDark(luma)) return read;
+  const n = luma.length;
+  const flipped = new Uint8Array(n);
+  for (let i = 0; i < n; i++) flipped[i] = 255 - luma[i];
   const negative = readInk({ ink: inkOf(flipped, first.w, first.h), w: first.w, h: first.h });
   return negative.turns ? negative : read;
+}
+
+function heldByScriptOnly({ failedAsIs, failedTurned }: ReturnType<typeof readInk>) {
+  return [failedAsIs, failedTurned].some((failed) => failed.length === 1 && failed[0] === 'script');
 }
 
 function readInk({ ink, w, h }: { ink: Uint8Array; w: number; h: number }) {
