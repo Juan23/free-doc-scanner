@@ -4,7 +4,7 @@
 /// <reference types="jest" />
 import { cropPage, findPage } from './crop';
 import * as uprightModule from './upright';
-import { readUpright, turnedImage } from './upright';
+import { turnedImage, type readUpright } from './upright';
 
 // Scores auto-upright on real photos, cropped as the app does, unturned, and turned by 0, 90, 180 and 270 degrees
 // (DOCUNET=<photo folder> [FIRST=1 LAST=15] [OUT=<file>]). One tab-separated line per photo and turn:
@@ -50,7 +50,7 @@ const DOCUNET_DIR = process.env.DOCUNET;
 const FIRST = Number(process.env.FIRST ?? 1);
 const LAST = Number(process.env.LAST ?? 15);
 // Upright copies of the 90 turned copies of photos 1_1 to 15_2, and of the 300 of 16_1 to 65_2.
-const MIN_UPRIGHT: Record<string, number> = { '1-15': 13, '16-65': 87 };
+const MIN_UPRIGHT: Record<string, number> = { '1-15': 13, '16-65': 91 };
 
 (DOCUNET_DIR ? describe : describe.skip)('auto-upright on real photos', () => {
   it('turns no upright page and puts no turned page the wrong way up', async () => {
@@ -58,6 +58,7 @@ const MIN_UPRIGHT: Record<string, number> = { '1-15': 13, '16-65': 87 };
     let upright = 0;
     let left = 0;
     const wrong: string[] = [];
+    const realRead = uprightModule.readUpright;
 
     for (let n = FIRST; n <= LAST; n++) {
       for (const side of [1, 2]) {
@@ -67,7 +68,6 @@ const MIN_UPRIGHT: Record<string, number> = { '1-15': 13, '16-65': 87 };
         const found = await findPage(filePath);
         const readings: ReturnType<typeof readUpright>[] = [];
         // Reads the page cropPage hands to readUpright, before its encode, at each turn.
-        const realRead = uprightModule.readUpright;
         const spy = jest.spyOn(uprightModule, 'readUpright').mockImplementationOnce((page) => {
           for (const turn of [0, 1, 2, 3]) {
             const copy = turn ? turnedImage(page, turn) : page;
@@ -78,6 +78,7 @@ const MIN_UPRIGHT: Record<string, number> = { '1-15': 13, '16-65': 87 };
         });
         await cropPage(filePath, found.corners, `mem://${file}`);
         spy.mockRestore();
+        expect(readings).toHaveLength(4);
         mockFiles.delete(`mem://${file}`);
 
         readings.forEach((read, turn) => {

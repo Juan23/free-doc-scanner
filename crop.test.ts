@@ -642,7 +642,7 @@ it('keeps a page unturned when its text cannot be read', async () => {
   expect([page.width(), page.height()]).toEqual([1600, 1200]);
 }, 60000);
 
-it('frees the photo before reading a cropped page, so no more than two full-size images are held', async () => {
+it('frees the photo once, before reading the cropped page', async () => {
   mockFiles.set('file:///cache/photo.jpg', letter(1, 40));
   const realDecode = scansModule.decodePage;
   let photoFreed: jest.SpyInstance | undefined;

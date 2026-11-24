@@ -707,15 +707,15 @@ export async function cropPage(uri: string, corners: Quad, dest: string): Promis
   let page: SkImage | undefined;
   let upright: SkImage | undefined;
   try {
-    const whole = isWhole(corners, image.width(), image.height());
-    page = whole ? image : straightened(image, corners);
-    if (!whole) {
+    const wholePhoto = isWhole(corners, image.width(), image.height());
+    page = wholePhoto ? image : straightened(image, corners);
+    if (!wholePhoto) {
       // Freed before the turn, so no more than two full-size images are held at once.
       image.dispose();
       image = undefined;
     }
     const turns = uprightTurns(page);
-    if (!turns && whole && isPlainJpeg(photo)) return await new File(dest).write(photo);
+    if (!turns && wholePhoto && isPlainJpeg(photo)) return await new File(dest).write(photo);
     upright = turns ? turnedImage(page, turns) : page;
     await writeJpeg(dest, upright.encodeToBytes(ImageFormat.JPEG, 90));
   } finally {
