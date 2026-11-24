@@ -422,6 +422,8 @@ const JUT_SHARE = 0.02;
 const JUT_TURN = Math.PI / 4;
 // A foot curling toward the camera bends a picture this share of the page's least width past the sides.
 const JUT_MARGIN_OF_WIDTH = 0.05;
+// A curling foot takes a footer at most this share of the page's least width past its end corners; a dark object under the page runs farther.
+const END_OVERRUN = 0.08;
 // The hull's sides are runs of edges turning less than this, at least this share of the page's least width long.
 const SIDE_TURN = Math.PI / 6;
 const SIDE_LENGTH = 0.1;
@@ -973,10 +975,13 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
       const [from, to] = alongRows ? [span.top, span.bottom] : [span.left, span.right];
       const spanned = (corner: Point2) => along(corner) >= from - PAGE_GAP && along(corner) <= to + PAGE_GAP;
       if (!page.hull.every((corner) => depth(corner) > nearest + 1 || spanned(corner))) return false;
-      if (completesPage(one)) return true;
+      const fits = one.every(near) || passes(one);
+      if (fits && completesPage(one)) return true;
       // A curl puts table in a footer's hull with the page, but a footer spans the whole end: out to the paper's farthest points 45 degrees either way.
       const endCorner = (sign: number) => page.hull.reduce((a, b) => (depth(b) + sign * along(b) < depth(a) + sign * along(a) ? b : a));
-      return spanned(endCorner(1)) && spanned(endCorner(-1));
+      const [first, last] = [endCorner(1), endCorner(-1)];
+      const overrun = Math.max(along(first) - from, to - along(last));
+      return spanned(first) && spanned(last) && overrun <= END_OVERRUN * page.width && (fits || !juts(one));
     };
     for (const part of beside) {
       // Stripes that wood across the photo's top cuts off from its edge start no surface, so they are judged by colour.
@@ -1018,7 +1023,7 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
           });
         }
         // A band, object or strip reaching the photo's edge beside the page is tied to the table there.
-        if (one.some(touchesPage) && (one.every(near) || passes(one)) && (!sidesMet || acrossEnd(one, sidesMet, span))) for (const p of one) loose[p] = 1;
+        if (one.some(touchesPage) && (sidesMet ? acrossEnd(one, sidesMet, span) : one.every(near) || passes(one))) for (const p of one) loose[p] = 1;
         else one.forEach(makeTable);
       }
     }

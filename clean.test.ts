@@ -2009,13 +2009,14 @@ describe('dark background', () => {
     expect(tableWhitened).toBeGreaterThan(0.95);
   });
 
-  // A footer 30 px deep at the foot of a turned page curling toward the camera and running off the photo's foot.
+  // A footer at the foot of a page curling toward the camera and running off the photo's foot, or both ends.
   it.each([
-    ['black', 'slanting red and blue stripes', { tilt: -5, curl: 20, colour: NEAR_BLACK, table: slanting }],
-    ['green', 'red and navy checks', { tilt: -4, curl: 18, colour: DARK_GREEN, table: checks }],
-  ] as const)('keeps a %s footer at the curled foot of a turned page on %s', (_, __, scene) => {
+    ['black', 30, 'slanting red and blue stripes', { tilt: -5, curl: 20, colour: NEAR_BLACK, table: slanting }],
+    ['green', 30, 'red and navy checks', { tilt: -4, curl: 18, colour: DARK_GREEN, table: checks }],
+    ['black', 60, 'slanting red and blue stripes', { place: 'offBoth', curl: 18, colour: NEAR_BLACK, table: slanting }],
+  ] as const)('keeps a %s footer %i px deep at the curled foot of a page on %s', (_, depth, __, scene) => {
     // The curl puts table in the footer's hull with the page, but the footer spans the page's whole end.
-    const { picture, table } = bleedingPicture({ place: 'off', picture: 'full', depth: 30, ...scene });
+    const { picture, table } = bleedingPicture({ place: 'off', picture: 'full', depth, ...scene });
     expect(picture).toBeLessThan(0.1);
     expect(table).toBeGreaterThan(0.95);
   });
@@ -2043,6 +2044,26 @@ describe('dark background', () => {
       (x, y) => !byPage(x, y, 10) && !inObject(x, y, 10),
     );
     // It spans the paper's nearest corner as a footer does, but not the rest of the page's end.
+    expect(object).toBeGreaterThan(0.95);
+    expect(table).toBeGreaterThan(0.95);
+  });
+
+  // A page 200 x 440 px turned about its middle, its lowest corner 10 px above the photo's foot, on checks 20 px wide.
+  it.each([3, -5])('whitens a black object from 20 px past one foot corner to 20 px past the other, under a page turned %i degrees', (tilt) => {
+    const turn = (tilt * Math.PI) / 180;
+    const [cos, sin] = [Math.cos(turn), Math.sin(turn)];
+    const [cx, cy] = [250, 656 - (100 * Math.abs(sin) + 220 * cos)];
+    const byPage = (x: number, y: number, margin: number) =>
+      Math.abs((x - cx) * cos + (y - cy) * sin) <= 100 + margin && Math.abs((y - cy) * cos - (x - cx) * sin) <= 220 + margin;
+    const feet = [-100, 100].map((u) => [cx + u * cos - 220 * sin, cy + u * sin + 220 * cos]);
+    const [x0, x1, y0] = [feet[0][0] - 20, feet[1][0] + 20, Math.max(feet[0][1], feet[1][1]) - 5];
+    const inObject = (x: number, y: number, margin: number) => x >= x0 - margin && x < x1 + margin && y >= y0 - margin;
+    const [object, table] = markedShares(
+      (x, y) => (byPage(x, y, 0) ? PAPER : inObject(x, y, 0) ? NEAR_BLACK : smallChecks(x, y)),
+      (x, y) => inObject(x, y, -4) && !byPage(x, y, 10),
+      (x, y) => !byPage(x, y, 10) && !inObject(x, y, 10),
+    );
+    // It spans the page's end as a footer does, but runs farther past its corners than a curl takes one.
     expect(object).toBeGreaterThan(0.95);
     expect(table).toBeGreaterThan(0.95);
   });
