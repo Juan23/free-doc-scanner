@@ -109,7 +109,6 @@ function edgeMap(rgba: Uint8Array, w: number, h: number) {
   return { gx, gy, nms };
 }
 
-// Degrees in each sector of line angles.
 const SECTOR_DEG = 6;
 // Cap peaks per sector so dense text or ruled lines cannot crowd out perpendicular edges.
 const MAX_LINES_PER_SECTOR = 2;
@@ -338,6 +337,9 @@ const BESIDE = [3, 4, 5];
 // Search-copy px into the paper past a band that are read, within the thinnest strip a band leaves (3% of a page that fills the copy).
 const PAST_BAND = [0, 1, 2];
 
+// Search-copy px past a side where paper means a line of text: past its edge's blur, closer than a band's MIN_BAND.
+const CUT_REACH = [3, 4, 5];
+
 // Share of the way up the frame's colours where its paper is read.
 const PAPER_SHARE = 0.75;
 
@@ -383,7 +385,7 @@ function framePaper(q: Quad, rgba: Uint8Array, w: number, h: number) {
 function cutsPaper(q: Quad, s: number, rgba: Uint8Array, w: number, h: number): boolean {
   const { at, isPaper, sides } = framePaper(q, rgba, w, h);
   const { nx, ny, points } = sides[s];
-  const cut = points.filter(({ x, y }) => [3, 4, 5].some((d) => isPaper(at(x + nx * d, y + ny * d))));
+  const cut = points.filter(({ x, y }) => CUT_REACH.some((d) => isPaper(at(x + nx * d, y + ny * d))));
   return cut.length >= MIN_PAPER_BEYOND * points.length;
 }
 
