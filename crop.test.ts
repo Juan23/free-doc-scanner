@@ -364,6 +364,22 @@ it.each([
   expectNear((await findPage('file:///cache/photo.jpg')).corners, page, 20);
 }, 30000);
 
+// A table brighter than a header is no lit paper past a shadow (#114).
+it.each([
+  ['upright', upright, 'grey', 'rgb(140,140,140)', 'wood', 'rgb(205,175,135)', 'rgb(238,234,222)', false],
+  ['tilted', tilted, 'grey', 'rgb(120,120,120)', 'light grey', 'rgb(215,215,215)', 'rgb(238,234,222)', true],
+  ['tilted', tilted, 'light blue', 'rgb(150,190,230)', 'light grey', 'rgb(215,215,215)', 'rgb(252,252,252)', false],
+  ['upright', upright, 'yellow', 'rgb(240,215,90)', 'white', 'rgb(248,248,248)', 'rgb(252,252,252)', true],
+] as const)('finds a %s page with a %s header on a %s table, with a footer: %s', async (_, page, _h, header, _t, table, paper, footer) => {
+  const bands = (canvas: SkCanvas) => {
+    bandAcross(page, 0, 0.12, 0, 1, header)(canvas);
+    if (footer) bandAcross(page, 0.88, 0.12, 0, 1, header)(canvas);
+  };
+  mockFiles.set('file:///cache/photo.jpg', photo(page, table, paper, undefined, bands));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, page, 20);
+}, 30000);
+
 it('falls back to the whole photo when there is no page to find', async () => {
   const surface = Skia.Surface.Make(W, H)!;
   surface.getCanvas().drawColor(Skia.Color('rgb(120,120,120)'));

@@ -349,7 +349,7 @@ const BRIGHTER = 1.1;
 // Share of the paper's brightness under which what lies just inside a side is a gap of table or shadow, not page.
 const GAP_DARK = 0.5;
 // Share of a side's points brighter outside that makes the side cut the page.
-const MAX_BRIGHTER_PAST = 0.6;
+const MIN_BRIGHTER_PAST = 0.6;
 
 // Share of the way up the frame's colours where its paper is read.
 const PAPER_SHARE = 0.75;
@@ -358,6 +358,7 @@ const PAPER_PATH = Array.from({ length: 71 }, (_, i) => 0.1 + i / 100);
 
 const brightness = (c: number[]) => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
 const sameColour = (c: number[], d: number[]) => Math.abs(c[0] - d[0]) + Math.abs(c[1] - d[1]) + Math.abs(c[2] - d[2]) < SAME_COLOUR;
+const colourOf = (rgba: Uint8Array, o: number) => [rgba[o], rgba[o + 1], rgba[o + 2]];
 
 /** The frame's paper colour and its sides, each with its outward normal and points along it, in a small RGBA copy. */
 function framePaper(q: Quad, rgba: Uint8Array, w: number, h: number) {
@@ -377,7 +378,7 @@ function framePaper(q: Quad, rgba: Uint8Array, w: number, h: number) {
   const medianColour = (offsets: number[]) => colourAt(offsets, 0.5);
   // The frame's paper, on the lines from its middle to its corners; past the median, so text and a band crossing them do not darken it.
   const paper = colourAt(q.flatMap((p) => PAPER_PATH.map((k) => at(cx + (p.x - cx) * k, cy + (p.y - cy) * k))), PAPER_SHARE)!;
-  const isPaper = (o: number) => o >= 0 && sameColour([rgba[o], rgba[o + 1], rgba[o + 2]], paper);
+  const isPaper = (o: number) => o >= 0 && sameColour(colourOf(rgba, o), paper);
 
   const steps = 32;
   const along = Array.from({ length: steps - 7 }, (_, j) => (j + 4) / steps);
@@ -391,36 +392,58 @@ function framePaper(q: Quad, rgba: Uint8Array, w: number, h: number) {
     // Points along the side; the ends are skipped, as they sit at corners.
     return { nx, ny, points: along.map((t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t })) };
   });
-  return { at, medianColour, paper, isPaper, sides };
+  // Offsets e px outside (inside when e < 0) each neighbouring side's line, carried on `past` px beyond side s.
+  const besideNeighbours = (s: number, past: number, e: number) =>
+    [
+      { k: (s + 3) % 4, corner: q[s], far: q[(s + 3) % 4] },
+      { k: (s + 1) % 4, corner: q[(s + 1) % 4], far: q[(s + 2) % 4] },
+    ].map(({ k, corner, far }) => {
+      const len = Math.hypot(corner.x - far.x, corner.y - far.y);
+      const ux = (corner.x - far.x) / len;
+      const uy = (corner.y - far.y) / len;
+      // Px along the neighbouring side's line for each px away from side s.
+      const stretch = 1 / (ux * sides[s].nx + uy * sides[s].ny);
+      return at(corner.x + ux * past * stretch + sides[k].nx * e, corner.y + uy * past * stretch + sides[k].ny * e);
+    });
+  return { at, medianColour, paper, isPaper, sides, besideNeighbours };
 }
 
 /** True when most of side s has ink across it and paper closer past it than a band leaves: the side is a line of text on the page, not its edge. */
 function cutsPaper(q: Quad, s: number, rgba: Uint8Array, w: number, h: number): boolean {
   const { at, paper, isPaper, sides } = framePaper(q, rgba, w, h);
   const { nx, ny, points } = sides[s];
-  const isInk = (o: number) => o >= 0 && !isPaper(o) && brightness([rgba[o], rgba[o + 1], rgba[o + 2]]) < brightness(paper);
+  const isInk = (o: number) => o >= 0 && !isPaper(o) && brightness(colourOf(rgba, o)) < brightness(paper);
   const cut = points.filter(
     ({ x, y }) => CUT_REACH.some((d) => isPaper(at(x + nx * d, y + ny * d))) && INK_REACH.some((d) => isInk(at(x + nx * d, y + ny * d))),
   );
   return cut.length >= MIN_PAPER_BEYOND * points.length;
 }
 
-/** True when most of some side, but not of every side, is brighter just outside it than just inside: that side lies across the page, where a page on a paler table is brighter past every side. */
+/** True when most of some side, but not of every side, is brighter just outside it than just inside, and what lies past it is not the table beside the neighbouring sides: that side lies across the page, where a page on a paler table is brighter past every side. */
 function liesAcrossPage(q: Quad, rgba: Uint8Array, w: number, h: number): boolean {
-  const { at, paper, sides } = framePaper(q, rgba, w, h);
+  const { at, medianColour, paper, sides, besideNeighbours } = framePaper(q, rgba, w, h);
   const brighterPast = (s: number) => {
     const { nx, ny, points } = sides[s];
     // NaN when none is in the photo, so a side along the photo's edge is never brighter past.
     const meanBrightness = (x: number, y: number, offsets: number[]) => {
       const inPhoto = offsets.map((d) => at(x + nx * d, y + ny * d)).filter((o) => o >= 0);
-      return inPhoto.reduce((sum, o) => sum + brightness([rgba[o], rgba[o + 1], rgba[o + 2]]), 0) / inPhoto.length;
+      return inPhoto.reduce((sum, o) => sum + brightness(colourOf(rgba, o)), 0) / inPhoto.length;
     };
     const brighter = points.filter(
       ({ x, y }) =>
         meanBrightness(x, y, STRIP) > BRIGHTER * meanBrightness(x, y, STRIP.map((d) => -d)) &&
         meanBrightness(x, y, CUT_REACH.map((d) => -d)) >= GAP_DARK * brightness(paper),
     );
-    return brighter.length >= MAX_BRIGHTER_PAST * points.length;
+    if (brighter.length < MIN_BRIGHTER_PAST * points.length) return false;
+    // A table paler than a header band or a shaded part of the page runs on past the neighbouring sides too; paper past a shadow or a fold stops at them.
+    const past = medianColour(points.flatMap(({ x, y }) => STRIP.map((d) => at(x + nx * d, y + ny * d))));
+    return (
+      !past ||
+      ![0, 1].some((j) => {
+        const beside = medianColour(STRIP.flatMap((t) => BESIDE.map((e) => besideNeighbours(s, t, e)[j])));
+        return beside && sameColour(beside, past);
+      })
+    );
   };
   const brighterSides = [0, 1, 2, 3].filter(brighterPast).length;
   return brighterSides > 0 && brighterSides < 4;
@@ -428,27 +451,17 @@ function liesAcrossPage(q: Quad, rgba: Uint8Array, w: number, h: number): boolea
 
 /** True when most of a side runs along a dark band of even depth with paper past it that shows just inside its neighbouring sides' lines carried on, not just outside, where another sheet would spill past them or stop short. */
 function endsAtBand(q: Quad, rgba: Uint8Array, w: number, h: number): boolean {
-  const { at, medianColour, paper, isPaper, sides } = framePaper(q, rgba, w, h);
+  const { at, medianColour, paper, isPaper, sides, besideNeighbours } = framePaper(q, rgba, w, h);
 
   // shortcut: a second sheet in line with both neighbouring sides, or past which they leave the photo (a page cut by three photo edges), gives the whole photo, upgrade when a real photo shows one.
   const carriesOnPage = (s: number, from: number) =>
-    [
-      { k: (s + 3) % 4, corner: q[s], far: q[(s + 3) % 4] },
-      { k: (s + 1) % 4, corner: q[(s + 1) % 4], far: q[(s + 2) % 4] },
-    ].every(({ k, corner, far }) => {
-      const len = Math.hypot(corner.x - far.x, corner.y - far.y);
-      const ux = (corner.x - far.x) / len;
-      const uy = (corner.y - far.y) / len;
-      // Px along the neighbouring side's line for each px away from side s.
-      const stretch = 1 / (ux * sides[s].nx + uy * sides[s].ny);
+    [0, 1].every((j) => {
       let inside = 0;
       let outside = 0;
       for (const t of PAST_BAND) {
-        const x = corner.x + ux * (from + t) * stretch;
-        const y = corner.y + uy * (from + t) * stretch;
         for (const e of BESIDE) {
-          if (isPaper(at(x - sides[k].nx * e, y - sides[k].ny * e))) inside++;
-          if (isPaper(at(x + sides[k].nx * e, y + sides[k].ny * e))) outside++;
+          if (isPaper(besideNeighbours(s, from + t, -e)[j])) inside++;
+          if (isPaper(besideNeighbours(s, from + t, e)[j])) outside++;
         }
       }
       const probes = PAST_BAND.length * BESIDE.length;
