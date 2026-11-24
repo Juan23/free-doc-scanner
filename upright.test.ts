@@ -546,4 +546,21 @@ const haveFonts = existsSync(FONTS + 'Times New Roman.ttf');
     },
     120000,
   );
+
+  // Decimal points and dot leaders sit between digits or beside each other with no space after; counted as
+  // another script's marks, they would hold this Latin page back.
+  const PRICES = [
+    'Coffee, small ........................ 2.40    Tea with milk ............ 1.90',
+    'Croissant ............................ 3.15    Bagel, toasted ........... 2.75',
+    'Chapter 4. Results .................. 112    Appendix B ............. 3.1.2',
+    'Total 14.99 incl. tax 2.50; paid 20.00, change 5.01. Thank you.',
+    'Item 7.3.1 page 45 ... 47 ... 49 ... 51. See also 8.2 and 9.14.',
+  ];
+  it.each([1, 2])('turns an Arial price list turned %i quarter turns upright', async (turns) => {
+    mockFiles.set(PAGE, largeLetter(turns, 44, PRICES, FONTS + 'Arial.ttf'));
+
+    await keepWholePhoto();
+
+    expect(difference(mockFiles.get(PAGE)!, largeLetter(0, 44, PRICES, FONTS + 'Arial.ttf'))).toBeLessThan(3);
+  }, 60000);
 });

@@ -281,8 +281,7 @@ function strokes(ink: Uint8Array, w: number, h: number) {
           }
           return n;
         };
-        // The nearest run of inked columns from x on, stepping by `step` within the strip: one sticking out past the
-        // edge across the line from the mark (a digit by a decimal point), a mark as small (a dot leader's dot), or other.
+        // The nearest inked run from x within the strip: 'tall' as a digit by a decimal point, 'mark' as a leader's dot.
         const neighbour = (x: number, step: number) => {
           for (; x >= 0 && x < STRIP && tops[x] < 0; x += step);
           const start = x;
