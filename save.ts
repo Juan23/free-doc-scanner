@@ -1,16 +1,12 @@
-import { PDFDocument } from 'pdf-lib';
+import { ImageFormat, Skia, type SkImage } from '@shopify/react-native-skia';
+import { JpegEmbedder, PDFDocument } from 'pdf-lib';
 import { Directory, File, Paths } from 'expo-file-system';
 import { Album, Asset, requestPermissionsAsync } from 'expo-media-library';
 import { Platform } from 'react-native';
 
-const ALBUM = 'Free Doc Scanner';
-const pad = (n: number) => String(n).padStart(2, '0');
+import { shrunkCopy } from './clean';
 
-/** "Scan 2026-11-03 19.42": base name for the PDF and the JPEG pages. */
-export function scanName(date: Date = new Date()): string {
-  const day = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-  return `Scan ${day} ${pad(date.getHours())}.${pad(date.getMinutes())}`;
-}
+const ALBUM = 'Free Doc Scanner';
 
 /** The picked pages, in page order, or every page when none are picked. */
 export const pagesToSave = (pages: string[], picked: string[]) =>
@@ -20,17 +16,53 @@ export const pagesToSave = (pages: string[], picked: string[]) =>
 export const pickOnLongPress = (picked: string[] | null, uri: string): string[] =>
   picked === null ? [uri] : picked.includes(uri) ? picked : [...picked, uri];
 
-/** One PDF page per page JPEG, in order, at A4 width with the image's aspect ratio. */
+const A4 = { short: 595.28, long: 841.89 };
+// Small print stays as sharp as the page's own pixels at 250 dpi; 150 softens Chinese strokes.
+const MAX_DPI = 250;
+// Shrinking a page barely over the cap costs a lossy JPEG pass and saves almost nothing.
+const SHRINK_MARGIN = 1.05;
+const POINTS_PER_INCH = 72;
+
+/**
+ * One PDF page per page JPEG, in order: A4 turned to the image's shape, the image centred. An image
+ * over twice as tall as wide (a receipt) gets A4's width on a taller page, so its text is not shrunk.
+ */
 export async function buildPdf(pages: string[]): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
-  // shortcut: holds every page in memory (~3x the scan size at peak), fine for typical scans; stream pages if 50+ page scans crash
+  // shortcut: holds every embedded page in memory until save, fine for typical scans; stream pages if 50+ page scans crash
   for (const uri of pages) {
-    const image = await doc.embedJpg(await new File(uri).bytes());
-    const width = 595.28;
-    const height = (width * image.height) / image.width;
-    doc.addPage([width, height]).drawImage(image, { x: 0, y: 0, width, height });
+    let bytes: Uint8Array = await new File(uri).bytes();
+    const { width: w, height: h } = await JpegEmbedder.for(bytes);
+    const size: [number, number] =
+      h > 2 * w ? [A4.short, (A4.short * h) / w] : h >= w ? [A4.short, A4.long] : [A4.long, A4.short];
+    const scale = Math.min(size[0] / w, size[1] / h);
+    const width = w * scale;
+    const height = h * scale;
+    const maxWidth = Math.round((width / POINTS_PER_INCH) * MAX_DPI);
+    if (w > maxWidth * SHRINK_MARGIN) bytes = shrunkJpeg(bytes, maxWidth, Math.round((h * maxWidth) / w));
+    const image = await doc.embedJpg(bytes);
+    doc.addPage(size).drawImage(image, { x: (size[0] - width) / 2, y: (size[1] - height) / 2, width, height });
   }
   return doc.save();
+}
+
+function shrunkJpeg(jpeg: Uint8Array, w: number, h: number): Uint8Array {
+  const data = Skia.Data.fromBytes(jpeg);
+  const image = Skia.Image.MakeImageFromEncoded(data);
+  data.dispose();
+  if (!image) throw new Error('unreadable page');
+  let small: SkImage | undefined;
+  let bytes: Uint8Array | undefined;
+  try {
+    small = shrunkCopy(image, w, h);
+    bytes = small.encodeToBytes(ImageFormat.JPEG, 90);
+  } finally {
+    image.dispose();
+    small?.dispose();
+  }
+  // Native Skia returns null when encoding fails, whatever the type says.
+  if (!bytes?.length) throw new Error('could not encode page');
+  return bytes;
 }
 
 /** Asks the user for a folder and writes the pages there as `<name>.pdf`, never overwriting. */
