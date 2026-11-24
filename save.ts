@@ -29,10 +29,8 @@ const A4 = { short: 595.28, long: 841.89 };
 const MAX_DPI = 250;
 
 /**
- * One PDF page per page JPEG, in order: A4, portrait or landscape by the image's shape, the image
- * centred with its aspect kept. An image over twice as tall as wide (a receipt) gets a page of A4
- * width as tall as its shape instead, so its text is not shrunk to fit. A page finer than 250 dpi
- * at its size on the PDF page is shrunk to 250 dpi; any other is embedded as it is.
+ * One PDF page per page JPEG, in order: A4 turned to the image's shape, the image centred. An image
+ * over twice as tall as wide (a receipt) gets A4's width on a taller page, so its text is not shrunk.
  */
 export async function buildPdf(pages: string[]): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
