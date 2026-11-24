@@ -324,13 +324,15 @@ const SAME_COLOUR = 40;
 const MIN_PAPER_BEYOND = 0.6;
 // A band is at most this share of the paper's brightness: black print is under it, a shadow on a pale table above it.
 const BAND_DARK = 0.4;
-// Search-copy px outside the frame's other sides where the surface round the page is read, past their edges' blur.
-const AROUND = [3, 4, 5, 6];
+// Search-copy px either side of a neighbouring side's line where paper is looked for, past its edge's blur.
+const BESIDE = [3, 4, 5];
+// Search-copy px into the paper past a band that are read, within the thinnest strip a band leaves (3% of a page that fills the copy).
+const PAST_BAND = [0, 1, 2];
 
 const brightness = (c: number[]) => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
 const sameColour = (c: number[], d: number[]) => Math.abs(c[0] - d[0]) + Math.abs(c[1] - d[1]) + Math.abs(c[2] - d[2]) < SAME_COLOUR;
 
-/** True when most of a side runs along a dark band of even depth with paper past it, unlike the surface round the frame (a gap to another sheet). */
+/** True when most of a side runs along a dark band of even depth with paper past it that shows just inside its neighbouring sides' lines carried on, not just outside, where another sheet would spill past them or stop short. */
 function endsAtBand(q: Quad, rgba: Uint8Array, w: number, h: number): boolean {
   const cx = (q[0].x + q[1].x + q[2].x + q[3].x) / 4;
   const cy = (q[0].y + q[1].y + q[2].y + q[3].y) / 4;
@@ -362,20 +364,45 @@ function endsAtBand(q: Quad, rgba: Uint8Array, w: number, h: number): boolean {
     return { nx, ny, points: along.map((t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t })) };
   });
 
+  // shortcut: a second sheet in line with both neighbouring sides, or past which they leave the photo (a page cut by three photo edges), gives the whole photo, upgrade when a real photo shows one.
+  const carriesOnPage = (s: number, from: number) =>
+    [
+      { k: (s + 3) % 4, corner: q[s], far: q[(s + 3) % 4] },
+      { k: (s + 1) % 4, corner: q[(s + 1) % 4], far: q[(s + 2) % 4] },
+    ].every(({ k, corner, far }) => {
+      const len = Math.hypot(corner.x - far.x, corner.y - far.y);
+      const ux = (corner.x - far.x) / len;
+      const uy = (corner.y - far.y) / len;
+      // Px along the neighbouring side's line for each px away from side s.
+      const stretch = 1 / (ux * sides[s].nx + uy * sides[s].ny);
+      let inside = 0;
+      let outside = 0;
+      for (const t of PAST_BAND) {
+        const x = corner.x + ux * (from + t) * stretch;
+        const y = corner.y + uy * (from + t) * stretch;
+        for (const e of BESIDE) {
+          if (isPaper(at(x - sides[k].nx * e, y - sides[k].ny * e))) inside++;
+          if (isPaper(at(x + sides[k].nx * e, y + sides[k].ny * e))) outside++;
+        }
+      }
+      const probes = PAST_BAND.length * BESIDE.length;
+      return 2 * inside > probes && 2 * outside < probes;
+    });
+
   return sides.some(({ nx, ny, points }, s) => {
     // Px from (x, y) to the first paper outward (dir 1) or inward (dir -1), 0 when none is within reach.
     const paperFrom = (x: number, y: number, dir: number) => {
       for (let d = 3; d <= BAND_REACH; d++) if (isPaper(at(x + dir * nx * d, y + dir * ny * d))) return d;
       return 0;
     };
-    // Paper past a band outside the side, or, when the side is the band's far edge, a band inside it and paper right outside.
-    type Mark = { x: number; y: number; d: number; dir: number };
+    // Paper past a band outside the side, or, when the side is the band's far edge, a band inside it and paper right outside; `past` is where that paper starts.
+    type Mark = { x: number; y: number; d: number; dir: number; past: number };
     const outside: Mark[] = [];
     const inside: Mark[] = [];
     for (const { x, y } of points) {
       const out = paperFrom(x, y, 1);
-      if (out >= MIN_BAND) outside.push({ x, y, d: out, dir: 1 });
-      else if (out > 0) inside.push({ x, y, d: paperFrom(x, y, -1), dir: -1 });
+      if (out >= MIN_BAND) outside.push({ x, y, d: out, dir: 1, past: out });
+      else if (out > 0) inside.push({ x, y, d: paperFrom(x, y, -1), dir: -1, past: out });
     }
     const isBand = (marks: Mark[]) => {
       const band = marks.filter((m) => m.d >= MIN_BAND).sort((m, n) => m.d - n.d);
@@ -383,10 +410,8 @@ function endsAtBand(q: Quad, rgba: Uint8Array, w: number, h: number): boolean {
       const even = band.filter((m) => Math.abs(m.d - typical) <= BAND_EVEN);
       if (even.length < MIN_PAPER_BEYOND * points.length) return false;
       const colour = medianColour(even.map((m) => at(m.x + (m.dir * nx * m.d) / 2, m.y + (m.dir * ny * m.d) / 2)))!;
-      const around = medianColour(
-        sides.flatMap((o, k) => (k === s ? [] : o.points.flatMap((p) => AROUND.map((d) => at(p.x + o.nx * d, p.y + o.ny * d))))),
-      );
-      return brightness(colour) < BAND_DARK * brightness(paper) && !(around && sameColour(colour, around));
+      const past = even.map((m) => m.past).sort((m, n) => m - n)[even.length >> 1];
+      return brightness(colour) < BAND_DARK * brightness(paper) && carriesOnPage(s, past);
     };
     return isBand(outside) || isBand(inside);
   });

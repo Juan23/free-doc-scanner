@@ -204,13 +204,15 @@ function bandAcross(page: Quad, top: number, depth: number) {
 }
 
 describe.each([
-  ['upright', upright],
-  ['tilted', tilted],
-] as const)('a dark band across the %s page', (_, page) => {
+  ['upright', 'a brown desk', upright, 'rgb(92,70,52)'],
+  ['tilted', 'a brown desk', tilted, 'rgb(92,70,52)'],
+  ['upright', "a desk of the band's colour", upright, 'rgb(50,50,55)'],
+  ['tilted', "a desk of the band's colour", tilted, 'rgb(50,50,55)'],
+] as const)('a dark band across the %s page on %s', (_, _desk, page, desk) => {
   it.each([0.2, 0.3, 0.5, 0.85].flatMap((top) => [0.05, 0.08, 0.12].map((depth) => [top, depth])))(
     'at %f down, %f of the page deep, gives the whole page or the whole photo',
     async (top, depth) => {
-      mockFiles.set('file:///cache/photo.jpg', photo(page, 'rgb(92,70,52)', undefined, undefined, bandAcross(page, top, depth)));
+      mockFiles.set('file:///cache/photo.jpg', photo(page, desk, undefined, undefined, bandAcross(page, top, depth)));
 
       const { corners } = await findPage('file:///cache/photo.jpg');
 
@@ -240,10 +242,10 @@ function sheetBeside(page: Quad, gap: number, gapColour?: string) {
 }
 
 const SHADOW = 'rgb(110,105,98)';
-// The frame may stop at the far edge of the gap or shadow beside the page, as on main; the whole photo is 110 px off or more.
+// The frame may stop at the far edge of the gap or shadow beside the page; the whole photo is 110 px off or more.
 const GAP_SLACK = 40;
 
-it.each([30, 100])('finds a page on a dark desk with a second white sheet %i px beside it', async (gap) => {
+it.each([30, 60, 100])('finds a page on a dark desk with a second white sheet %i px beside it', async (gap) => {
   mockFiles.set('file:///cache/photo.jpg', photo(tilted, 'rgb(92,70,52)', undefined, sheetBeside(tilted, gap)));
 
   expectNear((await findPage('file:///cache/photo.jpg')).corners, tilted, GAP_SLACK);
@@ -268,6 +270,25 @@ it.each([20, 28])('finds a page on a near-white table with a %i px shadow round 
   mockFiles.set('file:///cache/photo.jpg', photo(upright, 'rgb(225,222,215)', undefined, shadow));
 
   expectNear((await findPage('file:///cache/photo.jpg')).corners, upright, GAP_SLACK);
+}, 30000);
+
+// No table shows past the page's sides to set the shadow apart from a band, so only its paleness keeps the frame.
+it('finds a page as wide as the photo on a near-white table with a shadow under its foot', async () => {
+  const wide: Quad = [
+    { x: 3, y: 150 },
+    { x: 897, y: 150 },
+    { x: 897, y: 1000 },
+    { x: 3, y: 1000 },
+  ];
+  const shadow = (canvas: SkCanvas) => {
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color(SHADOW));
+    canvas.drawRect(Skia.XYWHRect(0, 1000, W, 20), paint);
+    paint.dispose();
+  };
+  mockFiles.set('file:///cache/photo.jpg', photo(wide, 'rgb(225,222,215)', undefined, shadow));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, wide, 20);
 }, 30000);
 
 it('falls back to the whole photo when there is no page to find', async () => {
