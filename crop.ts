@@ -506,6 +506,8 @@ const SURFACE_FOLLOW = 0.1;
 // Share of the patch a frame may leave out, as a curled corner does, and share of the frame the patch must fill.
 const PATCH_LEFT_OUT = 0.03;
 const PATCH_FILL = 0.9;
+// Share of the largest patch from which a second one, as a sheet beside the page, may be the page instead.
+const RUNNER_UP = 0.5;
 // Search-copy px inside and outside a frame side where the page's edge and the surface are read.
 const RING = [2, 3, 4, 5, 6];
 // Share of a side's points that must have the page's edge inside and the surface outside.
@@ -514,6 +516,11 @@ const RING_SHARE = 0.7;
 const EDGE_BRIGHT = 0.5;
 // Share of the paper's brightness from which what lies outside a side counts as more paper.
 const PAPER_BRIGHT = 0.9;
+// Search-copy px past a side where the neighbouring sides' edges are looked for, within the thinnest band a page holds.
+const CARRY = [3, 4, 5, 6];
+// A band differs from the surface beside it in hue, or is this share of its brightness or darker; shade by a page's corner keeps the hue and dims less (0.77 on DocUNet 11_1).
+const BAND_HUE = 0.15;
+const BAND_SHADE = 2 / 3;
 
 // Math.abs is a slow call under Skia's Jest environment, where SmartDoc's timing is measured.
 const abs = (v: number) => (v < 0 ? -v : v);
@@ -562,6 +569,7 @@ function unreachedPatch(rgba: Uint8Array, w: number, h: number) {
   const patch = new Int32Array(n);
   let best = 0;
   let size = 0;
+  let runnerUp = 0;
   for (let s = 0; s < n; s++) {
     if (surface[s] || patch[s]) continue;
     const id = s + 1;
@@ -579,11 +587,12 @@ function unreachedPatch(rgba: Uint8Array, w: number, h: number) {
       }
     }
     if (tail > size) {
+      runnerUp = size;
       best = id;
       size = tail;
-    }
+    } else if (tail > runnerUp) runnerUp = tail;
   }
-  return { inPatch: (p: number) => p >= 0 && patch[p] === best, size };
+  return { inPatch: (p: number) => p >= 0 && patch[p] === best, size, runnerUp };
 }
 
 /** The convex hull of the patch's pixels, going round in order. */
@@ -613,7 +622,6 @@ function patchHull(inPatch: (p: number) => boolean, w: number, h: number): Point
   return [...chain(ends), ...chain([...ends].reverse())];
 }
 
-/** The four hull points that span the largest quad. */
 function largestQuad(hull: Point[]): Quad | null {
   const n = hull.length;
   if (n < 4) return null;
@@ -639,18 +647,25 @@ function largestQuad(hull: Point[]): Quad | null {
   return quad;
 }
 
+function unlikeSurface(c: number[], d: number[]): boolean {
+  const [bc, bd] = [brightness(c), brightness(d)];
+  if (Math.min(bc, bd) < BAND_SHADE * Math.max(bc, bd)) return true;
+  const [sc, sd] = [c[0] + c[1] + c[2] || 1, d[0] + d[1] + d[2] || 1];
+  return [0, 1, 2].reduce((sum, i) => sum + Math.abs(c[i] / sc - d[i] / sd), 0) > BAND_HUE;
+}
+
 /** The page as the largest patch the surface round it does not reach, framed by its largest quad, or null when that frame leaves part of the patch out, is not filled by it, or fails a frame check. */
 function patchCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
   const minArea = 0.04 * w * h;
-  const { inPatch, size } = unreachedPatch(rgba, w, h);
-  if (size < minArea) return null;
+  const { inPatch, size, runnerUp } = unreachedPatch(rgba, w, h);
+  if (size < minArea || runnerUp > RUNNER_UP * size) return null;
   const raw = largestQuad(patchHull(inPatch, w, h));
   const q = raw && orderCorners(raw);
   if (!q || area(q) < minArea) return null;
   const lengths = [0, 1, 2, 3].map((s) => Math.hypot(q[(s + 1) % 4].x - q[s].x, q[(s + 1) % 4].y - q[s].y));
   if (Math.max(...lengths) > MAX_SIDE_RATIO * Math.min(...lengths)) return null;
 
-  const { at, paper, isPaper, sides } = framePaper(q, rgba, w, h);
+  const { at, medianColour, paper, isPaper, sides, besideNeighbours } = framePaper(q, rgba, w, h);
   let leftOut = 0;
   let filled = 0;
   for (let y = 0; y < h; y++) {
@@ -683,7 +698,14 @@ function patchCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
       points.filter(({ x, y }) => pageEdge(x, y, nx, ny)).length >= RING_SHARE * points.length &&
       points.filter(({ x, y }) => surfacePast(x, y, nx, ny)).length >= RING_SHARE * points.length,
   );
-  if (!edged || endsAtBand(q, rgba, w, h) || liesAcrossPage(q, rgba, w, h)) return null;
+  // A band the surface took in, in a colour near its own, carries both neighbouring sides' edges on past the side; past a page's end there is surface on both sides of their lines.
+  const outlineCarriesOn = (s: number) =>
+    [0, 1].every((j) => {
+      const beside = (e: number) => medianColour(CARRY.flatMap((t) => BESIDE.map((d) => besideNeighbours(s, t, e * d)[j])));
+      const [inside, outside] = [beside(-1), beside(1)];
+      return inside && outside && unlikeSurface(inside, outside);
+    });
+  if (!edged || [0, 1, 2, 3].some(outlineCarriesOn) || endsAtBand(q, rgba, w, h) || liesAcrossPage(q, rgba, w, h)) return null;
   return [0, 1, 2, 3].some((s) => cutsPaper(q, s, rgba, w, h)) ? null : q;
 }
 

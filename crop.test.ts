@@ -155,12 +155,50 @@ it('finds a white page on a pale table when a bright glare patch touches the pag
   expectNear((await findPage('file:///cache/photo.jpg')).corners, tilted, 20);
 }, 30000);
 
+const shrunk = (page: Quad, k: number) => page.map((p) => ({ x: 450 + (p.x - 450) * k, y: 600 + (p.y - 600) * k })) as Quad;
+
 it('finds a small page on a dark desk, as a patch the desk round it does not reach', async () => {
-  // The tilted page shrunk to 40% about the photo's middle: its sides are too short on the search copy for the straight-line vote.
-  const small = tilted.map((p) => ({ x: 450 + (p.x - 450) * 0.4, y: 600 + (p.y - 600) * 0.4 })) as Quad;
+  // At 40% of the photo's size its sides are too short on the search copy for the straight-line vote.
+  const small = shrunk(tilted, 0.4);
   mockFiles.set('file:///cache/photo.jpg', photo(small, 'rgb(92,70,52)'));
 
   expectNear((await findPage('file:///cache/photo.jpg')).corners, small, 20);
+}, 30000);
+
+it('gives a small page with a black header the whole page or the whole photo, not the paper below the header', async () => {
+  // The grey seam between the header and the paper is close to the desk's colour.
+  const small = shrunk(upright, 0.6);
+  mockFiles.set('file:///cache/photo.jpg', photo(small, 'rgb(92,70,52)', undefined, undefined, bandAcross(small, 0, 0.12, 0, 1, 'rgb(20,20,20)')));
+
+  const { corners } = await findPage('file:///cache/photo.jpg');
+
+  expect(Math.min(farthest(corners, small), farthest(corners, wholePhoto))).toBeLessThan(20);
+}, 30000);
+
+it('gives a tilted page with a green footer on a dark grey desk the whole page or the whole photo, not the paper above the footer', async () => {
+  // Along the slanted edge the footer's colour shades into the desk's a little at a time.
+  mockFiles.set('file:///cache/photo.jpg', photo(tilted, 'rgb(50,50,55)', undefined, undefined, bandAcross(tilted, 0.94, 0.06, 0, 1, 'rgb(40,110,60)')));
+
+  const { corners } = await findPage('file:///cache/photo.jpg');
+
+  expect(Math.min(farthest(corners, tilted), farthest(corners, wholePhoto))).toBeLessThan(20);
+}, 30000);
+
+it('gives a small page beside a blank sheet the page or the whole photo, never the sheet', async () => {
+  const small = shrunk(tilted, 0.45);
+  const sheet = small.map((p) => ({ x: p.x + (small[1].x - small[0].x) + 20, y: p.y })) as Quad;
+  const drawSheet = (canvas: SkCanvas) => {
+    const path = Skia.Path.Polygon(sheet, true);
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color('rgb(245,245,245)'));
+    canvas.drawPath(path, paint);
+    for (const o of [path, paint]) o.dispose();
+  };
+  mockFiles.set('file:///cache/photo.jpg', photo(small, 'rgb(92,70,52)', undefined, drawSheet));
+
+  const { corners } = await findPage('file:///cache/photo.jpg');
+
+  expect(Math.min(farthest(corners, small), farthest(corners, wholePhoto))).toBeLessThan(20);
 }, 30000);
 
 it('clamps found corners to the photo bounds when an intersection lies just outside', async () => {
