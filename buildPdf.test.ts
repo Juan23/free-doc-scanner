@@ -85,3 +85,26 @@ it('shrinks a page finer than 250 dpi at its size on the PDF page to 250 dpi', a
   expect(images(doc).map(({ width, height }) => [width, height])).toEqual([[2067, 2756]]);
   expect(drawn(doc.getPage(0))).toEqual(near(595.28, 793.707, 0, 24.092));
 });
+
+it('caps the drawn width, not the page width, for a page taller than A4', async () => {
+  page('file:///long.jpg', 3024, 4838);
+  const doc = await PDFDocument.load(await buildPdf(['file:///long.jpg']));
+
+  expect(images(doc).map(({ width, height }) => [width, height])).toEqual([[1827, 2923]]);
+});
+
+it('keeps the pixels of a page only a little finer than 250 dpi', async () => {
+  const fine = page('file:///fine.jpg', 2100, 2800);
+  const doc = await PDFDocument.load(await buildPdf(['file:///fine.jpg']));
+
+  expect(images(doc)).toEqual([{ width: 2100, height: 2800, bytes: fine }]);
+});
+
+it('gives a taller page only to an image over twice as tall as wide', async () => {
+  page('file:///half.jpg', 1000, 2000);
+  page('file:///over.jpg', 1000, 2010);
+  const [half, over] = (await PDFDocument.load(await buildPdf(['file:///half.jpg', 'file:///over.jpg']))).getPages();
+
+  expect([half.getWidth(), half.getHeight()]).toEqual([595.28, 841.89]);
+  expect([over.getWidth(), over.getHeight()]).toEqual([595.28, expect.closeTo(1196.51, 2)]);
+});

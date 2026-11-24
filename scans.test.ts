@@ -1,14 +1,11 @@
 /// <reference types="jest" />
-import { addPages, createScan, deleteScan, heldPhoto, keepOriginal, listScans } from './scans';
-import { scanName } from './save';
+import { addPages, createScan, deleteScan, heldPhoto, keepOriginal, listScans, scanName } from './scans';
 
 // In-memory file system: uri -> directory marker or file text. Moves finish on a later tick.
 const mockFs = { nodes: new Map<string, string>(), failMoveAt: 0, moves: 0, failDelete: false };
 const DIR = '<dir>';
 
 jest.mock('@shopify/react-native-skia', () => ({}));
-// save.ts shrinks PDF pages with clean.ts, whose shaders need real Skia.
-jest.mock('./clean', () => ({}));
 
 jest.mock('expo-file-system', () => {
   const tick = () => new Promise<void>((r) => setTimeout(r, 0));
@@ -276,4 +273,8 @@ it('deleteScan lets a delete error reach the caller', () => {
 it('listScans ignores a page filter record', () => {
   putScan('5', ['p1.jpg', 'f1.json']);
   expect(listScans()[0].pages).toEqual([`${ROOT}/5/p1.jpg`]);
+});
+
+it('formats the scan name in local time', () => {
+  expect(scanName(new Date(2026, 10, 3, 9, 5))).toBe('Scan 2026-11-03 09.05');
 });
