@@ -42,6 +42,7 @@ function photo(
   background: string,
   paper = 'rgb(238,234,222)',
   drawBeforePage?: (canvas: SkCanvas) => void,
+  drawOnPage?: (canvas: SkCanvas) => void,
 ): Uint8Array {
   const surface = Skia.Surface.Make(W, H)!;
   const canvas = surface.getCanvas();
@@ -60,6 +61,7 @@ function photo(
   canvas.save();
   canvas.clipPath(path, 1, true);
   for (let y = 250; y < 1000; y += 40) canvas.drawRect(Skia.XYWHRect(200, y, 500, 10), ink);
+  drawOnPage?.(canvas);
   canvas.restore();
   const snapshot = surface.makeImageSnapshot();
   const bytes = snapshot.encodeToBytes(ImageFormat.JPEG, 92);
@@ -180,6 +182,45 @@ it('finds a page that fills nearly the whole photo', async () => {
 
   expectNear((await findPage('file:///cache/photo.jpg')).corners, close, 15);
 }, 30000);
+
+const upright: Quad = [
+  { x: 150, y: 150 },
+  { x: 750, y: 150 },
+  { x: 750, y: 1050 },
+  { x: 150, y: 1050 },
+];
+
+// A dark band across the page's whole width, `top` and `depth` in shares of the page's height.
+function bandAcross(page: Quad, top: number, depth: number) {
+  const [tl, tr, br, bl] = page;
+  const at = (a: { x: number; y: number }, b: { x: number; y: number }, t: number) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+  return (canvas: SkCanvas) => {
+    const band = Skia.Path.Polygon([at(tl, bl, top), at(tr, br, top), at(tr, br, top + depth), at(tl, bl, top + depth)], true);
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color('rgb(25,25,30)'));
+    canvas.drawPath(band, paint);
+    for (const o of [band, paint]) o.dispose();
+  };
+}
+
+// Before #84 the frame ended at the band's edge, cutting the rest of the page off.
+describe.each([
+  ['upright', upright],
+  ['tilted', tilted],
+] as const)('a dark band across the %s page', (_, page) => {
+  it.each([0.2, 0.5, 0.85].flatMap((top) => [0.05, 0.08, 0.12].map((depth) => [top, depth])))(
+    'at %f down, %f of the page deep, gives the whole page or the whole photo',
+    async (top, depth) => {
+      mockFiles.set('file:///cache/photo.jpg', photo(page, 'rgb(92,70,52)', undefined, undefined, bandAcross(page, top, depth)));
+
+      const { corners } = await findPage('file:///cache/photo.jpg');
+
+      const off = (truth: Quad) => Math.max(...corners.map((p, i) => Math.hypot(p.x - truth[i].x, p.y - truth[i].y)));
+      expect(Math.min(off(page), off(wholePhoto))).toBeLessThan(20);
+    },
+    30000,
+  );
+});
 
 it('falls back to the whole photo when there is no page to find', async () => {
   const surface = Skia.Surface.Make(W, H)!;
