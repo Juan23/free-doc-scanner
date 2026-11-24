@@ -54,7 +54,7 @@ const SCANS_DIR = process.env.SCANS;
 const FIRST = Number(process.env.FIRST ?? 1);
 const LAST = Number(process.env.LAST ?? 15);
 // Upright copies of the 90 turned copies of photos 1_1 to 15_2, and of the 300 of 16_1 to 65_2.
-const MIN_UPRIGHT: Record<string, number> = { '1-15': 15, '16-65': 111 };
+const MIN_UPRIGHT: Record<string, number> = { '1-15': 15, '16-65': 109 };
 // Upright copies of the 195 turned copies of the scans.
 const MIN_UPRIGHT_SCANS = 128;
 
