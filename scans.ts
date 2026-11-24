@@ -1,7 +1,13 @@
 import { ImageFormat, Skia, type SkImage } from '@shopify/react-native-skia';
 import { Directory, File, Paths } from 'expo-file-system';
 
-import { scanName } from './save';
+const pad = (n: number) => String(n).padStart(2, '0');
+
+/** "Scan 2026-11-03 19.42": base name for the PDF and the JPEG pages. */
+export function scanName(date: Date = new Date()): string {
+  const day = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  return `Scan ${day} ${pad(date.getHours())}.${pad(date.getMinutes())}`;
+}
 
 /** A scan kept in the app's storage. `pages` are file:// URIs of the page JPEGs, in order. */
 export type Scan = { id: string; name: string; pages: string[] };
