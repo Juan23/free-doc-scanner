@@ -1188,8 +1188,8 @@ describe('table lines', () => {
       return h;
     });
     photo.dispose();
-    // Measured before the strength became a number. Skia's own changes can move them: re-measure then.
-    expect(got).toEqual([3552159371, 365768292, 1287771065]);
+    // Skia's own changes, or a change to the filter, can move them: re-measure then.
+    expect(got).toEqual([3552159371, 3128944410, 1287771065]);
   }, 120000);
 });
 
@@ -1266,6 +1266,85 @@ describe('text in a small preview', () => {
     original.dispose();
     small.dispose();
     photo.dispose();
+  }, 60000);
+});
+
+describe('pale small print on a narrow page', () => {
+  const CanvasKit = (globalThis as any).CanvasKit;
+  const W = 680;
+  const H = 300;
+  const PAPER = 230;
+  const GREY = 150;
+  // Columns the leaders' dots cover, clear of the words each side.
+  const LEADER_FROM = 200;
+  const LEADER_TO = 440;
+
+  // Lines of small, thin grey print, slanting unless `skew` is 0, slightly blurred as a camera's lens
+  // leaves it: a receipt, an index or a textbook's italics, as narrow as a cropped receipt or the
+  // emulator's 960 px photo.
+  function printPhoto(size: number, text = 'the value of converting all variables to an index based on 100 is that', skew = -0.25): SkImage {
+    const surface = CanvasKit.MakeSurface(W, H);
+    const canvas = surface.getCanvas();
+    canvas.clear(CanvasKit.Color(PAPER, PAPER, PAPER - 6));
+    const ink = new CanvasKit.Paint();
+    ink.setAntiAlias(true);
+    ink.setColor(CanvasKit.Color(GREY, GREY, GREY));
+    const font = new CanvasKit.Font(CanvasKit.Typeface.GetDefault(), size);
+    font.setSkewX(skew);
+    for (let y = 30; y < H - 10; y += size * 1.4) canvas.drawText(text, 20, y, ink, font);
+    const sharp = surface.makeImageSnapshot();
+    const lens = new CanvasKit.Paint();
+    lens.setImageFilter(CanvasKit.ImageFilter.MakeBlur(0.7, 0.7, CanvasKit.TileMode.Clamp, null));
+    canvas.clear(CanvasKit.Color(PAPER, PAPER, PAPER - 6));
+    canvas.drawImage(sharp, 0, 0, lens);
+    const bytes = surface.makeImageSnapshot().encodeToBytes(CanvasKit.ImageFormat.JPEG, 92);
+    sharp.delete();
+    lens.delete();
+    font.delete();
+    ink.delete();
+    surface.delete();
+    return decode(bytes);
+  }
+
+  // The share of the print's darker half that stays darker than 235.
+  function keptShare(photo: SkImage, out: SkImage, from = 0, to = W): number {
+    const before = readPixels(photo);
+    const after = readPixels(out);
+    let ink = 0;
+    let kept = 0;
+    for (let i = 0; i < before.length; i += 4) {
+      const x = (i / 4) % W;
+      if (x < from || x >= to || before[i + 1] > PAPER - 0.5 * (PAPER - GREY)) continue;
+      ink++;
+      if (after[i + 1] < 235) kept++;
+    }
+    return kept / ink;
+  }
+
+  it.each([16, 20])('keeps %i px grey 150 print on grey 230 paper whole at Clean Normal', (size) => {
+    const photo = printPhoto(size);
+    const out = filterImage(photo, { kind: 'clean', strength: 1 });
+    const kept = keptShare(photo, out);
+    out.dispose();
+    photo.dispose();
+    // Measured: 0.94 at both sizes. Looking for letters across one photo pixel alone left 0.75 and
+    // 0.87; Normal's own levels on thin strokes alone, at most 0.14 and 0.36; neither, 0.02 and 0.16.
+    expect(kept).toBeGreaterThan(0.9);
+  }, 60000);
+
+  // Across one photo pixel a letter search sees no paper round a leader's dot: 0.67, 0.71 and 0.36
+  // kept, against 1.0 across 3. 14 px leaders still break at Normal (#100).
+  it.each([
+    [16, 0],
+    [20, 0],
+    [20, 1],
+  ])('keeps a %i px dotted leader whole at Clean strength %i', (size, strength) => {
+    const photo = printPhoto(size, 'Cables HDMI ' + '.'.repeat(80) + ' 36', 0);
+    const out = filterImage(photo, { kind: 'clean', strength });
+    const kept = keptShare(photo, out, LEADER_FROM, LEADER_TO);
+    out.dispose();
+    photo.dispose();
+    expect(kept).toBeGreaterThan(0.9);
   }, 60000);
 });
 
