@@ -1188,8 +1188,9 @@ describe('table lines', () => {
       return h;
     });
     photo.dispose();
-    // Measured before the strength became a number. Skia's own changes can move them: re-measure then.
-    expect(got).toEqual([3552159371, 365768292, 1287771065]);
+    // Measured before the strength became a number; Normal again once it drew thin strokes as Light
+    // does (#100). Skia's own changes can move them: re-measure then.
+    expect(got).toEqual([3552159371, 3128944410, 1287771065]);
   }, 120000);
 });
 
@@ -1266,6 +1267,65 @@ describe('text in a small preview', () => {
     original.dispose();
     small.dispose();
     photo.dispose();
+  }, 60000);
+});
+
+describe('pale small print on a narrow page', () => {
+  const CanvasKit = (globalThis as any).CanvasKit;
+  const W = 680;
+  const H = 300;
+  const PAPER = 230;
+  const GREY = 150;
+
+  // Lines of small, thin, slanting grey print, slightly blurred as a camera's lens leaves it: a
+  // receipt or a textbook's italics, as narrow as a cropped receipt or the emulator's 960 px photo.
+  function printPhoto(size: number): SkImage {
+    const surface = CanvasKit.MakeSurface(W, H);
+    const canvas = surface.getCanvas();
+    canvas.clear(CanvasKit.Color(PAPER, PAPER, PAPER - 6));
+    const ink = new CanvasKit.Paint();
+    ink.setAntiAlias(true);
+    ink.setColor(CanvasKit.Color(GREY, GREY, GREY));
+    const font = new CanvasKit.Font(CanvasKit.Typeface.GetDefault(), size);
+    font.setSkewX(-0.25);
+    for (let y = 30; y < H - 10; y += size * 1.4) canvas.drawText('the value of converting all variables to an index based on 100 is that', 20, y, ink, font);
+    const sharp = surface.makeImageSnapshot();
+    const lens = new CanvasKit.Paint();
+    lens.setImageFilter(CanvasKit.ImageFilter.MakeBlur(0.7, 0.7, CanvasKit.TileMode.Clamp, null));
+    canvas.clear(CanvasKit.Color(PAPER, PAPER, PAPER - 6));
+    canvas.drawImage(sharp, 0, 0, lens);
+    const bytes = surface.makeImageSnapshot().encodeToBytes(CanvasKit.ImageFormat.JPEG, 92);
+    sharp.delete();
+    lens.delete();
+    font.delete();
+    ink.delete();
+    surface.delete();
+    return decode(bytes);
+  }
+
+  // The share of the print's darker half that stays darker than 235.
+  function keptShare(photo: SkImage, out: SkImage): number {
+    const before = readPixels(photo);
+    const after = readPixels(out);
+    let ink = 0;
+    let kept = 0;
+    for (let i = 0; i < before.length; i += 4) {
+      if (before[i + 1] > PAPER - 0.5 * (PAPER - GREY)) continue;
+      ink++;
+      if (after[i + 1] < 235) kept++;
+    }
+    return kept / ink;
+  }
+
+  it.each([16, 20])('keeps %i px grey 150 print on grey 230 paper whole at Clean Normal', (size) => {
+    const photo = printPhoto(size);
+    const out = filterImage(photo, { kind: 'clean', strength: 1 });
+    const kept = keptShare(photo, out);
+    out.dispose();
+    photo.dispose();
+    // Measured: 0.94 at both sizes. Looking for letters across one photo pixel alone left 0.75 and
+    // 0.87; Normal's own levels on thin strokes alone, at most 0.14 and 0.36; neither, 0.02 and 0.16.
+    expect(kept).toBeGreaterThan(0.9);
   }, 60000);
 });
 

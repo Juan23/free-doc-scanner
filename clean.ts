@@ -92,12 +92,13 @@ half4 main(float2 xy) {
   return half4(mix(c, f, shadow), 1);
 }`)!;
 
-// Under each pixel of the small copy, from 8 x 8 samples of the photo: the darkest sample where both
-// the lightest row and the lightest column are much lighter than it, white unless both are. Letters
-// leave both gaps; a straight crease or blank paper leaves at most one.
+// Under each pixel of the small copy, from 8 x 8 samples of the photo across `span` round it: the
+// darkest sample where both the lightest row and the lightest column are much lighter than it, white
+// unless both are. Letters leave both gaps; a straight crease or blank paper leaves at most one.
 const lettersEffect = Skia.RuntimeEffect.Make(`
 uniform shader page;
 uniform float2 cell;
+uniform float2 span;
 half4 main(float2 xy) {
   half colMin[8];
   for (int j = 0; j < 8; j++) colMin[j] = 1;
@@ -107,7 +108,7 @@ half4 main(float2 xy) {
   for (int i = 0; i < 8; i++) {
     half rowMin = 1;
     for (int j = 0; j < 8; j++) {
-      half4 c = page.eval((floor(xy) + (float2(j, i) + 0.5) / 8) * cell);
+      half4 c = page.eval((floor(xy) + 0.5) * cell + ((float2(j, i) + 0.5) / 8 - 0.5) * span);
       darkest = min(darkest, c);
       half l = min(min(c.r, c.g), c.b);
       lightest = max(lightest, l);
@@ -165,6 +166,12 @@ const LUMA = [0.2126, 0.7152, 0.0722] as const;
 // `paleFloor` dark at Light, no pixel two away and not both beside it are much dark, and the line
 // runs on 4 and 8 px both ways. A crease 3 px or wider fails; at Strong the floor sits between a
 // 0.35 alpha crease and grey 130.
+// Normal's white point turns the pale flanks of thin print white, breaking blurred small text and
+// dotted leaders apart. So where a pixel is kept, at Normal and between Normal and Light, it is
+// drawn as Light draws it when it lies on a thin stroke across a row or a column: paper 2 px away on
+// both sides, and the stroke going on 1 px both ways along it. A lone speck has no stroke beside it;
+// a wide faint mark has no paper 2 px away. Strong keeps its own levels. The diagonals too kept 2%
+// more of 16 and 20 px pale print on a 680 px page and took the page 20% longer.
 const cleanEffect = Skia.RuntimeEffect.Make(`
 uniform shader page;
 uniform shader paper;
@@ -219,6 +226,12 @@ half ridge(float2 xy, half3 p, float2 across) {
   half limit = hairline + 0.4 * narrow;
   return smoothstep(lower, lower + width, here - 1.5 * beside) * smoothstep(lower, lower + width, runs) * (1 - smoothstep(limit + 0.01, limit + 0.11, here));
 }
+half strokeAt(float2 xy, half3 p, float2 across, half b) {
+  float2 along = float2(-across.y, across.x);
+  half side = max(paleAt(xy - 2 * across, p), paleAt(xy + 2 * across, p));
+  half runs = min(paleAt(xy - along, p), paleAt(xy + along, p));
+  return (1 - smoothstep(0.55, 0.85, side / b)) * smoothstep(0.3, 0.6, runs / b);
+}
 half4 main(float2 xy) {
   half3 p = max(paper.eval(xy).rgb, half3(0.05));
   half3 c = levels(xy, p);
@@ -233,6 +246,11 @@ half4 main(float2 xy) {
     c = mix(c, levelsAt(xy, p, 0.95), pale);
     keep = max(keep, pale);
   }
+  half lightStrokes = saturate((half(whitePoint) - 0.8) / 0.05);
+  if (keep > 0 && lightStrokes > 0 && half(whitePoint) < 0.945 && b > 0.08) {
+    half s = max(strokeAt(xy, p, float2(1, 0), b), strokeAt(xy, p, float2(0, 1), b));
+    c = mix(c, levelsAt(xy, p, 0.95), s * lightStrokes * smoothstep(0.08, 0.16, b));
+  }
   half3 cleaned = mix(half3(1), c, keep * (1 - beyond.eval(xy).a));
   half greyed = dot(cleaned, half3(${LUMA}));
   return half4(mix(cleaned, half3(greyed), half(grey)), 1);
@@ -240,6 +258,11 @@ half4 main(float2 xy) {
 
 // Paper and text are found on a copy this wide.
 const SMALL_WIDTH = 500;
+
+// Letters are looked for across at least this many photo pixels, about what a small-copy pixel of a
+// 1600 px photo covers: on a narrow page one covers little more than one photo pixel, too few to see
+// the paper round a stroke. Across 4 px and more, a 3 px speck or a crease's end passes for a letter.
+const LETTER_SPAN = 3;
 
 // Pale lines are kept only on pages at least this wide, as a phone photo always is: there a crease
 // spreads over 3 px or more, so a 1 or 2 px pale line is print. On a smaller page a crease can be 1 px.
@@ -1327,7 +1350,8 @@ function analysePage(image: SkImage): Analysis {
       const smallPage = result(shrunkCopy(image, sw, sh));
       const photoShader = own(clamp(image, FilterMode.Nearest));
       const findLetters = own(Skia.Paint());
-      findLetters.setShader(own(lettersEffect.makeShaderWithChildren([w / sw, h / sh], [photoShader])));
+      const span = [Math.max(w / sw, LETTER_SPAN), Math.max(h / sh, LETTER_SPAN)];
+      findLetters.setShader(own(lettersEffect.makeShaderWithChildren([w / sw, h / sh, ...span], [photoShader])));
       canvas.drawRect(Skia.XYWHRect(0, 0, sw, sh), findLetters);
       const letters = result(surface.makeImageSnapshot());
 
