@@ -329,6 +329,32 @@ it('finds a page as wide as the photo on a near-white table with a shadow under 
   expectNear((await findPage('file:///cache/photo.jpg')).corners, wide, 20);
 }, 30000);
 
+// The faint top edge votes less than the first line of text below it (#112).
+it('finds a page on a near-white table, not a frame that starts on its first line of text', async () => {
+  mockFiles.set('file:///cache/photo.jpg', photo(upright, 'rgb(250,250,250)'));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, upright, 20);
+}, 30000);
+
+// DocUNet 35_1: a shadow across the page and a white table under its foot leave the shadow's edge as the frame's foot (#85).
+it('gives the whole photo, not a frame whose foot lies across the page with lighter paper past it', async () => {
+  const whiteTable = (canvas: SkCanvas) => {
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color('rgb(248,247,244)'));
+    canvas.drawRect(Skia.XYWHRect(0, 800, W, H - 800), paint);
+    paint.dispose();
+  };
+  const shadow = (canvas: SkCanvas) => {
+    const paint = Skia.Paint();
+    paint.setColor(Skia.Color('rgba(0,0,0,0.3)'));
+    canvas.drawRect(Skia.XYWHRect(0, 0, W, 600), paint);
+    paint.dispose();
+  };
+  mockFiles.set('file:///cache/photo.jpg', photo(upright, 'rgb(92,70,52)', undefined, whiteTable, shadow));
+
+  expect((await findPage('file:///cache/photo.jpg')).corners).toEqual(wholePhoto);
+}, 30000);
+
 it('falls back to the whole photo when there is no page to find', async () => {
   const surface = Skia.Surface.Make(W, H)!;
   surface.getCanvas().drawColor(Skia.Color('rgb(120,120,120)'));
