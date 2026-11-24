@@ -484,7 +484,7 @@ it.each([18, 22, ...Array.from({ length: 14 }, (_, i) => 26 + 2 * i)])('turns a 
 
 // Real typefaces draw differently from CanvasKit's default. Not committed: skipped without macOS's fonts.
 // Only Latin must turn; Cyrillic and Hebrew stay as they are. Courier New's Latin turns at every quarter
-// turn only at 40 and 44 px, so 44 is tested. The Hebrew rows only check that real Hebrew stays. Real Cyrillic
+// turn only at 20, 40 and 44 px, so 44 is tested. The Hebrew rows only check that real Hebrew stays. Real Cyrillic
 // and Hebrew stay at 12 to 56 px (steps of 4) even with the marks and heavy-bottom rules off, so the made-up
 // script above guards those two rules.
 const FONTS = '/System/Library/Fonts/Supplemental/';
