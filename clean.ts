@@ -412,8 +412,6 @@ const EVEN_STEP = 3;
 const OUTLINE_SLACK = 0.25;
 // Print beside the page comes this close to its paper; the table can run between them along the paper's soft edge.
 const PAGE_GAP = 2;
-// A header or footer spans the page's end this deep from its point nearest the photo's side: 86 px along it on a page turned 2 degrees.
-const END_DEPTH = 3;
 
 // Print bleeding off the page completes its outline: their hull takes in at most this share of the print's size in other dark.
 const PICTURE_FILL = 0.1;
@@ -966,26 +964,19 @@ export function markDarkBackground(out: Uint8Array, fine: Uint8Array, w: number,
       eachBeside(p, w, n, (q) => (touches ||= state[q] === PICTURE));
       return touches;
     };
-    // A header or footer spans the paper's corners nearest the one photo side it reaches, and completes the page's outline or spans its end.
     const acrossEnd = (one: number[], sidesMet: number, span: Box) => {
       if (sidesMet & (sidesMet - 1)) return false;
       const alongRows = sidesMet === LEFT_SIDE || sidesMet === RIGHT_SIDE;
-      const depth = (x: number, y: number) => (sidesMet === LEFT_SIDE ? x : sidesMet === RIGHT_SIDE ? -x : sidesMet === TOP_SIDE ? y : -y);
-      const nearest = Math.min(...page.hull.map(([x, y]) => depth(x, y)));
+      const depth = ([x, y]: Point2) => (sidesMet === LEFT_SIDE ? x : sidesMet === RIGHT_SIDE ? -x : sidesMet === TOP_SIDE ? y : -y);
+      const along = ([x, y]: Point2) => (alongRows ? y : x);
+      const nearest = Math.min(...page.hull.map(depth));
       const [from, to] = alongRows ? [span.top, span.bottom] : [span.left, span.right];
-      const spanned = (x: number, y: number) => {
-        const along = alongRows ? y : x;
-        return along >= from - PAGE_GAP && along <= to + PAGE_GAP;
-      };
-      if (!page.hull.every(([x, y]) => depth(x, y) > nearest + 1 || spanned(x, y))) return false;
+      const spanned = (corner: Point2) => along(corner) >= from - PAGE_GAP && along(corner) <= to + PAGE_GAP;
+      if (!page.hull.every((corner) => depth(corner) > nearest + 1 || spanned(corner))) return false;
       if (completesPage(one)) return true;
-      // A curl puts table in a footer's hull with the page; an object under a turned page's corner leaves the rest of the end unspanned.
-      for (let p = 0; p < n; p++) {
-        const x = p % w;
-        const y = (p - x) / w;
-        if (inside[p] && depth(x, y) <= nearest + END_DEPTH && !spanned(x, y)) return false;
-      }
-      return true;
+      // A curl puts table in a footer's hull with the page, but a footer spans the whole end: out to the paper's farthest points 45 degrees either way.
+      const endCorner = (sign: number) => page.hull.reduce((a, b) => (depth(b) + sign * along(b) < depth(a) + sign * along(a) ? b : a));
+      return spanned(endCorner(1)) && spanned(endCorner(-1));
     };
     for (const part of beside) {
       // Stripes that wood across the photo's top cuts off from its edge start no surface, so they are judged by colour.

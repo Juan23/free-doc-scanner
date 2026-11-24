@@ -2014,18 +2014,21 @@ describe('dark background', () => {
     ['black', 'slanting red and blue stripes', { tilt: -5, curl: 20, colour: NEAR_BLACK, table: slanting }],
     ['green', 'red and navy checks', { tilt: -4, curl: 18, colour: DARK_GREEN, table: checks }],
   ] as const)('keeps a %s footer at the curled foot of a turned page on %s', (_, __, scene) => {
-    // The curl puts table in the footer's hull with the page, which took it for an object under the page's corner.
+    // The curl puts table in the footer's hull with the page, but the footer spans the page's whole end.
     const { picture, table } = bleedingPicture({ place: 'off', picture: 'full', depth: 30, ...scene });
     expect(picture).toBeLessThan(0.1);
     expect(table).toBeGreaterThan(0.95);
   });
 
-  // A page turned about its middle on checks, with a black object from the photo's side to just past the page's corner nearest it.
+  const smallChecks = (x: number, y: number) => (((x / 20) ^ (y / 20)) & 1 ? [90, 30, 30] : [30, 30, 70]).map((c) => c + grainAt(x, y));
+  // A page turned about its middle, with a black object from the photo's side to just past the page's corner nearest it.
   it.each([
-    ['across its lowest corner', 2, [150, 120, 349, 646], [315, 643, 365, 667]],
-    ['across its highest corner', 2, [150, 20, 349, 560], [134, 0, 184, 23]],
-    ['across its leftmost corner', 5, [40, 120, 239, 560], [0, 525, 27, 575]],
-  ] as const)('whitens an object %s on a page turned %i degrees', (_, tilt, [left, top, right, bottom], [x0, y0, x1, y1]) => {
+    ['across its lowest corner', 2, 'checks', checks, [150, 120, 349, 646], [315, 643, 365, 667]],
+    ['across its highest corner', 2, 'checks', checks, [150, 20, 349, 560], [134, 0, 184, 23]],
+    ['across its leftmost corner', 5, 'checks', checks, [40, 120, 239, 560], [0, 525, 27, 575]],
+    ['across its lowest corner', -10, 'checks 20 px wide', smallChecks, [150, 107, 350, 633], [172, 643, 222, 667]],
+    ['across its lowest corner', -15, 'red and blue stripes', stripes(20), [150, 113, 350, 639], [196, 653, 246, 667]],
+  ] as const)('whitens an object %s on a page turned %i degrees on %s', (_, tilt, __, colourAt, [left, top, right, bottom], [x0, y0, x1, y1]) => {
     const turn = (tilt * Math.PI) / 180;
     const [cx, cy] = [(left + right) / 2, (top + bottom) / 2];
     const byPage = (x: number, y: number, margin: number) => {
@@ -2035,11 +2038,11 @@ describe('dark background', () => {
     };
     const inObject = (x: number, y: number, margin: number) => x >= x0 - margin && x < x1 + margin && y >= y0 - margin && y < y1 + margin;
     const [object, table] = markedShares(
-      (x, y) => (byPage(x, y, 0) ? PAPER : inObject(x, y, 0) ? NEAR_BLACK : checks(x, y)),
+      (x, y) => (byPage(x, y, 0) ? PAPER : inObject(x, y, 0) ? NEAR_BLACK : colourAt(x, y)),
       (x, y) => inObject(x, y, -4) && !byPage(x, y, 10),
       (x, y) => !byPage(x, y, 10) && !inObject(x, y, 10),
     );
-    // It spans the paper's nearest corner, which passed it as a footer.
+    // It spans the paper's nearest corner as a footer does, but not the rest of the page's end.
     expect(object).toBeGreaterThan(0.95);
     expect(table).toBeGreaterThan(0.95);
   });
