@@ -4,7 +4,8 @@
 /// <reference types="jest" />
 import { ImageFormat, Skia, TileMode } from '@shopify/react-native-skia';
 
-import { readUpright, rotatePage, uprightPages } from './upright';
+import { cropPage } from './crop';
+import { readUpright, rotatePage } from './upright';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
 const { existsSync, readFileSync } = jest.requireActual('fs');
@@ -133,6 +134,14 @@ function landscape(): Uint8Array {
 
 const decode = (bytes: Uint8Array) => Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(bytes))!;
 
+/** Keeps the whole photo at PAGE as its page, as the app does where no page is found: cropPage stands it upright. */
+async function keepWholePhoto(): Promise<void> {
+  const image = decode(mockFiles.get(PAGE)!);
+  const [w, h] = [image.width(), image.height()];
+  image.dispose();
+  await cropPage(PAGE, [{ x: 0, y: 0 }, { x: w, y: 0 }, { x: w, y: h }, { x: 0, y: h }], PAGE);
+}
+
 // The page still holds these very bytes, so it was not rewritten. (A failing toBe would print a whole page.)
 const untouched = (bytes: Uint8Array) => mockFiles.get(PAGE) === bytes;
 
@@ -158,7 +167,7 @@ function difference(a: Uint8Array, b: Uint8Array): number {
 it.each([1, 2, 3])('turns a letter photographed %i quarter turns clockwise upright, in place', async (turns) => {
   mockFiles.set(PAGE, letter(turns));
 
-  await uprightPages([PAGE]);
+  await keepWholePhoto();
 
   expect([...mockFiles.keys()]).toEqual([PAGE]);
   expect(difference(mockFiles.get(PAGE)!, letter())).toBeLessThan(3);
@@ -168,7 +177,7 @@ it('leaves an upright letter untouched', async () => {
   const page = letter();
   mockFiles.set(PAGE, page);
 
-  await uprightPages([PAGE]);
+  await keepWholePhoto();
 
   expect(untouched(page)).toBe(true);
 }, 30000);
@@ -184,7 +193,7 @@ const ARTICLE = Array.from({ length: 34 }, (_, i) => [
 it.each([1, 2, 3])('turns justified text turned %i quarter turns clockwise upright', async (turns) => {
   mockFiles.set(PAGE, letter(turns, ARTICLE, 1090));
 
-  await uprightPages([PAGE]);
+  await keepWholePhoto();
 
   expect(difference(mockFiles.get(PAGE)!, letter(0, ARTICLE, 1090))).toBeLessThan(3);
 }, 30000);
@@ -199,7 +208,7 @@ const FEW_STOPS = LETTER.replace(/,/g, '')
 it.each([1, 2])('turns a page with few full stops turned %i quarter turns clockwise upright', async (turns) => {
   mockFiles.set(PAGE, letter(turns, FEW_STOPS));
 
-  await uprightPages([PAGE]);
+  await keepWholePhoto();
 
   expect(difference(mockFiles.get(PAGE)!, letter(0, FEW_STOPS))).toBeLessThan(3);
 }, 30000);
@@ -256,7 +265,7 @@ it.each([0, 1, 2, 3])('leaves a list in capitals as it is, however it is turned 
   const page = letter(turns, LIST);
   mockFiles.set(PAGE, page);
 
-  await uprightPages([PAGE]);
+  await keepWholePhoto();
 
   expect(untouched(page)).toBe(true);
 }, 30000);
@@ -275,7 +284,7 @@ it.each([0, 1, 2, 3])('never turns a page of Russian text the wrong way (%i)', a
   const page = letter(turns, RUSSIAN);
   mockFiles.set(PAGE, page);
 
-  await uprightPages([PAGE]);
+  await keepWholePhoto();
 
   expect(untouched(page) || difference(mockFiles.get(PAGE)!, letter(0, RUSSIAN)) < 3).toBe(true);
 }, 30000);
@@ -364,7 +373,7 @@ describe.each([
     const page = blocks(turns, options);
     mockFiles.set(PAGE, page);
 
-    await uprightPages([PAGE]);
+    await keepWholePhoto();
 
     expect(untouched(page) || difference(mockFiles.get(PAGE)!, blocks(0, options)) < 3).toBe(true);
   }, 30000);
@@ -375,20 +384,9 @@ it.each([0, 1, 2, 3])('leaves a photo with no writing untouched, however it is t
   await rotatePage(PAGE, turns);
   const page = mockFiles.get(PAGE)!;
 
-  await uprightPages([PAGE]);
+  await keepWholePhoto();
 
   expect(untouched(page)).toBe(true);
-}, 30000);
-
-it('leaves a page it cannot read as it is, and turns the rest', async () => {
-  const broken = new Uint8Array([1, 2, 3]);
-  mockFiles.set('file:///doc/scans/1/p1.jpg', broken);
-  mockFiles.set('file:///doc/scans/1/p2.jpg', letter(2));
-
-  await uprightPages(['file:///doc/scans/1/p1.jpg', 'file:///doc/scans/1/p2.jpg']);
-
-  expect(mockFiles.get('file:///doc/scans/1/p1.jpg')).toBe(broken);
-  expect(difference(mockFiles.get('file:///doc/scans/1/p2.jpg')!, letter())).toBeLessThan(3);
 }, 30000);
 
 // A 300 x 200 picture, white with a red square in its top-left corner.
@@ -476,7 +474,7 @@ it.each([18, 22, ...Array.from({ length: 14 }, (_, i) => 26 + 2 * i)])('turns a 
   for (const turns of [0, 1, 2, 3]) {
     mockFiles.set(PAGE, largeLetter(turns, fontSize));
 
-    await uprightPages([PAGE]);
+    await keepWholePhoto();
 
     expect([fontSize, turns, difference(mockFiles.get(PAGE)!, upright) < 3]).toEqual([fontSize, turns, true]);
   }
@@ -516,7 +514,7 @@ const haveFonts = existsSync(FONTS + 'Times New Roman.ttf');
         const page = largeLetter(turns, size, lines, FONTS + file, rtl);
         mockFiles.set(PAGE, page);
 
-        await uprightPages([PAGE]);
+        await keepWholePhoto();
 
         const result = mockFiles.get(PAGE)!;
         const asUpright = difference(result, upright) < 3;

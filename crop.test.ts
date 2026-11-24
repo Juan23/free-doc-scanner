@@ -5,6 +5,7 @@
 import { BlurStyle, ImageFormat, Skia, type SkCanvas, type SkPaint } from '@shopify/react-native-skia';
 
 import { cropPage, findPage, isConvex, pageAspect, type Quad } from './crop';
+import * as uprightModule from './upright';
 
 // Real Skia (CanvasKit) does the pixel work; only the files are in memory.
 const mockFiles = new Map<string, Uint8Array>();
@@ -500,7 +501,7 @@ it('tells a page outline from corners dragged past each other', () => {
   expect(isConvex([tilted[0], tilted[1], { x: 300, y: 300 }, tilted[3]])).toBe(false);
 });
 
-const LINE = 'Thank you for your letter of the third, and for the copies of the lease.';
+const LINE = 'Thank you for your letter. It came on the third, with the copies of the lease.';
 
 // A letter photographed `turns` quarter turns clockwise, on a desk `margin` px wide all round.
 function letter(turns: number, margin: number): Uint8Array {
@@ -572,4 +573,19 @@ it('stands a sideways whole photo upright in one JPEG encode', async () => {
 
   expect(encodes).toBe(1);
   expect(difference(mockFiles.get('file:///cache/page.jpg')!, letter(0, 0))).toBeLessThan(3);
+}, 60000);
+
+it('keeps a page unturned when its text cannot be read', async () => {
+  mockFiles.set('file:///cache/photo.jpg', letter(1, 40));
+  const read = jest.spyOn(uprightModule, 'readUpright').mockImplementation(() => {
+    throw new Error('unreadable page');
+  });
+  try {
+    await cropPage('file:///cache/photo.jpg', inset(40, 1680, 1280), 'file:///cache/page.jpg');
+  } finally {
+    read.mockRestore();
+  }
+
+  const page = Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(mockFiles.get('file:///cache/page.jpg')!))!;
+  expect([page.width(), page.height()]).toEqual([1600, 1200]);
 }, 60000);

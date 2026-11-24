@@ -4,9 +4,10 @@
 /// <reference types="jest" />
 import { Skia } from '@shopify/react-native-skia';
 import { cropPage, findPage } from './crop';
+import * as uprightModule from './upright';
 import { readUpright, turnedImage } from './upright';
 
-// Scores auto-upright on real photos, cropped as the app does and turned by 0, 90, 180 and 270 degrees
+// Scores auto-upright on real photos, cropped as the app does, unturned, and turned by 0, 90, 180 and 270 degrees
 // (DOCUNET=<photo folder> [FIRST=1 LAST=15] [OUT=<file>]). One tab-separated line per photo and turn:
 // file, turn, result (upright, left, wrong), the gates the right reading fails, then that reading's
 // lean, deviations, strokes per line, balance, stops and script flag. It fails when an upright page is
@@ -66,7 +67,10 @@ const MIN_UPRIGHT = 9;
         if (!fs.existsSync(filePath)) continue;
         const found = await findPage(filePath);
         const memKey = `mem://${file}`;
+        // The page as cropped, before cropPage stands it up: each turn below is read as cropPage would read it.
+        const unturned = jest.spyOn(uprightModule, 'readUpright').mockReturnValueOnce({ turns: 0 } as ReturnType<typeof readUpright>);
         await cropPage(filePath, found.corners, memKey);
+        unturned.mockRestore();
         const bytes = mockFiles.get(memKey)!;
         mockFiles.delete(memKey);
         const data = Skia.Data.fromBytes(bytes);

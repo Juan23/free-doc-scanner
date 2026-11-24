@@ -654,18 +654,26 @@ const isWhole = (corners: Quad, width: number, height: number) =>
 export async function cropPage(uri: string, corners: Quad, dest: string): Promise<void> {
   const photo = await new File(uri).bytes();
   const image = decodePage(photo);
-  const page = isWhole(corners, image.width(), image.height()) ? image : straightened(image, corners);
-  if (page !== image) image.dispose();
-  const { turns } = readUpright(page);
-  if (!turns && page === image && isPlainJpeg(photo)) {
-    page.dispose();
-    return new File(dest).write(photo);
+  let page: SkImage | undefined;
+  let upright: SkImage | undefined;
+  try {
+    page = isWhole(corners, image.width(), image.height()) ? image : straightened(image, corners);
+    const turns = uprightTurns(page);
+    if (!turns && page === image && isPlainJpeg(photo)) return await new File(dest).write(photo);
+    upright = turns ? turnedImage(page, turns) : page;
+    await writeJpeg(dest, upright.encodeToBytes(ImageFormat.JPEG, 90));
+  } finally {
+    for (const o of new Set([image, page, upright])) o?.dispose();
   }
-  const upright = turns ? turnedImage(page, turns) : page;
-  const bytes = upright.encodeToBytes(ImageFormat.JPEG, 90);
-  if (upright !== page) upright.dispose();
-  page.dispose();
-  await writeJpeg(dest, bytes);
+}
+
+/** Unsure or unable to read the text, the page stays as it is: turning an upright page is worse than missing a turned one. */
+function uprightTurns(page: SkImage): number {
+  try {
+    return readUpright(page).turns;
+  } catch {
+    return 0;
+  }
 }
 
 function straightened(image: SkImage, corners: Quad): SkImage {
