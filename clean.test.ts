@@ -625,7 +625,7 @@ it('stops previewing when cancelled, makes no further image and writes no file',
 
 it('previews Original, Clean and Grayscale Normal from the untouched photo, writing no file', async () => {
   const photo = photographedPage();
-  // Written as storing would leave them, without a filter pass: previews of the page would not match.
+  // The page differs from its photo, so previews made from the page fail the comparisons below.
   mockFiles.set('file:///doc/scans/1/o1.jpg', photo);
   mockFiles.set(PAGE1, sharplyShadowedPage());
   const files = new Map(mockFiles);
@@ -650,7 +650,7 @@ it('previews Original, Clean and Grayscale Normal from the untouched photo, writ
     source.dispose();
     for (const p of Object.values(previews)) p.dispose();
   }
-  // Three paper and ink analyses (the previews and the two direct filters): 12.5 s alone, 23.3 s in two full runs at load up to 31.
+  // Three paper and ink analyses (the previews and the two direct filters): 23 s at load 31.
 }, 60000);
 
 it('measures the paper and ink once for the Clean and Grayscale previews of a page', async () => {
@@ -1226,7 +1226,7 @@ describe('letters on photos of any width', () => {
     const got = hash(out);
     out.dispose();
     photo.dispose();
-    // Measured before the letters pass skipped repeated samples; re-measure only for a change to the filter.
+    // Taken from the pass that read all 64 samples; re-pin only for a deliberate change to the filter's output.
     expect(got).toBe(expected);
   }, 60000);
 });
