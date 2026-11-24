@@ -320,11 +320,12 @@ it.each([0, 1, 2, 3])('never turns a page of Russian text the wrong way (%i)', a
  * sets how often a letter sticks up (0: never). With `spaced`, each yod stands alone between wide
  * gaps, as in a typewriter font, or with `gaps` [left, right], each yod has that many pixels of
  * space on its left and right. With `bars`, letters are a bar along the top on two stems, heavy
- * at the top as Hebrew's are, rather than solid blocks.
+ * at the top as Hebrew's are, rather than solid blocks. With `pairs`, each yod is drawn twice, 2 px
+ * apart.
  */
 function blocks(
   turns: number,
-  { finalYodsEvery = 7, yodsEvery = 0, stopsEvery = 0, pointsEvery = 0, tallEvery = 13, spaced = false, bars = false, gaps = [0, 0] } = {},
+  { finalYodsEvery = 7, yodsEvery = 0, stopsEvery = 0, pointsEvery = 0, tallEvery = 13, spaced = false, bars = false, gaps = [0, 0], pairs = false } = {},
 ): Uint8Array {
   const [w, h] = turns % 2 ? [H, W] : [W, H];
   const surface = CanvasKit.MakeSurface(w, h);
@@ -337,7 +338,11 @@ function blocks(
   ink.setColor(CanvasKit.Color(30, 30, 40));
   const box = (x: number, y: number, width: number, height: number) => canvas.drawRect(CanvasKit.XYWHRect(x, y, width, height), ink);
   const [left, right] = spaced ? [9, 9] : gaps;
-  const yod = (x: number, top: number) => box(x, top, 4, 6);
+  const yodWidth = pairs ? 10 : 4;
+  const yod = (x: number, top: number) => {
+    box(x, top, 4, 6);
+    if (pairs) box(x + 6, top, 4, 6);
+  };
   let k = 0;
   let word = 0;
   for (let top = 140; top < H - 120; top += 38) {
@@ -346,7 +351,7 @@ function blocks(
       x -= 12; // the space between words
       for (let letter = 0; letter < 2 + (word % 5); letter++, k++) {
         if (yodsEvery && k % yodsEvery === 2) {
-          x -= 4 + right;
+          x -= yodWidth + right;
           yod(x, top);
           x -= left;
         } else {
@@ -363,7 +368,7 @@ function blocks(
         x -= 3;
       }
       if (word % finalYodsEvery === 0) {
-        x -= 4 + right;
+        x -= yodWidth + right;
         yod(x, top);
       }
       if (stopsEvery && word % stopsEvery === 0) {
@@ -388,6 +393,8 @@ describe.each([
   ['with 3 yods ending words and 3 full stops', { finalYodsEvery: 200, stopsEvery: 150 }],
   ['with yods ending words, a few inside them, and full stops', { finalYodsEvery: 70, yodsEvery: 300, stopsEvery: 150 }],
   ['with nothing sticking up', { tallEvery: 0 }],
+  // A pair of yods is no dot leader.
+  ['with each yod drawn twice', { pairs: true }],
   ["with vowel points, its letters heavy at the top as Hebrew's are", { pointsEvery: 3, tallEvery: 5, bars: true }],
 ])('a page of a right-to-left script whose yods look like full stops upside down, %s,', (_, options) => {
   it.each([0, 1, 2, 3])('is never turned the wrong way (%i)', async (turns) => {

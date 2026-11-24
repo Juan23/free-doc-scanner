@@ -15,10 +15,9 @@ const BLOCK = 8;
 
 /**
  * Which pixels of a small copy of the page, `long` px on its long side, are ink: clearly darker than
- * the paper around them. Only the middle `part` of the page's width and height is copied. With
- * `negative`, light and dark are swapped first.
+ * the paper around them, with the copy's luma. Only the middle `part` of the page's width and height is copied.
  */
-function findInk(image: SkImage, long: number, part = 1, negative = false) {
+function findInk(image: SkImage, long: number, part = 1) {
   const width = image.width();
   const height = image.height();
   const scale = Math.min(1, long / Math.max(width, height));
@@ -40,17 +39,17 @@ function findInk(image: SkImage, long: number, part = 1, negative = false) {
   if (!rgba) throw new Error('unreadable page');
 
   // The per-pixel loops run on Hermes, which interprets them: index work and calls are kept out of them.
+  const luma = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) luma[i] = (rgba[i * 4] * 77 + rgba[i * 4 + 1] * 150 + rgba[i * 4 + 2] * 29) >> 8;
+  return { ink: inkOf(luma, w, h), w, h, luma };
+}
+
+/** Which pixels of `luma` (w × h) are ink: clearly darker than the paper around them. */
+function inkOf(luma: Uint8Array, w: number, h: number): Uint8Array {
   const bw = Math.ceil(w / BLOCK);
   const bh = Math.ceil(h / BLOCK);
   const column = new Int32Array(w);
   for (let x = 0; x < w; x++) column[x] = (x / BLOCK) | 0;
-  const luma = new Uint8Array(w * h);
-  const counts = new Int32Array(256);
-  for (let i = 0; i < w * h; i++) {
-    const v = (rgba[i * 4] * 77 + rgba[i * 4 + 1] * 150 + rgba[i * 4 + 2] * 29) >> 8;
-    luma[i] = negative ? 255 - v : v;
-    counts[v]++;
-  }
   const brightest = new Uint8Array(bw * bh);
   for (let y = 0, i = 0; y < h; y++) {
     const row = ((y / BLOCK) | 0) * bw;
@@ -74,11 +73,14 @@ function findInk(image: SkImage, long: number, part = 1, negative = false) {
     const row = ((y / BLOCK) | 0) * bw;
     for (let x = 0; x < w; x++, i++) ink[i] = luma[i] < below[row + column[x]] ? 1 : 0;
   }
-  return { ink, w, h, lightOnDark: lightOnDark(counts, w * h) };
+  return ink;
 }
 
-/** Whether most of the page (luma histogram `counts` of `n` pixels) is far darker than its light parts, as under light text on a dark card. */
-function lightOnDark(counts: Int32Array, n: number): boolean {
+/** Whether most of the page (`luma`) is far darker than its light parts, as under light text on a dark card. */
+function lightOnDark(luma: Uint8Array): boolean {
+  const counts = new Int32Array(256);
+  for (let i = 0; i < luma.length; i++) counts[luma[i]]++;
+  const n = luma.length;
   let median = -1;
   let light = -1;
   for (let v = 0, seen = 0; v < 256; v++) {
@@ -126,6 +128,8 @@ const WIDER = 3;
 // From this many times up to WIDER, a mark with spaces on both sides tells nothing: a comma after a y
 // has a 4 px gap before it and 11 after, in 36 px type on a 3024 px photo, as another script's mark can.
 const NEUTRAL = 2;
+// A digit's column runs at least this share of the digit's height.
+const FULL_COLUMN = 0.75;
 
 function median(values: number[]): number {
   const sorted = values.sort((a, b) => a - b);
@@ -281,19 +285,45 @@ function strokes(ink: Uint8Array, w: number, h: number) {
           }
           return n;
         };
-        // The nearest inked run from x within the strip: 'tall' as a digit by a decimal point, 'mark' as a leader's dot.
-        const neighbour = (x: number, step: number) => {
+        // The nearest inked run from x within the strip, stepping by `step`: where it starts and ends, its
+        // extent, and whether it sticks out past the line on the mark's near side.
+        const run = (x: number, step: number) => {
           for (; x >= 0 && x < STRIP && tops[x] < 0; x += step);
           const start = x;
-          let runTop = h;
-          let runBottom = -1;
+          let top = h;
+          let bottom = -1;
+          let near = false;
           for (; x >= 0 && x < STRIP && tops[x] >= 0; x += step) {
-            if (isStop ? tops[x] < xLine(x) - reach : bottoms[x] > baseline(x) + reach) return 'tall';
-            runTop = Math.min(runTop, tops[x]);
-            runBottom = Math.max(runBottom, bottoms[x]);
+            near ||= isStop ? bottoms[x] > baseline(x) + reach : tops[x] < xLine(x) - reach;
+            top = Math.min(top, tops[x]);
+            bottom = Math.max(bottom, bottoms[x]);
           }
-          const small = Math.abs(x - start) <= mark && runBottom - runTop + 1 <= mark;
-          return small && Math.abs(runTop - markTop) <= Math.max(1, ALIGNED * xHeight) ? 'mark' : 'other';
+          return { start, end: x - step, width: Math.abs(x - start), top, bottom, near };
+        };
+        type Run = ReturnType<typeof run>;
+        const isMark = (r: Run) => r.width > 0 && r.width <= mark && r.bottom - r.top + 1 <= mark && Math.abs(r.top - markTop) <= Math.max(1, ALIGNED * xHeight);
+        // A digit is taller than the x-height, sticks out on one side only, and most of its columns run
+        // most of its height; a letter that sticks out does so by a stem.
+        const isDigit = (r: Run) => {
+          const height = r.bottom - r.top + 1;
+          if (!r.width || r.near || height < xHeight + reach) return false;
+          let full = 0;
+          for (let x = Math.min(r.start, r.end); x <= Math.max(r.start, r.end); x++) if (bottoms[x] - tops[x] + 1 >= FULL_COLUMN * height) full++;
+          return full >= r.width / 2;
+        };
+        const gap = (from: number, r: Run) => Math.abs(r.start - from) - 1;
+        // A dot leader is 3 or more marks a row, evenly spaced; a pair of marks is not one.
+        const inLeader = () => {
+          const left1 = run(a - 1, -1);
+          const right1 = run(b + 1, 1);
+          const gapLeft = gap(a, left1);
+          const gapRight = gap(b, right1);
+          if (isMark(left1) && isMark(right1)) return Math.abs(gapLeft - gapRight) <= 1;
+          const left2 = run(left1.end - 1, -1);
+          const right2 = run(right1.end + 1, 1);
+          if (isMark(left1) && isMark(left2)) return Math.abs(gap(left1.end, left2) - gapLeft) <= 1;
+          if (isMark(right1) && isMark(right2)) return Math.abs(gap(right1.end, right2) - gapRight) <= 1;
+          return false;
         };
         const after = blank(left + b + 1, 1);
         const before = blank(left + a - 1, -1);
@@ -303,9 +333,8 @@ function strokes(ink: Uint8Array, w: number, h: number) {
         if (ltr >= space && (rtl < space || ltr >= WIDER * rtl)) marks.ltr++;
         else if (rtl >= space && (ltr < space || rtl >= WIDER * ltr)) marks.rtl++;
         else {
-          // A decimal point or a dot leader's dot is no other script's mark, so it is not counted.
-          const sides = [neighbour(a - 1, -1), neighbour(b + 1, 1)];
-          if (sides.includes('mark') || sides.every((side) => side === 'tall')) continue;
+          // A decimal point between digits or a dot leader's dot is no other script's mark, so it is not counted.
+          if ((isDigit(run(a - 1, -1)) && isDigit(run(b + 1, 1))) || inLeader()) continue;
           if (ltr < space) marks.inWord++;
           else if (ltr < NEUTRAL * rtl && rtl < NEUTRAL * ltr) marks.alone++;
         }
@@ -390,9 +419,12 @@ export function readUpright(image: SkImage) {
   // A page this small is read at full size already, so a closer look sees nothing new.
   const fullSize = Math.max(image.width(), image.height()) <= SMALL_LONG_SIDE;
   const read = sure || heldByScriptOnly || fullSize ? whole : readInk(findInk(image, CLOSE_LONG_SIDE, CLOSE_PART));
-  // Light text on a dark card is gaps in the ink, so an unsure page that is mostly dark is read again as its negative.
-  if (read.turns || !read.failedAsIs.length || !first.lightOnDark) return read;
-  const negative = readInk(findInk(image, SMALL_LONG_SIDE, 1, true));
+  // Light text on a dark card is gaps in the ink, so an unsure page that is mostly dark is read again as its
+  // negative; not one held back by another script's marks, which the negative cannot see.
+  if (read.turns || !read.failedAsIs.length || heldByScriptOnly || !lightOnDark(first.luma)) return read;
+  const flipped = new Uint8Array(first.luma.length);
+  for (let i = 0; i < flipped.length; i++) flipped[i] = 255 - first.luma[i];
+  const negative = readInk({ ink: inkOf(flipped, first.w, first.h), w: first.w, h: first.h });
   return negative.turns ? negative : read;
 }
 

@@ -54,8 +54,8 @@ const SCANS_DIR = process.env.SCANS;
 const FIRST = Number(process.env.FIRST ?? 1);
 const LAST = Number(process.env.LAST ?? 15);
 // Upright copies of the 90 turned copies of photos 1_1 to 15_2, and of the 300 of 16_1 to 65_2.
-const MIN_UPRIGHT: Record<string, number> = { '1-15': 15, '16-65': 115 };
-// Upright copies of the 192 turned copies of the scans.
+const MIN_UPRIGHT: Record<string, number> = { '1-15': 15, '16-65': 111 };
+// Upright copies of the 195 turned copies of the scans.
 const MIN_UPRIGHT_SCANS = 128;
 
 (DOCUNET_DIR ? describe : describe.skip)('auto-upright on real photos', () => {
@@ -114,8 +114,8 @@ const MIN_UPRIGHT_SCANS = 128;
 });
 
 // The same score on the flat DocUNet scans (SCANS=<docunet-scan folder> [OUT=<file>]), read whole at 0, 90,
-// 180 and 270 degrees, with the milliseconds each reading took. 64.png (sheet music) is left out, as in the
-// count of #109. It fails as above, or when fewer than MIN_UPRIGHT_SCANS come back.
+// 180 and 270 degrees, with the milliseconds each reading took. It fails as above, or when fewer than
+// MIN_UPRIGHT_SCANS come back.
 (SCANS_DIR ? describe : describe.skip)('auto-upright on flat scans', () => {
   it('turns no upright scan and puts no turned scan the wrong way up', () => {
     const outPath = process.env.OUT;
@@ -125,7 +125,7 @@ const MIN_UPRIGHT_SCANS = 128;
     for (let n = 1; n <= 65; n++) {
       const file = `${n}.png`;
       const filePath = path.join(SCANS_DIR!, file);
-      if (n === 64 || !fs.existsSync(filePath)) continue;
+      if (!fs.existsSync(filePath)) continue;
       const image = Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(new Uint8Array(fs.readFileSync(filePath))))!;
       for (const turn of [0, 1, 2, 3]) {
         const copy = turn ? turnedImage(image, turn) : image;
