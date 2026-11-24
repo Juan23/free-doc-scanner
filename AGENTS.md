@@ -64,10 +64,7 @@ Public sets of real document photos for testing `crop.ts` and `clean.ts` on the 
 - `npx jest inkkeep.test.ts` with `DOCUNET=<a photo folder>` scores Clean on each photo without looking at it: the share of pale and dark print kept, and of paper whitened near and away from print. Its `FLOORS` are set for `docunet-original/` only. It fails when the means there, whole or a `SHARD=i/4` quarter, fall below them. Other splits only score. `CLEAN=<module>` scores another copy of the filter, `OUT=<file>` collects the lines.
 - `docunet-scan/`: the 65 flatbed scans of those pages (`64.png`), the right answer for each photo. Others report that the last two photos (page 64) are upside down compared with their scan; check before scoring them.
 
-Where they are:
-
-1. M5 (this Mac, `devbox.local`): `~/Datasets/free-doc-scanner/`
-2. M1 (`ssh m1air`): `/Volumes/ExternalSSD/Datasets/free-doc-scanner/`
+They are on this Mac (`devbox.local`) in `~/Datasets/free-doc-scanner/`.
 
 ## Rules
 
