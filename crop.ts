@@ -109,13 +109,14 @@ function edgeMap(rgba: Uint8Array, w: number, h: number) {
   return { gx, gy, nms };
 }
 
-// Cap peaks per 6-degree sector so dense text or ruled lines cannot crowd out perpendicular edges.
+const SECTOR_DEG = 6;
+// Cap peaks per sector so dense text or ruled lines cannot crowd out perpendicular edges.
 const MAX_LINES_PER_SECTOR = 2;
 // Cap total Hough lines kept so the 4-line search stays bounded.
 const MAX_HOUGH_LINES = 24;
 
-/** Top straight lines found by oriented Hough voting on thinned edges. */
-function houghLines(gx: Int16Array, gy: Int16Array, nms: Float32Array, w: number, h: number): Line[] {
+/** Top straight lines found by oriented Hough voting on thinned edges, and every peak, strongest first. */
+function houghLines(gx: Int16Array, gy: Int16Array, nms: Float32Array, w: number, h: number): { lines: Line[]; peaks: Line[] } {
   const maxRho = Math.ceil(Math.hypot(w, h));
   const numRho = maxRho * 2 + 1;
   const acc = new Float32Array(THETA_BINS * numRho);
@@ -173,13 +174,20 @@ function houghLines(gx: Int16Array, gy: Int16Array, nms: Float32Array, w: number
   const sectorCount = new Uint8Array(30);
   const selected: Line[] = [];
   for (const { theta, rho } of peaks) {
-    const sector = Math.min(29, Math.floor(((theta * 180) / Math.PI) / 6));
+    const sector = Math.min(29, Math.floor(((theta * 180) / Math.PI) / SECTOR_DEG));
     if (sectorCount[sector] >= MAX_LINES_PER_SECTOR) continue;
     sectorCount[sector]++;
     selected.push({ theta, rho });
     if (selected.length >= MAX_HOUGH_LINES) break;
   }
-  return selected;
+  return { lines: selected, peaks };
+}
+
+/** The line through a and b, its angle in [0, 180) degrees as Hough gives it. */
+function lineThrough(a: Point, b: Point): Line {
+  const theta = Math.atan2(b.x - a.x, -(b.y - a.y));
+  const rho = a.x * Math.cos(theta) + a.y * Math.sin(theta);
+  return theta < 0 ? { theta: theta + Math.PI, rho: -rho } : theta >= Math.PI ? { theta: theta - Math.PI, rho: -rho } : { theta, rho };
 }
 
 // sin(~14.5°): rejects nearly parallel lines whose intersection is unstable.
@@ -329,11 +337,17 @@ const BESIDE = [3, 4, 5];
 // Search-copy px into the paper past a band that are read, within the thinnest strip a band leaves (3% of a page that fills the copy).
 const PAST_BAND = [0, 1, 2];
 
+// Search-copy px past a side where paper means a line of text: past its edge's blur, closer than a band's MIN_BAND.
+const CUT_REACH = [3, 4, 5];
+
+// Share of the way up the frame's colours where its paper is read.
+const PAPER_SHARE = 0.75;
+
 const brightness = (c: number[]) => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
 const sameColour = (c: number[], d: number[]) => Math.abs(c[0] - d[0]) + Math.abs(c[1] - d[1]) + Math.abs(c[2] - d[2]) < SAME_COLOUR;
 
-/** True when most of a side runs along a dark band of even depth with paper past it that shows just inside its neighbouring sides' lines carried on, not just outside, where another sheet would spill past them or stop short. */
-function endsAtBand(q: Quad, rgba: Uint8Array, w: number, h: number): boolean {
+/** The frame's paper colour and its sides, each with its outward normal and points along it, in a small RGBA copy. */
+function framePaper(q: Quad, rgba: Uint8Array, w: number, h: number) {
   const cx = (q[0].x + q[1].x + q[2].x + q[3].x) / 4;
   const cy = (q[0].y + q[1].y + q[2].y + q[3].y) / 4;
   const at = (x: number, y: number) => {
@@ -341,14 +355,15 @@ function endsAtBand(q: Quad, rgba: Uint8Array, w: number, h: number): boolean {
     const iy = Math.round(y);
     return ix < 0 || iy < 0 || ix >= w || iy >= h ? -1 : (iy * w + ix) * 4;
   };
-  // Per-channel median of the pixels at these offsets, null when none is in the photo.
-  const medianColour = (offsets: number[]) => {
+  // Per-channel value this share of the way up the pixels at these offsets, null when none is in the photo.
+  const colourAt = (offsets: number[], share: number) => {
     const inPhoto = offsets.filter((o) => o >= 0);
     if (!inPhoto.length) return null;
-    return [0, 1, 2].map((c) => inPhoto.map((o) => rgba[o + c]).sort((m, n) => m - n)[inPhoto.length >> 1]);
+    return [0, 1, 2].map((c) => inPhoto.map((o) => rgba[o + c]).sort((m, n) => m - n)[Math.floor(inPhoto.length * share)]);
   };
-  // The frame's paper: the median colour on the lines from its middle to its corners.
-  const paper = medianColour(q.flatMap((p) => [1, 2, 3, 4, 5, 6, 7, 8].map((k) => at(cx + ((p.x - cx) * k) / 10, cy + ((p.y - cy) * k) / 10))))!;
+  const medianColour = (offsets: number[]) => colourAt(offsets, 0.5);
+  // The frame's paper, on the lines from its middle to its corners; past the median, so text and a band crossing them do not darken it.
+  const paper = colourAt(q.flatMap((p) => [1, 2, 3, 4, 5, 6, 7, 8].map((k) => at(cx + ((p.x - cx) * k) / 10, cy + ((p.y - cy) * k) / 10))), PAPER_SHARE)!;
   const isPaper = (o: number) => o >= 0 && sameColour([rgba[o], rgba[o + 1], rgba[o + 2]], paper);
 
   const steps = 32;
@@ -363,6 +378,20 @@ function endsAtBand(q: Quad, rgba: Uint8Array, w: number, h: number): boolean {
     // Points along the side; the ends are skipped, as they sit at corners.
     return { nx, ny, points: along.map((t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t })) };
   });
+  return { at, medianColour, paper, isPaper, sides };
+}
+
+/** True when most of side s has paper closer past it than a band leaves: the side is a line of text on the page, not its edge. */
+function cutsPaper(q: Quad, s: number, rgba: Uint8Array, w: number, h: number): boolean {
+  const { at, isPaper, sides } = framePaper(q, rgba, w, h);
+  const { nx, ny, points } = sides[s];
+  const cut = points.filter(({ x, y }) => CUT_REACH.some((d) => isPaper(at(x + nx * d, y + ny * d))));
+  return cut.length >= MIN_PAPER_BEYOND * points.length;
+}
+
+/** True when most of a side runs along a dark band of even depth with paper past it that shows just inside its neighbouring sides' lines carried on, not just outside, where another sheet would spill past them or stop short. */
+function endsAtBand(q: Quad, rgba: Uint8Array, w: number, h: number): boolean {
+  const { at, medianColour, paper, isPaper, sides } = framePaper(q, rgba, w, h);
 
   // shortcut: a second sheet in line with both neighbouring sides, or past which they leave the photo (a page cut by three photo edges), gives the whole photo, upgrade when a real photo shows one.
   const carriesOnPage = (s: number, from: number) =>
@@ -420,7 +449,7 @@ function endsAtBand(q: Quad, rgba: Uint8Array, w: number, h: number): boolean {
 /** The page's corners in a small RGBA copy, or null when no page stands out from what is around it. */
 function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
   const { gx, gy, nms } = edgeMap(rgba, w, h);
-  const lines = houghLines(gx, gy, nms, w, h);
+  const { lines, peaks } = houghLines(gx, gy, nms, w, h);
   if (lines.length < 4) return null;
 
   const minGap = 0.15 * Math.min(w, h);
@@ -432,6 +461,21 @@ function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
   const pairGap = (a: Line, b: Line) => {
     const sameDir = Math.cos(a.theta) * Math.cos(b.theta) + Math.sin(a.theta) * Math.sin(b.theta) >= 0;
     return Math.abs(distFromCenter(a) - (sameDir ? 1 : -1) * distFromCenter(b));
+  };
+  // The corners in clockwise order and their score (side length weighted by edge support), or null when they make no page.
+  const frame = (raw: Quad): { q: Quad; score: number } | null => {
+    if (raw.some((p) => p.x < -margin || p.x > w + margin || p.y < -margin || p.y > h + margin)) return null;
+    const q = orderCorners(raw);
+    if (!q || area(q) < minArea) return null;
+    const sides = [0, 1, 2, 3].map((s) => Math.hypot(q[(s + 1) % 4].x - q[s].x, q[(s + 1) % 4].y - q[s].y));
+    if (Math.max(...sides) > MAX_SIDE_RATIO * Math.min(...sides)) return null;
+    let score = 0;
+    for (let s = 0; s < 4; s++) {
+      const sup = sideSupport(q[s], q[(s + 1) % 4], gx, gy, w, h);
+      if (sup < MIN_SIDE_SUPPORT) return null;
+      score += sup * sides[s];
+    }
+    return { q, score };
   };
   let bestQuad: Quad | null = null;
   let bestScore = 0;
@@ -455,36 +499,49 @@ function pageCorners(rgba: Uint8Array, w: number, h: number): Quad | null {
           const p3 = intersect(lines[j], lines[k]);
           if (!p0 || !p1 || !p2 || !p3) continue;
 
-          const raw: Quad = [p0, p1, p2, p3];
-          if (raw.some((p) => p.x < -margin || p.x > w + margin || p.y < -margin || p.y > h + margin)) continue;
-          const q = orderCorners(raw);
-          if (!q || area(q) < minArea) continue;
-          const sides = [0, 1, 2, 3].map((s) => Math.hypot(q[(s + 1) % 4].x - q[s].x, q[(s + 1) % 4].y - q[s].y));
-          if (Math.max(...sides) > MAX_SIDE_RATIO * Math.min(...sides)) continue;
-
-          let score = 0;
-          let ok = true;
-          for (let s = 0; s < 4; s++) {
-            const a = q[s];
-            const b = q[(s + 1) % 4];
-            const sup = sideSupport(a, b, gx, gy, w, h);
-            if (sup < MIN_SIDE_SUPPORT) {
-              ok = false;
-              break;
-            }
-            score += sup * Math.hypot(b.x - a.x, b.y - a.y);
-          }
-          if (ok && score > bestScore) {
-            bestScore = score;
-            bestQuad = q;
+          const found = frame([p0, p1, p2, p3]);
+          if (found && found.score > bestScore) {
+            bestScore = found.score;
+            bestQuad = found.q;
           }
         }
       }
     }
   }
+  if (!bestQuad) return null;
 
-  // A frame that cuts the page is worse than the whole photo, so it is turned away, never swapped for another.
-  if (!bestQuad || endsAtBand(bestQuad, rgba, w, h)) return null;
+  // Lines of text parallel to a side can crowd the page's own edge out of the kept lines, so a side on one moves out to the first line past it that does not cut the paper.
+  for (let s = 0; s < 4; s++) {
+    if (!cutsPaper(bestQuad, s, rgba, w, h)) continue;
+    const q: Quad = bestQuad;
+    const side = lineThrough(q[s], q[(s + 1) % 4]);
+    const before = lineThrough(q[(s + 3) % 4], q[s]);
+    const after = lineThrough(q[(s + 1) % 4], q[(s + 2) % 4]);
+    const mx = (q[0].x + q[1].x + q[2].x + q[3].x) / 4;
+    const my = (q[0].y + q[1].y + q[2].y + q[3].y) / 4;
+    const { nx, ny } = framePaper(q, rgba, w, h).sides[s];
+    // Distance from the frame's middle to where the line crosses the side's outward normal.
+    const reach = (l: Line) => (l.rho - mx * Math.cos(l.theta) - my * Math.sin(l.theta)) / (nx * Math.cos(l.theta) + ny * Math.sin(l.theta));
+    const past = peaks
+      .filter((l) => angleDiffDeg(l.theta, side.theta) <= SECTOR_DEG && reach(l) > reach(side))
+      .sort((a, b) => reach(a) - reach(b));
+    for (const l of past) {
+      const a = intersect(before, l);
+      const b = intersect(l, after);
+      if (!a || !b) continue;
+      const moved = [...q] as Quad;
+      moved[s] = a;
+      moved[(s + 1) % 4] = b;
+      const found = frame(moved);
+      if (!found || cutsPaper(moved, s, rgba, w, h)) continue;
+      // Keeps the corner order the later sides' indices rely on.
+      bestQuad = moved;
+      break;
+    }
+  }
+
+  // A frame that ends at a band is turned away, never swapped for another: a cut page is worse than the whole photo.
+  if (endsAtBand(bestQuad, rgba, w, h)) return null;
   const refined = [0, 1, 2, 3].map((s) => refineLine(bestQuad[s], bestQuad[(s + 1) % 4], gx, gy, w, h));
   const allLines = (ls: (Line | null)[]): ls is Line[] => ls.every((l) => l !== null);
   if (allLines(refined)) {

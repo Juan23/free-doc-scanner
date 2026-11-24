@@ -3,7 +3,7 @@ import { Directory } from 'expo-file-system';
 import { Album, Asset, requestPermissionsAsync } from 'expo-media-library';
 import { Platform } from 'react-native';
 
-import { clearScannerCache, pagesToSave, pickOnLongPress, saveJpegs, savePdf, scanName } from './save';
+import { clearScannerCache, pagesToSave, pickOnLongPress, saveJpegs, savePdf } from './save';
 
 // In-memory file system. Writes and copies finish on a later tick, like the native module.
 const mockFs = {
@@ -88,6 +88,7 @@ jest.mock('expo-file-system', () => {
 });
 // buildPdf is covered with real pdf-lib in buildPdf.test.ts; here it only has to yield bytes.
 jest.mock('pdf-lib', () => ({
+  JpegEmbedder: { for: async () => ({ width: 1, height: 1 }) },
   PDFDocument: {
     create: async () => ({
       embedJpg: async () => ({ width: 1, height: 1 }),
@@ -96,6 +97,9 @@ jest.mock('pdf-lib', () => ({
     }),
   },
 }));
+// A 1 px page is never shrunk, so the Skia side of buildPdf never runs here.
+jest.mock('@shopify/react-native-skia', () => ({}));
+jest.mock('./clean', () => ({}));
 jest.mock('expo-media-library', () => ({
   Asset: { create: jest.fn() },
   Album: { create: jest.fn() },
@@ -109,10 +113,6 @@ beforeEach(() => {
   jest.clearAllMocks();
   resetFs();
   Platform.OS = 'ios';
-});
-
-it('formats the scan name in local time', () => {
-  expect(scanName(new Date(2026, 10, 3, 9, 5))).toBe('Scan 2026-11-03 09.05');
 });
 
 it('writes <name>.pdf into the picked folder and resolves only after the bytes land', async () => {

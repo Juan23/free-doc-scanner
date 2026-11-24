@@ -83,6 +83,8 @@ const wholePhoto: Quad = [
   { x: 0, y: H },
 ];
 
+const farthest = (found: Quad, truth: Quad) => Math.max(...found.map((p, i) => Math.hypot(p.x - truth[i].x, p.y - truth[i].y)));
+
 function expectNear(found: Quad, truth: Quad, tolerance: number) {
   found.forEach((p, i) => {
     expect(Math.abs(p.x - truth[i].x)).toBeLessThan(tolerance);
@@ -190,14 +192,15 @@ const upright: Quad = [
   { x: 150, y: 1050 },
 ];
 
-// A dark band across the page's whole width, `top` and `depth` in shares of the page's height.
-function bandAcross(page: Quad, top: number, depth: number) {
+// A dark band across the page from `left` to `right` of its width, `top` and `depth` in shares of the page's height.
+function bandAcross(page: Quad, top: number, depth: number, left = 0, right = 1, colour = 'rgb(45,50,60)') {
   const [tl, tr, br, bl] = page;
   const at = (a: { x: number; y: number }, b: { x: number; y: number }, t: number) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+  const across = (t: number, s: number) => at(at(tl, bl, t), at(tr, br, t), s);
   return (canvas: SkCanvas) => {
-    const band = Skia.Path.Polygon([at(tl, bl, top), at(tr, br, top), at(tr, br, top + depth), at(tl, bl, top + depth)], true);
+    const band = Skia.Path.Polygon([across(top, left), across(top, right), across(top + depth, right), across(top + depth, left)], true);
     const paint = Skia.Paint();
-    paint.setColor(Skia.Color('rgb(45,50,60)'));
+    paint.setColor(Skia.Color(colour));
     canvas.drawPath(band, paint);
     for (const o of [band, paint]) o.dispose();
   };
@@ -216,12 +219,47 @@ describe.each([
 
       const { corners } = await findPage('file:///cache/photo.jpg');
 
-      const off = (truth: Quad) => Math.max(...corners.map((p, i) => Math.hypot(p.x - truth[i].x, p.y - truth[i].y)));
-      expect(Math.min(off(page), off(wholePhoto))).toBeLessThan(20);
+      expect(Math.min(farthest(corners, page), farthest(corners, wholePhoto))).toBeLessThan(20);
     },
     30000,
   );
 });
+
+// Text lines that follow the tilted page, every 0.035 of its height, in place of photo()'s upright ones (#96).
+function tiltedText(canvas: SkCanvas) {
+  bandAcross(tilted, 0, 1, 0, 1, 'rgb(238,234,222)')(canvas);
+  for (let i = 0; i < 26; i++) bandAcross(tilted, 0.05 + 0.035 * i, 0.008, 0.05, 0.95, 'rgb(30,30,35)')(canvas);
+}
+
+it('finds a tilted page whose text lines follow its tilt', async () => {
+  mockFiles.set('file:///cache/photo.jpg', photo(tilted, 'rgb(92,70,52)', undefined, undefined, tiltedText));
+
+  expectNear((await findPage('file:///cache/photo.jpg')).corners, tilted, 20);
+}, 30000);
+
+it.each([
+  [0.55, 0.05, 0, 1],
+  [0.55, 0.08, 0, 1],
+  [0.3, 0.03, 0.08, 0.92],
+  [0.3, 0.05, 0.08, 0.92],
+  [0.3, 0.08, 0.08, 0.92],
+  [0.3, 0.12, 0.08, 0.92],
+  [0.55, 0.05, 0.08, 0.92],
+  [0.55, 0.08, 0.08, 0.92],
+  [0.55, 0.12, 0.08, 0.92],
+])('gives a tilted page with text that follows its tilt and a band %f down, %f deep, from %f to %f of its width, whole or the whole photo', async (top, depth, left, right) => {
+  mockFiles.set(
+    'file:///cache/photo.jpg',
+    photo(tilted, 'rgb(92,70,52)', undefined, undefined, (canvas) => {
+      tiltedText(canvas);
+      bandAcross(tilted, top, depth, left, right)(canvas);
+    }),
+  );
+
+  const { corners } = await findPage('file:///cache/photo.jpg');
+
+  expect(Math.min(farthest(corners, tilted), farthest(corners, wholePhoto))).toBeLessThan(20);
+}, 30000);
 
 // A white sheet `gap` px right of the page, from the page's top to its foot.
 function sheetBeside(page: Quad, gap: number, gapColour?: string) {
