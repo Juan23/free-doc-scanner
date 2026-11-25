@@ -277,8 +277,11 @@ function negative(bytes: Uint8Array): Uint8Array {
   const paint = Skia.Paint();
   paint.setColorFilter(Skia.ColorFilter.MakeMatrix([-1, 0, 0, 0, 1, 0, -1, 0, 0, 1, 0, 0, -1, 0, 1, 0, 0, 0, 1, 0]));
   surface.getCanvas().drawImage(image, 0, 0, paint);
-  image.dispose();
-  return surface.makeImageSnapshot().encodeToBytes(ImageFormat.JPEG, 92);
+  const snapshot = surface.makeImageSnapshot();
+  const negated = snapshot.encodeToBytes(ImageFormat.JPEG, 92);
+  // Freed at once: the made-up script's light pages would use up CanvasKit's heap.
+  for (const o of [image, snapshot, surface]) o.dispose();
+  return negated;
 }
 
 it.each([0, 1, 2, 3])('stands light text on a dark card upright (%i)', async (turns) => {
@@ -310,6 +313,9 @@ it.each([0, 1, 2, 3])('never turns a page of Russian text the wrong way (%i)', a
   expect(untouched(page) || difference(mockFiles.get(PAGE)!, letter(0, RUSSIAN)) < 3).toBe(true);
 }, 30000);
 
+// One surface per orientation, reused as in largeLetter: a new one per page exhausts the heap.
+const blockSurfaces: any[] = [];
+
 /**
  * A page in a made-up script of blocks, turned clockwise by `turns` quarter turns. Like Hebrew, its
  * letters hang down below the line more often than they stick up, and its smallest letter, like
@@ -323,9 +329,6 @@ it.each([0, 1, 2, 3])('never turns a page of Russian text the wrong way (%i)', a
  * at the top as Hebrew's are, rather than solid blocks. With `copies`, each yod is drawn that many
  * times, `copyGap` px apart.
  */
-// One surface per orientation, reused as in largeLetter: a new one per page exhausts the heap.
-const blockSurfaces: any[] = [];
-
 function blocks(
   turns: number,
   { finalYodsEvery = 7, yodsEvery = 0, stopsEvery = 0, pointsEvery = 0, tallEvery = 13, spaced = false, bars = false, gaps = [0, 0], copies = 1, copyGap = 2 } = {},
@@ -387,7 +390,7 @@ function blocks(
   return bytes;
 }
 
-describe.each([
+const BLOCK_PAGES: [string, object][] = [
   ['with yods inside words too', { yodsEvery: 4 }],
   ['with full stops', { stopsEvery: 6 }],
   // As when blur joins vowel points to their letters and hides the yods inside words.
@@ -400,12 +403,14 @@ describe.each([
   ['with 3 yods ending words and 3 full stops', { finalYodsEvery: 200, stopsEvery: 150 }],
   ['with yods ending words, a few inside them, and full stops', { finalYodsEvery: 70, yodsEvery: 300, stopsEvery: 150 }],
   ['with nothing sticking up', { tallEvery: 0 }],
-  // A script's marks in a row, evenly spaced, are no dot leader, however many there are.
+  // Yods drawn several times in a row, evenly spaced, are still another script's marks, however many there are.
   ['with each yod drawn twice', { copies: 2 }],
   ['with each yod drawn three times', { copies: 3 }],
   ...[4, 6].flatMap((copies) => [2, 3, 4, 5].map((copyGap): [string, object] => [`with each yod drawn ${copies} times, ${copyGap} px apart`, { copies, copyGap }])),
   ["with vowel points, its letters heavy at the top as Hebrew's are", { pointsEvery: 3, tallEvery: 5, bars: true }],
-])('a page of a right-to-left script whose yods look like full stops upside down, %s,', (_, options) => {
+];
+
+describe.each(BLOCK_PAGES)('a page of a right-to-left script whose yods look like full stops upside down, %s,', (_, options) => {
   it.each([0, 1, 2, 3])('is never turned the wrong way (%i)', async (turns) => {
     const page = blocks(turns, options);
     mockFiles.set(PAGE, page);
@@ -415,6 +420,22 @@ describe.each([
     expect(untouched(page) || difference(mockFiles.get(PAGE)!, blocks(0, options)) < 3).toBe(true);
   }, 30000);
 });
+
+// Read dark on light, a yod ending every 7th or every other word passes for upside-down Latin's full stops,
+// so those two pages are turned the wrong way; light on dark, the negative reading must not inherit that.
+describe.each([...BLOCK_PAGES, ['with yods only ending words', {}], ['with a yod ending every other word', { finalYodsEvery: 2 }]])(
+  'a page of that script in light letters on a dark card, %s,',
+  (_, options) => {
+    it.each([0, 1, 2, 3])('is never turned the wrong way (%i)', async (turns) => {
+      const page = negative(blocks(turns, options));
+      mockFiles.set(PAGE, page);
+
+      await keepWholePhoto();
+
+      expect(untouched(page) || difference(mockFiles.get(PAGE)!, negative(blocks(0, options))) < 3).toBe(true);
+    }, 30000);
+  },
+);
 
 it.each([0, 1, 2, 3])('leaves a photo with no writing untouched, however it is turned (%i)', async (turns) => {
   mockFiles.set(PAGE, landscape());

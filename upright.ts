@@ -373,9 +373,11 @@ export function readUpright(image: SkImage) {
   // Held back by another script's marks alone, the page is not looked at again: its middle may hold too few of them.
   const read = sure || heldByScriptOnly(whole) || fullSize ? whole : readInk(findInk(image, CLOSE_LONG_SIDE, CLOSE_PART));
   // Light text on a dark card is gaps in the ink, so an unsure page that is mostly dark is read again as its
-  // negative; not one held back by another script's marks, which the negative cannot see.
+  // negative; not one held back by another script's marks, which the negative cannot see, nor one whose first
+  // reading leans surely either way: the gaps round light Latin letters do not, a made-up script's do.
   const { luma } = first;
-  if (read.turns || !read.failedAsIs.length || heldByScriptOnly(read) || !lightOnDark(luma)) return read;
+  const inkLeans = [whole.asIs, whole.turned].some((r) => Math.abs(r.deviations) >= SURE_DEVIATIONS);
+  if (read.turns || !read.failedAsIs.length || heldByScriptOnly(read) || inkLeans || !lightOnDark(luma)) return read;
   const n = luma.length;
   const flipped = new Uint8Array(n);
   for (let i = 0; i < n; i++) flipped[i] = 255 - luma[i];
